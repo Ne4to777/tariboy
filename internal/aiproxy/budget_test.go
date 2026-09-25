@@ -83,6 +83,60 @@ func TestAgentBudgetStatusIncludesFractionalSecondAfterCalendarBoundary(t *testi
 	}
 }
 
+// This fails if the window sums stop normalizing timestamps with an offset
+// other than Z, or pick up another agent's spend.
+func TestAgentBudgetStatusNormalizesOffsetTimestamps(t *testing.T) {
+	st := newStore(t)
+	now := time.Date(2026, time.July, 6, 10, 30, 0, 0, time.UTC)
+	for _, row := range []AIRequest{
+		{ID: "east", TS: "2026-07-06T12:30:00+03:00", Agent: "alice", CostUSD: 1},   // 09:30Z: day, not hour
+		{ID: "west", TS: "2026-07-06T05:10:00.5-05:00", Agent: "alice", CostUSD: 2}, // 10:10:00.5Z: hour
+		{ID: "other", TS: "2026-07-06T10:15:00Z", Agent: "bob", CostUSD: 40},
+	} {
+		if err := st.Insert(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := st.AgentBudgetStatus("alice", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.HourSpentUSD != 2 || status.DaySpentUSD != 3 || status.WeekSpentUSD != 3 || status.MonthSpentUSD != 3 {
+		t.Fatalf("offset spend = %+v, want hour/day/week/month 2/3/3/3", status)
+	}
+}
+
+// Budget status runs for every agent on each agent-list poll and on every
+// proxied request. Scanning each agent's whole request history four times held
+// the daemon's single database connection long enough to queue every other
+// request behind it, so the window sums must seek a bounded range of one
+// covering index.
+func TestAgentBudgetSpendSeeksCoveringIndexRange(t *testing.T) {
+	st := newStore(t)
+	query, args := agentWindowSpendQuery("alice", time.Date(2026, time.July, 6, 10, 30, 0, 0, time.UTC))
+	rows, err := st.db.Query(`EXPLAIN QUERY PLAN `+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "USING COVERING INDEX idx_ai_requests_agent_ts_cost (agent=? AND ts>?)") {
+		t.Fatalf("query plan does not seek the covering index by agent and time:\n%s", joined)
+	}
+}
+
 func TestBudgetStoreCRUD(t *testing.T) {
 	s := newStore(t)
 	if err := s.SetBudget(Budget{Scope: "agent:alice", LimitUSD: 1.0, PeriodS: 3600, Mode: "block"}); err != nil {

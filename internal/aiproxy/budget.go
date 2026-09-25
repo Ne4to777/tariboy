@@ -70,6 +70,30 @@ func localCalendarStarts(now time.Time) (hour, day, week, month time.Time) {
 	return hour, day, week, month
 }
 
+// agentWindowSpendQuery sums one agent's hour, day, week and month spend in a
+// single pass. Each window compares offset-aware times at the same millisecond
+// precision as CostSince's strftime, but julianday is several times cheaper
+// per row; LIMIT -1 keeps SQLite from flattening the subquery so it runs once
+// per row, not once per window. The plain ts range only bounds the index seek.
+// It starts a day before the earliest window because ts is RFC3339 text whose
+// offset may differ from Z by up to 14 hours, so its lexical order is exact
+// only across whole days.
+func agentWindowSpendQuery(agent string, now time.Time) (string, []any) {
+	hour, day, week, month := localCalendarStarts(now)
+	earliest := week
+	if month.Before(earliest) {
+		earliest = month
+	}
+	const sum = `COALESCE(SUM(CASE WHEN t>=julianday(?) THEN cost_usd END),0)`
+	query := `SELECT ` + sum + `,` + sum + `,` + sum + `,` + sum + ` FROM (
+		SELECT julianday(ts) AS t, cost_usd FROM ai_requests WHERE agent=? AND ts>=? LIMIT -1)`
+	args := []any{}
+	for _, start := range []time.Time{hour, day, week, month} {
+		args = append(args, start.UTC().Format(time.RFC3339Nano))
+	}
+	return query, append(args, agent, earliest.Add(-24*time.Hour).UTC().Format(time.RFC3339Nano))
+}
+
 // AgentBudgetStatus returns zero limits for a missing row and derives spending
 // from immutable request costs for the current local calendar periods.
 func (s *Store) AgentBudgetStatus(agent string, now time.Time) (AgentBudgetStatus, error) {
@@ -79,19 +103,13 @@ func (s *Store) AgentBudgetStatus(agent string, now time.Time) (AgentBudgetStatu
 	if err != nil && err != sql.ErrNoRows {
 		return AgentBudgetStatus{}, err
 	}
-	hour, day, week, month := localCalendarStarts(now)
-	var e error
-	if status.HourSpentUSD, e = s.CostSince(agent, hour); e != nil {
-		return AgentBudgetStatus{}, e
+	query, args := agentWindowSpendQuery(agent, now)
+	if err := s.db.QueryRow(query, args...).Scan(&status.HourSpentUSD, &status.DaySpentUSD,
+		&status.WeekSpentUSD, &status.MonthSpentUSD); err != nil {
+		return AgentBudgetStatus{}, err
 	}
-	if status.DaySpentUSD, e = s.CostSince(agent, day); e != nil {
-		return AgentBudgetStatus{}, e
-	}
-	if status.WeekSpentUSD, e = s.CostSince(agent, week); e != nil {
-		return AgentBudgetStatus{}, e
-	}
-	if status.MonthSpentUSD, e = s.CostSince(agent, month); e != nil {
-		return AgentBudgetStatus{}, e
+	for _, spent := range []*float64{&status.HourSpentUSD, &status.DaySpentUSD, &status.WeekSpentUSD, &status.MonthSpentUSD} {
+		*spent = roundCost(*spent)
 	}
 	for _, window := range []struct {
 		name         string
