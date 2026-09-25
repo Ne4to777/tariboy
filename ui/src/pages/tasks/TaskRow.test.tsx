@@ -21,7 +21,8 @@ const task: Task = {
   manual_block_reason: "",
   blocked: false,
   revision: 1,
-  created_at: "2026-09-20T10:00:00Z",
+  created_at: "2026-09-19T08:00:00Z",
+  started_at: "2026-09-20T10:00:00Z",
   updated_at: "2026-09-20T10:18:00Z",
   completed_at: "2026-09-20T10:18:00Z",
 }
@@ -108,12 +109,13 @@ describe("task table columns", () => {
 })
 
 describe("task duration", () => {
-  it("measures a closed task from creation to completion and an open one until now", () => {
+  it("measures a closed task from its first start to completion and an open one until now", () => {
     expect(formatTaskDuration(task)).toBe("18m")
     expect(formatTaskDuration(
       { ...task, completed_at: "" },
       new Date("2026-09-20T13:30:00Z"),
     )).toBe("3h 30m")
-    expect(formatTaskDuration({ ...task, created_at: "" })).toBe("—")
+    expect(formatTaskDuration({ ...task, started_at: "" })).toBe("—")
+    expect(formatTaskDuration({ ...task, started_at: undefined })).toBe("—")
   })
 })

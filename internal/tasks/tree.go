@@ -334,6 +334,9 @@ func (s *Service) ClaimReady(ctx context.Context, actor Actor, filter ReadyFilte
 	}
 	task.Assignee = actor.Principal
 	task.Status = StatusInProgress
+	if task.StartedAt == "" {
+		task.StartedAt = now
+	}
 	task.Revision++
 	task.UpdatedAt = now
 	task.Access = "write"

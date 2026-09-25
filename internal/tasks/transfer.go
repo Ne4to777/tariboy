@@ -30,6 +30,7 @@ type TransferTask struct {
 	Assignee          string            `json:"assignee"`
 	ManualBlockReason string            `json:"manual_block_reason"`
 	CreatedAt         string            `json:"created_at"`
+	StartedAt         string            `json:"started_at"`
 	UpdatedAt         string            `json:"updated_at"`
 	CompletedAt       string            `json:"completed_at"`
 	Comments          []TransferComment `json:"comments"`
@@ -71,7 +72,7 @@ WITH RECURSIVE subtree(id) AS (
 SELECT t.id, t.task_key, COALESCE(p.task_key, ''), t.queue_prefix, t.priority, t.title,
        t.description, t.status, t.pull_request, t.author, t.customer, t.group_name,
        t.assignee, t.manual_block_reason, t.workflow_version_id,
-       t.created_at, t.updated_at, t.completed_at
+       t.created_at, t.started_at, t.updated_at, t.completed_at
 FROM tasks t
 JOIN subtree s ON s.id = t.id
 LEFT JOIN tasks p ON p.id = t.parent_id
@@ -104,7 +105,7 @@ func (s *Service) ExportTask(ctx context.Context, actor Actor, key string) (Tran
 		if err := rows.Scan(&id, &item.Key, &item.ParentKey, &item.Queue, &item.Priority, &item.Title,
 			&item.Description, &item.Status, &item.PullRequest, &item.Author, &item.Customer,
 			&item.Group, &item.Assignee, &item.ManualBlockReason, &workflowVersion,
-			&item.CreatedAt, &item.UpdatedAt, &item.CompletedAt); err != nil {
+			&item.CreatedAt, &item.StartedAt, &item.UpdatedAt, &item.CompletedAt); err != nil {
 			return TransferBundle{}, err
 		}
 		// Workflow execution state (assignments, leases, requirement history) is
@@ -262,11 +263,11 @@ func (s *Service) ImportTask(ctx context.Context, actor Actor, bundle TransferBu
 			INSERT INTO tasks(
 				task_key, queue_prefix, parent_id, position, priority, title, description, status,
 				pull_request, author, customer, group_name, assignee, manual_block_reason,
-				created_at, updated_at, completed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				created_at, started_at, updated_at, completed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			key, queue, parentID, position, priority, item.Title, item.Description, item.Status,
 			item.PullRequest, item.Author, item.Customer, item.Group, item.Assignee,
-			item.ManualBlockReason, item.CreatedAt, item.UpdatedAt, item.CompletedAt)
+			item.ManualBlockReason, item.CreatedAt, item.StartedAt, item.UpdatedAt, item.CompletedAt)
 		if err != nil {
 			return Task{}, err
 		}

@@ -589,6 +589,13 @@ func TestTaskPriorityMigrationPreservesLegacyTaskData(t *testing.T) {
 
 func openBeforeTaskPriorityMigration(t *testing.T, path string) *Store {
 	t.Helper()
+	return openBeforeMigration(t, path, "0025_task_priority.sql")
+}
+
+// openBeforeMigration applies every migration ordered before first, so a test
+// can seed legacy rows and then let Open run first and everything after it.
+func openBeforeMigration(t *testing.T, path, first string) *Store {
+	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(ON)")
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +613,7 @@ func openBeforeTaskPriorityMigration(t *testing.T, path string) *Store {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Name() < "0025_task_priority.sql" {
+		if entry.Name() < first {
 			names = append(names, entry.Name())
 		}
 	}
@@ -893,6 +900,56 @@ func TestMessageSenderMigrationBackfillsExistingMessages(t *testing.T) {
 		}
 		if got != sender {
 			t.Errorf("sender of %s = %q, want %q", id, got, sender)
+		}
+	}
+}
+
+func TestTaskStartedAtMigrationBackfillsTheFirstStartFromEvents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	s := openBeforeMigration(t, dbPath, "0049_task_started_at.sql")
+	if _, err := s.DB.Exec(`
+		INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('T', 'T', 'c', 'c');
+		INSERT INTO tasks(id, task_key, queue_prefix, title, status, author, customer, created_at, updated_at) VALUES
+			(1, 'T-1', 'T', 'reopened', 'done', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u'),
+			(2, 'T-2', 'T', 'claimed', 'in_progress', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u'),
+			(3, 'T-3', 'T', 'never started', 'open', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u');
+		INSERT INTO task_events(event_id, task_id, queue_prefix, kind, actor, payload, created_at) VALUES
+			('e1', 1, 'T', 'task.updated', 'user:u', '{"status":"open"}', '2026-01-02T00:00:00Z'),
+			('e2', 1, 'T', 'task.updated', 'user:u', '{"status":"in_progress"}', '2026-01-03T00:00:00Z'),
+			('e3', 1, 'T', 'task.updated', 'user:u', '{"status":"in_progress"}', '2026-01-05T00:00:00Z'),
+			('e4', 2, 'T', 'task.claimed', 'agent:a', '{"assignee":"agent:a"}', '2026-01-04T00:00:00Z'),
+			('e5', 3, 'T', 'task.updated', 'user:u', '{"status":"open"}', '2026-01-04T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := map[string]string{"T-1": "2026-01-03T00:00:00Z", "T-2": "2026-01-04T00:00:00Z", "T-3": ""}
+	for key, started := range want {
+		var got string
+		if err := s.DB.QueryRow(`SELECT started_at FROM tasks WHERE task_key = ?`, key).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != started {
+			t.Fatalf("%s started_at = %q; want %q", key, got, started)
+		}
+	}
+	if _, err := s.DB.Exec(`UPDATE tasks SET status = 'in_progress', updated_at = '2026-02-01T00:00:00Z' WHERE task_key IN ('T-1', 'T-3')`); err != nil {
+		t.Fatal(err)
+	}
+	want["T-3"] = "2026-02-01T00:00:00Z"
+	for key, started := range want {
+		var got string
+		if err := s.DB.QueryRow(`SELECT started_at FROM tasks WHERE task_key = ?`, key).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != started {
+			t.Fatalf("after update %s started_at = %q; want %q", key, got, started)
 		}
 	}
 }

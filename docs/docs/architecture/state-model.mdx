@@ -227,6 +227,15 @@ Priority is persisted as a constrained `P0` through `P3` value and defaults to
 position, task key)`. Manual positions are normalized within a priority bucket,
 so reparenting preserves priority without disturbing other buckets.
 
+`started_at` records the first time a task's status became `in_progress` and
+never moves afterward: a task paused in `wait_customer`, reopened, or started
+again keeps it. The `tasks_started_at` trigger stamps it on every status write
+path — update, claim, a resolved customer wait and a workflow transition — with
+that write's `updated_at`. Migration `0049` backfilled existing tasks from the
+earliest `task.updated` event with status `in_progress`, `task.claimed` or
+`workflow.transitioned` still in `task_events`; a task with no such event keeps
+an empty value. Export and import carry the field.
+
 Every task mutation, its event, and any notification intent commit in one
 SQLite transaction. The channel publisher runs afterward from the durable
 outbox with a stable message idempotency key. The WebSocket is only a delivery

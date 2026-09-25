@@ -38,6 +38,7 @@ export interface Task {
   workflow_revision?: number
   revision: number
   created_at: string
+  started_at?: string
   updated_at: string
   completed_at: string
   access?: TaskAccess

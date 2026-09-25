@@ -349,8 +349,9 @@ or in the first queue when `All queues` is selected.
 The table header and its rows read one set of column widths, so a column cannot
 drift from its heading. `Key` is a fixed 168px holding the tree indents, the
 chevron and the key, which truncates rather than wrapping; `Task` takes the
-rest. The agent table adds `Pri` and `Duration` — creation to completion, or to
-now while the task is open — and the server table adds `Agent`. There is no
+rest. The agent table adds `Pri` and `Duration` — the task's first move to
+`in_progress` (`started_at`) to completion, or to now while the task is open,
+and `—` for a task never started — and the server table adds `Agent`. There is no
 `Queue` column: the key prefix already names the queue. In the server table the
 header is sticky. The drag grip lives in the row's left padding and appears on
 hover.

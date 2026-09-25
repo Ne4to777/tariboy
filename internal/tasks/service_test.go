@@ -807,3 +807,50 @@ func TestEnsureDefaultQueueKeepsExistingTaskQueue(t *testing.T) {
 		t.Fatalf("existing queue changed: %#v", queue)
 	}
 }
+
+func TestStartedAtRecordsTheFirstMoveToInProgress(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	actor := CustomerActor("customer")
+	clock := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	svc.clock = func() time.Time { return clock }
+	_, _ = svc.CreateQueue(ctx, actor, CreateQueueInput{Prefix: "START", Name: "Starts", Owners: []string{"alice"}})
+	task, err := svc.CreateTask(ctx, actor, CreateTaskInput{Queue: "START", Title: "work"})
+	if err != nil || task.StartedAt != "" {
+		t.Fatalf("created = %#v, %v", task, err)
+	}
+	set := func(status string) Task {
+		t.Helper()
+		clock = clock.Add(time.Hour)
+		detail, err := svc.GetTask(ctx, actor, task.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := svc.UpdateTask(ctx, actor, task.Key, UpdateTaskInput{Status: &status, Revision: detail.Task.Revision})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+	first := set(StatusInProgress)
+	if want := "2026-07-31T13:00:00Z"; first.StartedAt != want {
+		t.Fatalf("started_at = %q; want %q", first.StartedAt, want)
+	}
+	set(StatusOpen)
+	set(StatusInProgress)
+	set(StatusDone)
+	detail, err := svc.GetTask(ctx, actor, task.Key)
+	if err != nil || detail.Task.StartedAt != first.StartedAt {
+		t.Fatalf("started_at = %q, %v; want the first start %q", detail.Task.StartedAt, err, first.StartedAt)
+	}
+
+	claimable, _ := svc.CreateTask(ctx, actor, CreateTaskInput{Queue: "START", Title: "claim me"})
+	claimed, err := svc.ClaimReady(ctx, AgentActor("alice"), ReadyFilter{Queue: "START"}, "claim-start")
+	if err != nil || claimed.Key != claimable.Key {
+		t.Fatalf("claimed = %#v, %v", claimed, err)
+	}
+	detail, err = svc.GetTask(ctx, actor, claimable.Key)
+	if err != nil || detail.Task.StartedAt != svc.now() {
+		t.Fatalf("claimed started_at = %q, %v", detail.Task.StartedAt, err)
+	}
+}

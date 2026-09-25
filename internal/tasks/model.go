@@ -152,6 +152,7 @@ type Task struct {
 	WorkflowRevision  int64    `json:"workflow_revision,omitempty"`
 	Revision          int64    `json:"revision"`
 	CreatedAt         string   `json:"created_at"`
+	StartedAt         string   `json:"started_at"`
 	UpdatedAt         string   `json:"updated_at"`
 	CompletedAt       string   `json:"completed_at"`
 	Access            string   `json:"access,omitempty"`

@@ -33,7 +33,7 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
 	   COALESCE(t.workflow_version_id, 0),
 	   COALESCE(w.name || '@' || w.version, ''),
 	   COALESCE(t.workflow_status, ''), COALESCE(t.workflow_revision, 0),
-       t.revision, t.created_at, t.updated_at, t.completed_at,
+       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at,
        COALESCE((
          SELECT waiting.requested_at
          FROM task_waiting_for waiting
@@ -269,7 +269,7 @@ func readGoalTask(tx *sql.Tx, key, agent string) (tasks.Task, string, error) {
 		&task.Position, &task.Priority, &task.Title, &task.Description, &task.Status, &task.PullRequest, &task.Author, &task.Customer,
 		&task.Group, &task.Assignee, &task.ManualBlockReason, &blocked,
 		&task.WorkflowVersionID, &task.WorkflowVersion, &task.WorkflowStatus, &task.WorkflowRevision,
-		&task.Revision, &task.CreatedAt, &task.UpdatedAt, &task.CompletedAt, &waitAt,
+		&task.Revision, &task.CreatedAt, &task.StartedAt, &task.UpdatedAt, &task.CompletedAt, &waitAt,
 	)
 	task.Blocked = blocked
 	return task, waitAt, err

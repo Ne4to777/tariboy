@@ -18,7 +18,7 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
 	   COALESCE(t.workflow_version_id, 0),
 	   COALESCE(w.name || '@' || w.version, ''),
 	   COALESCE(t.workflow_status, ''), COALESCE(t.workflow_revision, 0),
-       t.revision, t.created_at, t.updated_at, t.completed_at
+       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at
 FROM tasks t
 LEFT JOIN tasks p ON p.id = t.parent_id
 LEFT JOIN task_workflow_versions w ON w.id = t.workflow_version_id`
@@ -35,7 +35,7 @@ func scanTask(row rowScanner) (Task, error) {
 		&t.Position, &t.Priority, &t.Title, &t.Description, &t.Status, &t.PullRequest, &t.Author, &t.Customer,
 		&t.Group, &t.Assignee, &t.ManualBlockReason, &blocked,
 		&t.WorkflowVersionID, &t.WorkflowVersion, &t.WorkflowStatus, &t.WorkflowRevision,
-		&t.Revision, &t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
+		&t.Revision, &t.CreatedAt, &t.StartedAt, &t.UpdatedAt, &t.CompletedAt,
 	)
 	t.Blocked = blocked
 	return t, err

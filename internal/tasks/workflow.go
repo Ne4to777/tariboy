@@ -109,6 +109,10 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 	} else {
 		task.CompletedAt = ""
 	}
+	// The tasks_started_at trigger stores the first start; mirror it in the reply.
+	if task.Status == StatusInProgress && task.StartedAt == "" {
+		task.StartedAt = now
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE tasks
 		SET title = ?, description = ?, status = ?, pull_request = ?, assignee = ?, priority = ?,
