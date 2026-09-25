@@ -597,6 +597,9 @@ func (p *Proxy) doForward(ex *Exchange) error {
 	}
 	copyHeaders(outReq.Header, ex.R.Header)
 	outReq.Host = target.Host
+	// Drop the client's Accept-Encoding so Go's transport negotiates gzip and
+	// decompresses it; usage parsing and transcripts need the plain body.
+	outReq.Header.Del("Accept-Encoding")
 	if requestUsesAttributionToken(ex.R.Header, ex.Token) {
 		// Codex authenticates to the custom provider with the iteration token.
 		// That token grants attribution only and must never escape to the real

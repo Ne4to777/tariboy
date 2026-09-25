@@ -2,6 +2,7 @@ package aiproxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1210,5 +1211,74 @@ func TestForwardPathTokenKeepsProviderAuth(t *testing.T) {
 	}
 	if gotKey != "real-provider-key" {
 		t.Fatalf("provider key was not forwarded as-is: %q", gotKey)
+	}
+}
+
+// gzipIfAccepted mimics Anthropic: it compresses the body only when the
+// request advertises gzip support.
+func gzipIfAccepted(t *testing.T, contentType, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		_, _ = zw.Write([]byte(body))
+		_ = zw.Close()
+	}))
+}
+
+func TestAnthropicCompressedResponseRecordsUsage(t *testing.T) {
+	const sse = "event: message_start\n" +
+		`data: {"type":"message_start","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"cache_creation_input_tokens":7,"cache_read_input_tokens":25,"output_tokens":1}}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":40}}` + "\n\n"
+	const js = `{"model":"claude-opus-4-8","usage":{"input_tokens":100,"cache_creation_input_tokens":7,"cache_read_input_tokens":25,"output_tokens":40}}`
+
+	for _, tc := range []struct{ name, contentType, body, reqBody string }{
+		{"stream", "text/event-stream", sse, `{"model":"claude-opus-4-8","stream":true}`},
+		{"json", "application/json", js, `{"model":"claude-opus-4-8"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := gzipIfAccepted(t, tc.contentType, tc.body)
+			defer up.Close()
+
+			agentsDir := t.TempDir()
+			mkIter(t, agentsDir, "alice", "alice-1")
+			router := NewRouter()
+			router.SetDefault("anthropic", Upstream{BaseURL: up.URL})
+			var rows []AIRequest
+			p := New(Config{
+				Tokens: NewTokenRegistry(nil), Pricing: &Pricing{table: DefaultPricing()}, Store: newStore(t),
+				Router: router, AgentsDir: agentsDir, Ingest: func(row AIRequest) { rows = append(rows, row) },
+				Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			})
+			tok, err := p.Mint(Attribution{Agent: "alice", Iteration: "alice-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", "/_tariboy/"+tok+"/v1/messages", strings.NewReader(tc.reqBody))
+			req.Header.Set("x-api-key", "real-provider-key")
+			req.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+			rr := httptest.NewRecorder()
+			p.ServeHTTP(rr, req)
+
+			if got := rr.Body.String(); got != tc.body {
+				t.Fatalf("client response differs from upstream: got=%q want=%q", got, tc.body)
+			}
+			if enc := rr.Header().Get("Content-Encoding"); enc != "" {
+				t.Fatalf("client Content-Encoding = %q, want none", enc)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("recorded rows = %d, want 1", len(rows))
+			}
+			row := rows[0]
+			if row.Model != "claude-opus-4-8" || row.InputTokens != 100 || row.OutputTokens != 40 || row.CacheWriteTokens != 7 || row.CacheReadTokens != 25 || row.CostUSD <= 0 {
+				t.Fatalf("recorded metadata = %+v", row)
+			}
+		})
 	}
 }
