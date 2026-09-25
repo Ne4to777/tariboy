@@ -4,7 +4,8 @@
 -- Every status write path (update, claim, a resolved customer wait and a
 -- workflow transition) stamps it through one trigger instead of each statement.
 -- The backfill reads the earliest start the event log still holds; a task whose
--- start was never recorded or was purged stays empty.
+-- start was never recorded or was purged stays empty until its next real move
+-- into in_progress, rather than taking the time of an unrelated edit.
 ALTER TABLE tasks ADD COLUMN started_at TEXT NOT NULL DEFAULT '';
 UPDATE tasks SET started_at = COALESCE((
 	SELECT MIN(e.created_at) FROM task_events e
@@ -14,7 +15,7 @@ UPDATE tasks SET started_at = COALESCE((
 	      AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END, '$.status') = 'in_progress'))
 ), '');
 CREATE TRIGGER tasks_started_at AFTER UPDATE OF status ON tasks
-WHEN NEW.status = 'in_progress' AND NEW.started_at = ''
+WHEN NEW.status = 'in_progress' AND OLD.status <> 'in_progress' AND NEW.started_at = ''
 BEGIN
 	UPDATE tasks SET started_at = NEW.updated_at WHERE id = NEW.id;
 END;

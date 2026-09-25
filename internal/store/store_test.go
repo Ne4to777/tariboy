@@ -912,7 +912,8 @@ func TestTaskStartedAtMigrationBackfillsTheFirstStartFromEvents(t *testing.T) {
 		INSERT INTO tasks(id, task_key, queue_prefix, title, status, author, customer, created_at, updated_at) VALUES
 			(1, 'T-1', 'T', 'reopened', 'done', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u'),
 			(2, 'T-2', 'T', 'claimed', 'in_progress', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u'),
-			(3, 'T-3', 'T', 'never started', 'open', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u');
+			(3, 'T-3', 'T', 'never started', 'open', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u'),
+			(4, 'T-4', 'T', 'start purged', 'in_progress', 'user:u', 'user:u', '2026-01-01T00:00:00Z', 'u');
 		INSERT INTO task_events(event_id, task_id, queue_prefix, kind, actor, payload, created_at) VALUES
 			('e1', 1, 'T', 'task.updated', 'user:u', '{"status":"open"}', '2026-01-02T00:00:00Z'),
 			('e2', 1, 'T', 'task.updated', 'user:u', '{"status":"in_progress"}', '2026-01-03T00:00:00Z'),
@@ -929,7 +930,7 @@ func TestTaskStartedAtMigrationBackfillsTheFirstStartFromEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	want := map[string]string{"T-1": "2026-01-03T00:00:00Z", "T-2": "2026-01-04T00:00:00Z", "T-3": ""}
+	want := map[string]string{"T-1": "2026-01-03T00:00:00Z", "T-2": "2026-01-04T00:00:00Z", "T-3": "", "T-4": ""}
 	for key, started := range want {
 		var got string
 		if err := s.DB.QueryRow(`SELECT started_at FROM tasks WHERE task_key = ?`, key).Scan(&got); err != nil {
@@ -939,7 +940,7 @@ func TestTaskStartedAtMigrationBackfillsTheFirstStartFromEvents(t *testing.T) {
 			t.Fatalf("%s started_at = %q; want %q", key, got, started)
 		}
 	}
-	if _, err := s.DB.Exec(`UPDATE tasks SET status = 'in_progress', updated_at = '2026-02-01T00:00:00Z' WHERE task_key IN ('T-1', 'T-3')`); err != nil {
+	if _, err := s.DB.Exec(`UPDATE tasks SET status = 'in_progress', updated_at = '2026-02-01T00:00:00Z' WHERE task_key IN ('T-1', 'T-3', 'T-4')`); err != nil {
 		t.Fatal(err)
 	}
 	want["T-3"] = "2026-02-01T00:00:00Z"

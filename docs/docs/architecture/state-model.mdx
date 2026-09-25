@@ -234,7 +234,8 @@ path — update, claim, a resolved customer wait and a workflow transition — w
 that write's `updated_at`. Migration `0049` backfilled existing tasks from the
 earliest `task.updated` event with status `in_progress`, `task.claimed` or
 `workflow.transitioned` still in `task_events`; a task with no such event keeps
-an empty value. Export and import carry the field.
+an empty value until its next real move into `in_progress`, rather than taking
+the time of an unrelated edit. Export and import carry the field.
 
 Every task mutation, its event, and any notification intent commit in one
 SQLite transaction. The channel publisher runs afterward from the durable

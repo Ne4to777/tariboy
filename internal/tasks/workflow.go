@@ -56,7 +56,7 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 				"current_revision": task.Revision, "current": task,
 			}}
 	}
-	previousAssignee := task.Assignee
+	previousAssignee, previousStatus := task.Assignee, task.Status
 	if in.Title != nil {
 		task.Title = strings.TrimSpace(*in.Title)
 		if task.Title == "" {
@@ -110,7 +110,7 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 		task.CompletedAt = ""
 	}
 	// The tasks_started_at trigger stores the first start; mirror it in the reply.
-	if task.Status == StatusInProgress && task.StartedAt == "" {
+	if task.Status == StatusInProgress && previousStatus != StatusInProgress && task.StartedAt == "" {
 		task.StartedAt = now
 	}
 	if _, err := tx.ExecContext(ctx, `
