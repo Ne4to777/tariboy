@@ -239,3 +239,14 @@ describe("mergeProxyCalls", () => {
     expect(merged.slice(1).map((r) => r.kind)).toEqual(["event", "proxycall"]);
   });
 });
+
+describe("harness error reasons", () => {
+  it("shows the iteration_finished error next to its status", () => {
+    const d = descriptor(ev({ kind: "iteration_finished", data: JSON.stringify({ status: "harness_error", error: "spawn shim: chdir /x: no such file or directory" }) }));
+    expect(d.preview).toBe("harness_error: spawn shim: chdir /x: no such file or directory");
+  });
+  it("shows the shim_error error field", () => {
+    const d = descriptor(ev({ kind: "shim_error", data: JSON.stringify({ error: "chdir /x: no such file or directory" }) }));
+    expect(d.preview).toBe("chdir /x: no such file or directory");
+  });
+});

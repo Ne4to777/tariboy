@@ -1403,3 +1403,24 @@ func TestRunOnceBeforeLaunchErrorSurfacesReason(t *testing.T) {
 		t.Fatalf("iterations = %+v, want none (the iteration never started)", its)
 	}
 }
+
+func TestRunOnceRecordsHarnessErrorReason(t *testing.T) {
+	for name, r := range map[string]IterationRunner{
+		"runner error": erroringRunner{},
+		"harness exit": &fakeRunner{outcomes: []Outcome{{Status: "harness_error", ExitCode: 3, Error: "harness exited with code 3"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := newEngine(t, baseAgent(), r)
+			var finished map[string]any
+			e.SetAudit(func(typ, _, _ string, data map[string]any) {
+				if typ == "iteration_finished" {
+					finished = data
+				}
+			})
+			e.runOnce(context.Background(), "manual", "")
+			if finished == nil || finished["status"] != "harness_error" || asStr(finished["error"]) == "" {
+				t.Fatalf("iteration_finished = %v, want harness_error with a reason", finished)
+			}
+		})
+	}
+}

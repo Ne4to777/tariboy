@@ -52,6 +52,9 @@ type Outcome struct {
 	Productive bool
 	CPUMs      int
 	MemPeakKB  int
+	// Error is the human-readable reason of a harness_error outcome, recorded
+	// on the iteration_finished audit event.
+	Error string
 }
 
 type IterationRunner interface {
@@ -674,8 +677,12 @@ func (e *Engine) runOnceGuarded(
 			current.EndedAt = end
 			if committed, err := e.store.FinalizeRunningIteration(current); err != nil {
 				e.log.Error("update iteration", "agent", e.ag.Name, "id", id, "err", err)
-			} else if committed && e.iterationCompleted != nil {
-				e.iterationCompleted(e.ag.Name, id)
+			} else if committed {
+				e.emitIteration(id, trigger, "harness_error", "finish")
+				e.recordAudit("iteration_finished", "system", id, map[string]any{"status": "harness_error", "error": runErr.Error()})
+				if e.iterationCompleted != nil {
+					e.iterationCompleted(e.ag.Name, id)
+				}
 			}
 		}
 		e.finishSpan(span, spanStart, id, "harness_error", 0, 0)
@@ -709,7 +716,11 @@ func (e *Engine) runOnceGuarded(
 	}
 	e.log.Info("iteration finished", "agent", e.ag.Name, "id", id, "status", outcome.Status)
 	e.emitIteration(id, trigger, outcome.Status, "finish")
-	e.recordAudit("iteration_finished", "system", id, map[string]any{"status": outcome.Status})
+	finished := map[string]any{"status": outcome.Status}
+	if outcome.Error != "" {
+		finished["error"] = outcome.Error
+	}
+	e.recordAudit("iteration_finished", "system", id, finished)
 
 	e.finishSpan(span, spanStart, id, outcome.Status, outcome.CPUMs, outcome.MemPeakKB)
 	result := e.applyPolicy(outcome)

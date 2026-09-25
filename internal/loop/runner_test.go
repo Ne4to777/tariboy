@@ -1964,3 +1964,39 @@ func TestEnforceSoftTimeoutDoesNotKillAfterConcurrentExtension(t *testing.T) {
 		t.Fatalf("stale deadline persisted marker after extension: %+v", current)
 	}
 }
+
+type failingHarnessSpawner struct{ l agentdir.Layout }
+
+func (s failingHarnessSpawner) Start(_, _ []string, _ string) error {
+	if err := os.MkdirAll(s.l.LogsDir("alice-1"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(s.l.HarnessStderr("alice-1"), []byte("booting\nfatal: model not found\n"), 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(s.l.ResultPath("alice-1"), []byte(`{"exit_code":3}`), 0o600)
+}
+
+func TestRunReportsHarnessExitReason(t *testing.T) {
+	r, ag, l, _ := newRunnerForProxyTest(t, &fakeBinder{base: "http://127.0.0.1:5555"})
+	r.cfg.Spawner = failingHarnessSpawner{l: l}
+	out, err := r.Run(context.Background(), ag, "manual", "alice-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "harness_error" || !strings.Contains(out.Error, "harness exited with code 3") ||
+		!strings.Contains(out.Error, "fatal: model not found") {
+		t.Fatalf("outcome = %+v, want exit code and stderr tail in Error", out)
+	}
+}
+
+func TestRunRejectsMissingAgentCwd(t *testing.T) {
+	r, ag, _, _ := newRunnerForProxyTest(t, &fakeBinder{base: "http://127.0.0.1:5555"})
+	cs := &countingSpawner{}
+	r.cfg.Spawner = cs
+	ag.Cwd = filepath.Join(t.TempDir(), "missing")
+	_, err := r.Run(context.Background(), ag, "manual", "alice-1", "")
+	if err == nil || !strings.Contains(err.Error(), "agent cwd "+ag.Cwd+" does not exist") || cs.starts != 0 {
+		t.Fatalf("err = %v starts = %d, want missing cwd rejected before spawn", err, cs.starts)
+	}
+}

@@ -638,6 +638,9 @@ func (r *ShimRunner) Run(ctx context.Context, ag agent.Agent, trigger, iteration
 	if errors.Is(err, ErrIterationDetached) {
 		detached = true
 	}
+	if err == nil && outcome.Status == "harness_error" {
+		outcome.Error = harnessExitReason(outcome.ExitCode, l.HarnessStderr(iterationID), ag.Interactive)
+	}
 	// No auto-ack of the message batch here (spec §3.2). Deliveries are drained
 	// only by an explicit `tools message processed` (bus.MarkProcessed); anything
 	// unprocessed re-renders next iteration and eventually dead-letters.
@@ -850,6 +853,11 @@ func (r *ShimRunner) prepare(ctx context.Context, tr oteltrace.Tracer, ag agent.
 		return fail(err)
 	}
 	cwd := agentCwd(ag, l)
+	if ag.Cwd != "" {
+		if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
+			return fail(fmt.Errorf("agent cwd %s does not exist", cwd))
+		}
+	}
 
 	// Schema-v1 images retain their legacy CWD-relative skill layout. Schema-v2
 	// skills are attached through the activation-time harness bridge instead.
@@ -1116,6 +1124,32 @@ func readResult(path string) (shim.IterationResult, bool) {
 		return shim.IterationResult{}, false
 	}
 	return res, true
+}
+
+// harnessExitReason describes a non-zero harness exit for the audit log: the
+// exit code plus the tail of harness stderr. Interactive agents get only the
+// code, because their stderr file is a tmux TUI capture.
+func harnessExitReason(exitCode int, stderrPath string, interactive bool) string {
+	reason := fmt.Sprintf("harness exited with code %d", exitCode)
+	if interactive {
+		return reason
+	}
+	b, err := os.ReadFile(stderrPath)
+	if err != nil {
+		return reason
+	}
+	const maxTail = 2048
+	if len(b) > maxTail {
+		b = b[len(b)-maxTail:]
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	if tail := strings.TrimSpace(strings.Join(lines, "\n")); tail != "" {
+		reason += ": " + tail
+	}
+	return reason
 }
 
 func agentCwd(ag agent.Agent, l agentdir.Layout) string {

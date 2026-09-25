@@ -233,11 +233,11 @@ export function descriptor(e: AuditEvent): Descriptor {
       }
     }
     case "iteration_started": return { icon: "▶", label: "iteration", preview: s("trigger"), tone: "neutral" };
-    case "iteration_finished": case "iteration_done": return { icon: "⏹", label: "iteration", preview: s("status"), tone: tone(e.kind, e.data) };
+    case "iteration_finished": case "iteration_done": return { icon: "⏹", label: "iteration", preview: s("error") ? `${s("status")}: ${truncate(s("error"))}` : s("status"), tone: tone(e.kind, e.data) };
     case "launching_harness": return { icon: "🚀", label: "harness", preview: `${s("harness")} (${d.interactive ? "interactive" : "batch"})`, tone: "neutral" };
     case "harness_spawned": return { icon: "🚀", label: "harness", preview: "spawned", tone: "neutral" };
     case "status": return { icon: "📍", label: "status", preview: s("message"), tone: "neutral" };
-    case "shim": case "shim_error": return { icon: "·", label: "shim", preview: truncate(s("line")), tone: tone(e.kind, e.data) };
+    case "shim": case "shim_error": return { icon: "·", label: "shim", preview: truncate(s("line") || s("error")), tone: tone(e.kind, e.data) };
     default: return { icon: "·", label: e.kind, preview: truncate(s("reason") || s("message") || JSON.stringify(d)), tone: tone(e.kind, e.data) };
   }
 }
