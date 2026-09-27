@@ -20,6 +20,11 @@ export function readUiMode(): UiMode {
   }
 }
 
+/** The tab an agent opens on: Chat in Simple, Console in Expert. */
+export function defaultAgentTab(): "chat" | "console" {
+  return readUiMode() === "expert" ? "console" : "chat";
+}
+
 export function writeUiMode(mode: UiMode): void {
   try {
     localStorage.setItem(UI_MODE_KEY, mode);

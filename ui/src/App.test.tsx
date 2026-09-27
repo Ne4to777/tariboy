@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { fetchAllAgents } from "@/lib/aggregate";
 import App from "./App";
+import { UI_MODE_KEY } from "@/lib/uiMode";
 
 vi.mock("@/lib/aggregate", () => ({
   fetchAllAgents: vi.fn(),
@@ -168,10 +169,20 @@ describe("product routing", () => {
   });
 
   it("redirects a legacy terminal route to the Console tab", async () => {
+    localStorage.setItem(UI_MODE_KEY, "expert");
     renderAt("/terminals/local/worker");
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
         "/agents/local/worker/console",
+      ),
+    );
+  });
+
+  it("redirects a legacy terminal route to Chat in Simple mode", async () => {
+    renderAt("/terminals/local/worker");
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/agents/local/worker/chat",
       ),
     );
   });

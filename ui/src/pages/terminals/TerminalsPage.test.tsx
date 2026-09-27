@@ -91,7 +91,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   resetWorkspacesForTest();
-  // Console navigation is Expert behaviour; Simple opens Chat (AgentWorkspace tests).
+  // Console navigation is Expert behaviour; Simple opens Chat.
   localStorage.setItem(UI_MODE_KEY, "expert");
   vi.mocked(apiOn).mockReset().mockResolvedValue(undefined);
   vi.mocked(fetchAllAgents).mockResolvedValue([
@@ -587,6 +587,15 @@ describe("TerminalsPage", () => {
     fireEvent.click(await screen.findByText("a1"));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent("/agents/local/a1/console"),
+    );
+  });
+
+  it("opens a sidebar agent on Chat in Simple mode", async () => {
+    localStorage.setItem(UI_MODE_KEY, "simple");
+    renderAt("/");
+    fireEvent.click(await screen.findByText("a1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/agents/local/a1/chat"),
     );
   });
 

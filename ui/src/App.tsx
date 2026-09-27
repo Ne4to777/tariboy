@@ -30,6 +30,7 @@ import { SidebarStateProvider } from "@/pages/terminals/SidebarStateProvider";
 import { useSharedSidebarState } from "@/pages/terminals/sidebarStateContext";
 import { TitlebarSlotContext } from "@/pages/terminals/titlebarSlotContext";
 import { hostToParam } from "@/lib/terminalsHost";
+import { defaultAgentTab } from "@/lib/uiMode";
 import { CustomerQuestionNotifications } from "@/components/CustomerQuestionNotifications";
 import type { ApiTarget } from "@/lib/api";
 import {
@@ -209,7 +210,7 @@ function PluginSettingsRoute() {
 
 function LegacyTerminalRedirect() {
   const { hostId = "local", agent = "" } = useParams();
-  return <Navigate to={`/agents/${hostId}/${encodeURIComponent(agent)}/console`} replace />;
+  return <Navigate to={`/agents/${hostId}/${encodeURIComponent(agent)}/${defaultAgentTab()}`} replace />;
 }
 
 function CanonicalCreateRedirect() {
@@ -233,7 +234,7 @@ function LegacyAgentRedirect() {
   const tab =
     first === "logs" || first === "usage" ? "activity"
     : first === "settings" ? "configuration"
-    : first === "" ? "console"
+    : first === "" ? defaultAgentTab()
     : "advanced";
   const query = tab === "advanced" && first
     ? `?view=${encodeURIComponent(first)}`

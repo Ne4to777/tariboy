@@ -28,6 +28,7 @@ import { MessagesLiveRefresh } from "./MessagesLiveRefresh";
 import { TitlebarSlotContext } from "./titlebarSlotContext";
 import { WorkspaceManager, WorkspaceSwitcher, type WorkspaceHost } from "./HostWorkspaces";
 import { useWorkspaces, workspaceOf } from "@/lib/workspaces";
+import { defaultAgentTab } from "@/lib/uiMode";
 
 type ServerDialogState = { mode: "add" } | { mode: "edit"; server: DaemonMeta };
 type CreateDialogState = {
@@ -232,7 +233,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
     const first = rankedHosts.find((entry) =>
       workspaceOf(workspaces, entry.host.id) === id && entry.agents.length > 0);
     navigate(first
-      ? `/agents/${hostToParam(first.host.id)}/${encodeURIComponent(first.agents[0].name)}/${agentName && agentTab ? agentTab : "console"}${allTasks ? "?view=all" : ""}`
+      ? `/agents/${hostToParam(first.host.id)}/${encodeURIComponent(first.agents[0].name)}/${agentName && agentTab ? agentTab : defaultAgentTab()}${allTasks ? "?view=all" : ""}`
       : `/${allTasks ? "?view=all" : ""}`);
   };
   const selectedAgent = useMemo(() => {
@@ -322,7 +323,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
           // Switching agents keeps the tab the operator is reading, so the same
           // view answers the same question about the next agent. Any query
           // (a selected task) belongs to the agent being left, so it is dropped.
-          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(a)}/${agentName && agentTab ? agentTab : "console"}${allTasks ? "?view=all" : ""}`);
+          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(a)}/${agentName && agentTab ? agentTab : defaultAgentTab()}${allTasks ? "?view=all" : ""}`);
         }}
         onSelectTeam={(h, team) => {
           navigate(`/agents/${hostToParam(h)}/teams/${encodeURIComponent(team)}`);
@@ -407,7 +408,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
               name={teamName}
               hostLabel={selectedHost.host.label}
               members={selectedHost.agents.filter((agent) => agent.group === teamName)}
-              onOpen={(agent) => navigate(`/agents/${hostToParam(hostId)}/${encodeURIComponent(agent)}/console`)}
+              onOpen={(agent) => navigate(`/agents/${hostToParam(hostId)}/${encodeURIComponent(agent)}/${defaultAgentTab()}`)}
               onManage={() => void selectDaemon(hostId).then((selected) => { if (selected) navigate(`/settings/advanced/groups?team=${encodeURIComponent(teamName)}`); })}
             />
           </RouteHostBoundary>
@@ -453,7 +454,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
           // agent shows up immediately instead of waiting up to 3s for the
           // next poll tick.
           refresh();
-          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(name)}/console`);
+          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(name)}/${defaultAgentTab()}`);
         }}
       />
       {titlebarSlot && createPortal(
