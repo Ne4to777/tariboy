@@ -1,10 +1,10 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Simple shows an ordinary user only the agent's Chat, Tasks and Configuration;
- * Expert shows everything. It belongs to this Desktop WebView, not to a daemon,
- * and anything but an explicit "expert" — including unreadable storage — is
- * Simple. It hides UI only: it is not an access control.
+ * Simple shows an ordinary user only the agent's Chat, Tasks, Console and
+ * Configuration; Expert shows everything. It belongs to this Desktop WebView,
+ * not to a daemon, and anything but an explicit "expert" — including unreadable
+ * storage — is Simple. It hides UI only: it is not an access control.
  */
 export type UiMode = "simple" | "expert";
 

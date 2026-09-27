@@ -207,7 +207,7 @@ export function AppSettings() {
               options={[{ value: "simple", label: "Simple" }, { value: "expert", label: "Expert" }]}
             />
             <p className="text-muted-foreground">
-              Simple shows an agent&apos;s Chat, Tasks and Configuration. Expert shows every tab and chat.
+              Simple shows an agent&apos;s Chat, Tasks, Console and Configuration. Expert shows every tab and chat.
             </p>
           </CardContent>
         </Card>

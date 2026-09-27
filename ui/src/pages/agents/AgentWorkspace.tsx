@@ -37,7 +37,7 @@ const TABS = [
   ["advanced", "Advanced"],
 ] as const;
 // The tabs Simple mode keeps; the header, Start/Stop included, is the same in both.
-const SIMPLE_TABS: ReadonlySet<string> = new Set(["chat", "tasks", "configuration"]);
+const SIMPLE_TABS: ReadonlySet<string> = new Set(["chat", "tasks", "console", "configuration"]);
 
 export default function AgentWorkspace({ hostId, hostLabel, agent, refresh, unavailable = false }: {
   hostId: string;

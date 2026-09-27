@@ -416,20 +416,29 @@ describe("AgentWorkspace in Simple mode", () => {
 
   beforeEach(() => localStorage.removeItem(UI_MODE_KEY));
 
-  it("shows only Chat, Tasks and Configuration with the full header", async () => {
+  it("shows only Chat, Tasks, Console and Configuration with the full header", async () => {
     renderAt("/agents/local/worker/tasks");
 
     const nav = await screen.findByRole("navigation", { name: "Agent workspace" });
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
       "Chat",
       "Tasks",
+      "Console",
       "Configuration",
     ]);
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "IMPROVE-37" })).toBeInTheDocument();
   });
 
-  it.each(["console", "autopilot", "activity", "advanced"])("sends a hidden %s tab to Chat", async (tab) => {
+  it("keeps the Console tab open", async () => {
+    renderAt("/agents/local/worker/console");
+
+    const nav = await screen.findByRole("navigation", { name: "Agent workspace" });
+    expect(within(nav).getByRole("link", { name: "Console" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("location")).toHaveTextContent("/agents/local/worker/console");
+  });
+
+  it.each(["autopilot", "activity", "advanced"])("sends a hidden %s tab to Chat", async (tab) => {
     renderAt(`/agents/local/worker/${tab}`);
 
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/agents/local/worker/chat"));
