@@ -17,6 +17,13 @@ through the daemon's **in-process AI proxy** (`internal/aiproxy`). The proxy:
   be replayed and inspected after the fact. `tariboy daemon reindex` rebuilds
   the `ai_requests` metadata from these transcripts.
 
+The proxy drops the client's `Accept-Encoding` header when it forwards a
+request. The upstream response still travels compressed, but the proxy
+decompresses it, so the usage parser and transcripts see plain SSE or JSON and
+the client receives the response uncompressed over loopback. Passing the
+client's header through would leave compressed bytes that the usage parser
+cannot read, and requests would be recorded with no model, tokens or cost.
+
 Every agent may also have four independent USD limits for the local calendar
 hour, day, ISO week (Monday start), and month. Each defaults to `0` (unlimited)
 and is separate from the legacy global/group rolling budgets. When one or more

@@ -131,7 +131,10 @@ time — the customer’s messages in <code>agent:&lt;a&gt;:inbox</code> and the
 feed reads the chat channel and, for a chat with a <code>legacy_agent</code>, unions that
 projection.</p>
 <p>The sender is <code>data.from</code> when a producer wrote one, else a principal-shaped
-<code>source</code>, else <code>produced_by_agent</code>, else <code>system</code>. Task notifications carry the
+<code>source</code>, else <code>produced_by_agent</code>, else <code>system</code>. It is resolved once, when the
+message is written, into the indexed <code>messages.sender</code> column, so the chat list
+and a chat’s history seek <code>(channel, sender)</code> instead of parsing every message
+body on each read. Task notifications carry the
 principal that caused them in <code>data.from</code> and keep <code>source</code> as <code>system:tasks</code>,
 because moving the author into <code>source</code> would exclude an agent from a
 notification it addressed to itself. An operator publish is attributed to the

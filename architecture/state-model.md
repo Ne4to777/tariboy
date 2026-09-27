@@ -15,7 +15,7 @@ A running iteration also has persisted AI-proxy liveness evidence. Its
 `started_at` time is the initial activity point, and every authenticated request
 for that exact agent and iteration updates `last_ai_request_at` before upstream
 work begins. When the newest point is at least the agent's positive
-`ai_stall_timeout_s` old (300 seconds by default), live state is derived as
+`ai_stall_timeout_s` old (1800 seconds, 30 minutes, by default), live state is derived as
 `error` with an informational `error_reason`; the loop and iteration continue.
 The next attributed request updates the timestamp and live state derives as
 `running` again. Stale requests for older or completed iterations are ignored.
@@ -118,6 +118,13 @@ chat carries `legacy_agent`, and its feed unions the chat channel with the old
 projection of `agent:<a>:inbox` and `user:<customer>` merged by time — and it is
 why a chat can be created, joined and left without risking history.
 
+`messages.sender` is the one derived column: the effective sender (`data.from`,
+else a principal-shaped `source`, else `produced_by_agent`, else `system`),
+stored in the same transaction that inserts the message and indexed with
+`channel` and `ts`. Migration `0048_message_sender.sql` backfilled it for
+existing rows with the same expression. It never changes after the insert, and
+chat reads filter on it instead of parsing `data`.
+
 ## Nightly backup and data retention
 
 Maintenance settings are one JSON value under `maintenance` in `daemon_config`;
@@ -210,7 +217,8 @@ task moves between parents or between daemons. `task_key_aliases` holds the
 numeric keys retired by that migration so they keep resolving; the daemon
 rewrites any remaining numeric key at start, in one transaction that also
 rewrites `agents.current_goal_task_key`. `task_queues.next_number` is left in
-the schema but is no longer read or advanced. Recursive
+the schema but is no longer read or advanced. After that migration the daemon
+inserts the default `TASK` queue when no queue has that prefix. Recursive
 CTEs derive descendants, inherited access, blocking cycles, and active
 descendants without a configured depth limit.
 
@@ -218,6 +226,16 @@ Priority is persisted as a constrained `P0` through `P3` value and defaults to
 `P2`. Every root or nested sibling set has canonical order `(priority,
 position, task key)`. Manual positions are normalized within a priority bucket,
 so reparenting preserves priority without disturbing other buckets.
+
+`started_at` records the first time a task's status became `in_progress` and
+never moves afterward: a task paused in `wait_customer`, reopened, or started
+again keeps it. The `tasks_started_at` trigger stamps it on every status write
+path — update, claim, a resolved customer wait and a workflow transition — with
+that write's `updated_at`. Migration `0049` backfilled existing tasks from the
+earliest `task.updated` event with status `in_progress`, `task.claimed` or
+`workflow.transitioned` still in `task_events`; a task with no such event keeps
+an empty value until its next real move into `in_progress`, rather than taking
+the time of an unrelated edit. Export and import carry the field.
 
 Every task mutation, its event, and any notification intent commit in one
 SQLite transaction. The channel publisher runs afterward from the durable

@@ -61,7 +61,7 @@ disconnecting it does not replace or terminate the harness TUI.
 
 When Tariboy creates an interactive tmux session, it disables tmux mouse
 capture for that exact managed session. This leaves browser and OS text
-selection available in Agent Console and Workspace without changing global tmux
+selection available in Agent Console without changing global tmux
 options, user tmux configuration, or unrelated sessions.
 
 Separating the watchdog from the daemon means a runaway or hung iteration can be

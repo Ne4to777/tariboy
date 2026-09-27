@@ -74,7 +74,9 @@ URLs are rejected and subprocess output is not returned as error text.
 Refresh uses fast-forward-only pull and never resets or stashes user changes.
 Removing a Store preserves local source directories and built images.
 Building a Store with <code>skills-lock.json</code> invokes npm’s skills installer on
-that host before freezing sources. Register and build sources you trust to
+that host before freezing sources. For an image with <code>extends</code>, the installer
+also runs once per layer with a lock, inside an owner-only temporary assembly
+directory under the base directory that is removed after the build. Register and build sources you trust to
 install their declared skills. Store source contents remain outside the
 support-bundle allowlist.</p>
 <p>Database backups written by nightly maintenance live in the owner-only
@@ -104,18 +106,8 @@ verification, Keychain handling, prompt redaction, AI transcript handling, or
 any other support-bundle exclusion. See <a href="/tariboy/docs/architecture/ai-proxy#pricing-catalog-and-request-costs">AI proxy and
 audit</a> for its
 runtime lifecycle.</p>
-<p>Desktop’s Terminal Workspace stores only a validated split layout, active
-<code>{hostId, agentName}</code> identity, and sidebar width/hidden state in WebView
-localStorage. It never stores terminal bytes or scrollback, prompts,
-transcripts, messages, model output, environment values, credentials, secrets,
-cwd/workdir paths, or user files. Closing a tile is UI detach only and cannot
-invoke agent Stop, Kill, or Delete. Workspace also disables the shared
-terminal’s persistent compose draft, so typed operator text and uploaded server
-paths are discarded when their tile unmounts. Pointer coordinates, drop
-previews, and drag ghost labels are transient React state and are never written
-to localStorage.</p>
 <h2 id="alpha-signing-and-gatekeeper"><a class="blume-heading-anchor" href="#alpha-signing-and-gatekeeper">Alpha signing and Gatekeeper</a></h2>
-<p><code>0.70.0</code> is ad-hoc signed, not Developer ID signed or notarized. Verify
+<p><code>0.71.0</code> is ad-hoc signed, not Developer ID signed or notarized. Verify
 <code>SHA256SUMS</code> before opening it. If Gatekeeper blocks it, Control-click only the
 named <code>/Applications/Tariboy.app</code>, choose <strong>Open</strong>, and confirm.
 If Control-click Open is unavailable, use <strong>System Settings → Privacy &amp;

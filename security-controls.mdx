@@ -89,7 +89,9 @@ URLs are rejected and subprocess output is not returned as error text.
 Refresh uses fast-forward-only pull and never resets or stashes user changes.
 Removing a Store preserves local source directories and built images.
 Building a Store with `skills-lock.json` invokes npm's skills installer on
-that host before freezing sources. Register and build sources you trust to
+that host before freezing sources. For an image with `extends`, the installer
+also runs once per layer with a lock, inside an owner-only temporary assembly
+directory under the base directory that is removed after the build. Register and build sources you trust to
 install their declared skills. Store source contents remain outside the
 support-bundle allowlist.
 
@@ -125,20 +127,9 @@ any other support-bundle exclusion. See [AI proxy and
 audit](/docs/architecture/ai-proxy#pricing-catalog-and-request-costs) for its
 runtime lifecycle.
 
-Desktop's Terminal Workspace stores only a validated split layout, active
-`{hostId, agentName}` identity, and sidebar width/hidden state in WebView
-localStorage. It never stores terminal bytes or scrollback, prompts,
-transcripts, messages, model output, environment values, credentials, secrets,
-cwd/workdir paths, or user files. Closing a tile is UI detach only and cannot
-invoke agent Stop, Kill, or Delete. Workspace also disables the shared
-terminal's persistent compose draft, so typed operator text and uploaded server
-paths are discarded when their tile unmounts. Pointer coordinates, drop
-previews, and drag ghost labels are transient React state and are never written
-to localStorage.
-
 ## Alpha signing and Gatekeeper
 
-`0.70.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.71.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &

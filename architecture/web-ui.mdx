@@ -39,12 +39,27 @@ only in Rust process memory, so quitting Desktop discards it. When one is ready,
 the route-independent banner below the titlebar requires an explicit install
 action and reports installation failures for retry.
 
+Application settings also choose the **Interface mode**: **Simple**, the
+default, or **Expert**. The choice persists in WebView localStorage under
+`app:ui-mode:v1` and applies at once; any other stored value, or unavailable
+storage, means Simple. Simple changes only what the agent workspace shows: its
+tabs are **Chat**, **Tasks**, **Console**, and **Configuration**, an agent
+opens on Chat, and a route to a hidden tab (Autopilot, Activity, Advanced) is
+redirected to Chat. Its Chat tab is the personal conversation alone, with the toolbar
+starting at message search: there is no **Chat**/**Channels** switch, no chat
+tablist, and no **New chat**. The sidebar, the server row, and the agent
+header — Start/Stop and Exec included — are the same in both modes. Expert is
+the complete workspace described below. The mode hides interface only; it is
+not an access control, and the API and CLI are unchanged.
+
 The primary agent dialog has **Target**, **Identity**, **Runtime**,
 **Autopilot**, and **Lifecycle** sections. Ordinary creation starts with the
 documented defaults and submits one complete create request; the daemon writes
 one complete stopped agent row. Environment is a string-valued JSON object,
 schema-v1 plugins remain editable, and schema-v2 plugins are image-owned and
-read-only. Bare images force Interactive on and Autopilot off.
+read-only. Bare images force Interactive on and Autopilot off. Selecting an
+image outside clone mode resets Interactive to that image's default: the
+manifest's `harness.interactive` for schema-v1, off for schema-v2.
 
 Ordinary creation defaults the soft iteration timeout to 7,200 seconds (2
 hours) and the hard timeout to 10,800 seconds (3 hours). Clone mode continues
@@ -315,7 +330,9 @@ one the workspace has. Arrow keys move it, Shift increases the step, Home and
 double-click restore its default, and the clamped width persists in the
 versioned WebView localStorage record `tasks:workspace:v1`. Route changes and
 app reloads restore that record; a record written before the task rail was
-removed still reads, its rail width ignored.
+removed still reads, its rail width ignored. A task opened from a chat uses
+the same sheet, separator, and stored width, clamped to the window instead of
+the workspace, so a resize in either place carries over to the other.
 
 One toolbar sits above the table in both places. It carries the search field,
 the `Active | Closed | All` segment, the queue control, the `My tasks` and
@@ -334,8 +351,9 @@ or in the first queue when `All queues` is selected.
 The table header and its rows read one set of column widths, so a column cannot
 drift from its heading. `Key` is a fixed 168px holding the tree indents, the
 chevron and the key, which truncates rather than wrapping; `Task` takes the
-rest. The agent table adds `Pri` and `Duration` — creation to completion, or to
-now while the task is open — and the server table adds `Agent`. There is no
+rest. The agent table adds `Pri` and `Duration` — the task's first move to
+`in_progress` (`started_at`) to completion, or to now while the task is open,
+and `—` for a task never started — and the server table adds `Agent`. There is no
 `Queue` column: the key prefix already names the queue. In the server table the
 header is sticky. The drag grip lives in the row's left padding and appears on
 hover.
@@ -487,14 +505,16 @@ indicator in the UI. `ttasks notifications` remains the operator command for
 reading and dismissing inbox rows. A route-independent coordinator still
 watches every configured host and derives the requesting agent from the
 notification's event actor projection, not from display text; that shared
-attention orders the agent list and marks the agent workspace's **Tasks** tab,
-and customer-authored questions contribute neither.
+attention orders the agent list and puts a count on the agent workspace's
+**Tasks** tab: the number of that agent's tasks with an unread question. The
+count drops only when such a task is opened; reading Chat leaves it unchanged.
+Customer-authored questions contribute to neither.
 
 Each host watcher treats typed HTTP task and notification responses as
 authoritative. The resumable task WebSocket supplies refresh hints and sequence
 progress only; a hint triggers an HTTP refetch and never mutates attention by
 itself. Initial host discovery and recovery both establish a silent baseline:
-current unread questions populate the in-app dots, but do not replay native
+current unread questions populate the in-app indicators, but do not replay native
 notifications. Observed notification IDs and per-host snapshots exist only in
 React memory for the current Desktop session. They are not written to Web
 Storage or persisted by the daemon, and current-session ID tracking deduplicates
@@ -532,20 +552,99 @@ infer phases from title prefixes or assignee. Operator history remains
 available after completion. See
 [Configurable task workflows](/docs/task-workflows).
 
-The navigation hierarchy is **Server → Agent**. The existing Workspace canvas
-and `/workspace` route remain available for retained layouts and possible
-future use, but the titlebar entry and agent-list add/drag gesture are hidden.
+The navigation hierarchy is **Server → Agent**.
 A selected server owns Tasks, Images, Stores, and Settings, and its
 context row remains visible above the selected agent's Chat, Tasks, Console,
 Autopilot, Activity, Configuration, and Advanced tabs. Server-owned routes include
 the explicit host id and fail closed rather than silently falling back to local.
 
+### Host workspaces
+
+A workspace is a named group of registered hosts in one app window. The
+titlebar shows the current workspace right after the sidebar toggle; its menu
+lists every workspace with its host count and a check on the current one,
+followed by **New workspace…** and **Manage workspaces…**. Choosing a workspace
+narrows the agent sidebar, its Servers tab and its `N servers · M agents` footer
+to that workspace's hosts. When the open agent's host is not in it, its first
+agent opens in the same tab, or the island shows `<name> has no agents yet`
+with a **Manage workspaces** button when it has none. Polling continues for
+every host, so the manager can show each host as ready or offline, and agents
+on hosts outside the current workspace keep running: a workspace filters the
+window, it does not isolate hosts.
+
+**Default** is built in and cannot be renamed or deleted, and every host
+belongs to exactly one workspace. A host without an assignment, including a
+newly added one, is in Default. The manager dialog creates a workspace (Enter or
+**Create workspace**; blank names are ignored) and selects it, renames a custom
+workspace as its name is typed without ever saving a blank one, and moves a
+host with **Move to…** and a click on the target workspace. **Delete
+workspace** asks inline and returns the workspace's hosts to Default; deleting
+the current workspace switches to Default.
+
+The state is the WebView localStorage record `app:workspaces:v1`:
+`{version: 1, workspaces: [{id, name}], hostWorkspace: {hostId: workspaceId},
+active}`. It is local to one app installation and is not stored by any daemon,
+because hosts are the set of daemons rather than something one daemon owns.
+Malformed storage, unavailable storage, or an assignment to a missing workspace
+falls back to Default.
+
+### All tasks
+
+The titlebar carries an `Agents | All tasks` segment next to the sidebar
+toggle. The view is the `view=all` query on the current route, so it survives
+a reload, Back returns to the previous view, and the selected agent's path is
+untouched. Arrow keys move between the two options. In **All tasks** the
+agent sidebar stays and the island shows one task table for every server
+instead of the agent's header and tabs.
+
+The table reads `GET /api/tasks` from the local daemon and every registered
+server in parallel, each with its own token, following each server's cursor to
+the end; a server's live `/api/tasks/ws` hint re-reads only that server. A
+server that the sidebar cannot reach, or whose read fails, keeps the other
+servers' rows and adds a `<server> unavailable · Retry` line above the table.
+Rows are keyed by server and task key, because a transferred task keeps its key
+and leaves a cancelled copy behind. Trees are built within each server; roots
+are ordered newest-updated first. Six skeleton rows show until the first
+server answers.
+
+Columns are Key, Task, Pri, Agent, Server, Status and Updated. There is no drag
+reparenting or inline child creation, since neither crosses servers. The
+toolbar keeps search and `Active | Closed | All` (sent to every server), merges
+queues by prefix across servers with summed counts, and adds a `Server` menu
+in which an unavailable server is marked and cannot be picked. When an agent is
+selected in the sidebar the table is narrowed to tasks assigned to it on its
+server; the chip's × clears the narrowing for that history entry without
+deselecting the agent, and picking an agent again narrows again. Search,
+status, queue and server are kept per session in `tasks:all-view:v1` and the
+shared `tasks:queue-filter:v1`. An empty result says **No tasks** with
+**Clear filters**. **New task** asks for an agent (labelled with its server) —
+preselected from the chip — and a queue of that agent's server, and creates
+the task there assigned to that agent.
+
+Selecting a row opens the task in place in the same detail sheet, loaded from
+its own server. There the Assignee field lists every agent on every server as
+`agent · server`. Choosing an agent on another server saves any other edits
+on the source, then moves the tree with the export and import of
+[the server-to-server transfer](/docs/tasks#moving-a-task-to-another-server).
+The root is imported unassigned, so an agent of the same name on the target
+cannot take it first, and is then assigned by an ordinary update, which sends
+the agent its assignment notification; subtasks keep their assignees. The
+import's refusals — no queue with that prefix, a taken key, or a
+workflow-managed queue — leave the task on its server and are shown as an
+error. Once the import succeeds the task lives on the target: if cancelling the
+source copy or assigning the agent then fails, the error names the step and
+the sheet still follows the task to its new server. A choice whose server
+stopped answering between the pick and **Save** is refused rather than written
+as an assignee.
+
 Selecting another agent in the sidebar while an agent workspace is open keeps
 the tab that is currently open and shows the new agent in it, so the same view
 answers the same question about the next agent. An unknown tab still falls back
-to Console, and a selected task in the Tasks query is dropped because it belongs
-to the agent being left. Selecting an agent from anywhere else — Workspace, a
-team, or a freshly created agent — still opens Console.
+to Console (Chat in Simple mode), and a selected task in the Tasks query is dropped because it belongs
+to the agent being left. Selecting an agent from anywhere else — a
+team, or a freshly created agent — still opens Console, or Chat in Simple mode.
+Start and Stop live only in the agent header; a stopped agent's Console says so
+without a Start button of its own.
 
 When a known explicit server route temporarily loses its tunnel or its
 authoritative aggregate refresh fails, the Desktop retains its last successful
@@ -556,18 +655,6 @@ agent rows are read-only until a successful refresh for the same host replaces
 the snapshot atomically. Cached data is never persisted or used as an API
 target, other server navigation remains available, and a missing host still
 fails closed rather than falling back to local authority.
-
-Workspace is one global tmux-like canvas whose split tree may contain
-several interactive agent terminals from different hosts. Existing tiles can
-be moved by their headers and resized with splitters. Tariboy owns this pointer
-gesture rather than relying on WebView HTML5 `DataTransfer`. Crossing the drag
-threshold reveals a half-pane left/right/top/bottom preview;
-edge distance is normalized to the current leaf dimensions so wide and tall
-panes dock consistently. Dropping relative to any leaf creates arbitrarily
-nested horizontal and vertical splits without center tab stacks. Pointer
-capture keeps the gesture alive outside its source; focus loss, capture loss,
-tab hiding, Escape, and unmount all cancel it without changing the layout.
-Adding the same `{hostId, agentName}` again focuses its existing tile.
 
 For a stopped agent, Configuration offers a working-directory editor backed by
 the selected host's directory autocomplete. Saving changes the CWD used by the
@@ -597,11 +684,11 @@ restart, takes effect the next time the agent starts, and leaves the timing of
 any restart under the operator's control.
 
 The Loop section also exposes the positive **AI inactivity timeout** in seconds,
-defaulting to 300 per agent. When a running iteration exceeds it without an
+defaulting to 1800 (30 minutes) per agent. When a running iteration exceeds it without an
 attributed AI-proxy request, the daemon reports `state=error` and the Autopilot
 card shows the informational reason. The controls remain enabled because this
 signal does not stop the loop or iteration; the next request restores
-`state=running`. Ordinary creation starts at 300 seconds, while Clone preserves
+`state=running`. Ordinary creation starts at 1800 seconds, while Clone preserves
 the source agent's configured value.
 
 The **Messages & Channels** section uses that same draft contract for the
@@ -640,48 +727,26 @@ the sidebar icon is immediately after their reserved area in the global
 toolbar. The application-settings action and theme icon are the other titlebar
 controls. Empty toolbar space is draggable, while daemon status banners remain
 below the titlebar so they never cover the native controls. The shared
-persisted sidebar state drives both that control and the server/agent shell. Workspace
-xterm content is square and flush inside the single FlexLayout pane border; the
-standalone Agent Console keeps its rounded chrome.
-
-Each Workspace tile resolves its own explicit daemon target and owns an
-independent terminal WebSocket; it never relies on the globally active daemon.
-Closing or rearranging a tile detaches only that browser terminal client and
-never stops, kills, deletes, or otherwise mutates the agent or tmux session.
-Stopped tiles offer Start. Unavailable identities remain in the split tree with
-Retry, Replace, and Close, while non-interactive identities point to
-Configuration.
-
-The versioned WebView localStorage value `terminals:workspace:v1` persists the
-FlexLayout split tree, active terminal identity, and sidebar width/hidden state.
-Terminal nodes contain only `hostId` and `agentName`. The UI validates schema,
-size, weights, node shape, and duplicate identities before loading. It never
-persists terminal bytes or scrollback, prompts, transcripts, messages, output,
-environment values, tokens, secrets, cwd/workdir paths, or user files.
-Malformed state resets only the Workspace canvas.
+persisted sidebar state drives both that control and the server/agent shell. Its
+width and hidden state persist in the WebView localStorage record
+`terminals:sidebar:v1`; the first read after upgrading adopts the sidebar saved by
+the removed terminal canvas under `terminals:workspace:v1`.
 
 **Send files**, Attach, and terminal file drops all upload through the selected
 server's streaming `PUT /api/files/raw` endpoint, with a 1 GiB per-file limit.
 The browser sends each `File` as the raw request body instead of building a
 base64/JSON copy. Uploads have no agent destination: files live in the server's
 shared files directory and the returned absolute paths are inserted into the
-corresponding draft or reported when no terminal is available. Console and
-every Workspace tile retain their explicit host target.
-
-The terminal compose draft is also non-persistent in Workspace: typed text and
-uploaded server paths remain in the mounted tile's memory and are discarded
-when the tile or Workspace unmounts. This differs intentionally from the
-single-Agent Console's retained draft.
+corresponding draft or reported when no terminal is available. Console retains
+its explicit host target.
 
 The agent Console mounts xterm.js and opens
 `GET /api/agents/{name}/terminal`. Binary WebSocket frames carry PTY bytes;
 text frames carry resize messages. A host or agent route change tears down the
 old socket and dials the newly selected target without stopping the tmux
-session. Leaving Workspace similarly unmounts its terminal clients; returning
-reattaches to the live tmux sessions without restoring xterm scrollback.
+session.
 
-Console and Workspace share one terminal implementation, so the web-link gesture
-behaves identically in both. Explicit `http://` and `https://` text in terminal
+In the Console terminal, explicit `http://` and `https://` text in terminal
 output opens in the operator's default browser on **Command-click** (the `Meta`
 modifier); this is a Desktop capability and does nothing in a plain browser. An
 ordinary click never opens anything and keeps xterm's own focus, selection and
@@ -692,9 +757,8 @@ natively before anything is launched — the terminal matcher and the WebView ar
 not the authorization boundary. A link that cannot be opened reports a fixed
 message that never contains the terminal line.
 
-The shared terminal toolbar exposes **Scrollback** on both the Console and every
-Workspace tile. It sends tmux's own copy-mode entry sequence (prefix `C-b`, then
-`[`) over the existing byte socket, and the toolbar then shows a persistent
+The Console terminal toolbar exposes **Scrollback**. It sends tmux's own
+copy-mode entry sequence (prefix `C-b`, then `[`) over the existing byte socket, and the toolbar then shows a persistent
 **Viewing scrollback** status, **Page back** / **Page forward** controls, and an
 **Exit scrollback** button. Live keystrokes are paused while tmux is in
 copy-mode; press `q` in the focused terminal or use **Exit scrollback** to

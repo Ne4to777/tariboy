@@ -9,6 +9,12 @@ sidebar:
 Native Tasks are Tariboy's central work domain. They live in the existing
 host-local `tariboyd.db`.
 
+Every daemon starts with a default `TASK` queue named `Tasks`, with no owners
+and no responsible agent. At each start `tariboyd` creates it when it is
+absent and records a `task.queue_created` event by `system:tariboyd`; an
+existing `TASK` queue, whether created by hand or by compose, is left
+unchanged.
+
 Queues may optionally activate a [configurable task workflow](/docs/task-workflows).
 New tasks in such a queue automatically pin that published version; callers do
 not pass a workflow when creating the task. Existing tasks and unmanaged queues
@@ -227,7 +233,8 @@ authoritative selected view, and realtime refreshes retain that selection.
 Each host keeps its own tasks, so work that belongs with another host is moved
 rather than copied by hand. In the task panel, the actions menu beside **Save
 task** opens **Move to another server**, which lists the other hosts registered
-in the desktop app.
+in the desktop app. In the **All tasks** view, choosing an assignee that runs on
+another server performs the same move and then assigns the task there.
 
 The desktop app is the only component authenticated against both daemons, so it
 drives the move: it exports the task tree from this daemon, imports it into the

@@ -109,6 +109,14 @@ exports and filesystem effects from either script are available to that
 iteration. A source-time failure prevents the harness from starting and follows
 the existing `harness_error` lifecycle.
 
+Every `harness_error` iteration writes an `iteration_finished` audit event whose
+`error` field states the cause, which the audit timeline shows next to the
+status. A failure before or during launch, such as a configured agent CWD that
+does not exist, records the launch error. A harness that exits non-zero records
+`harness exited with code N`, followed for non-interactive agents by up to 20
+trailing lines (2 KiB) of `harness.stderr.log`; the same lines are already teed
+into the audit as `harness_output`.
+
 For a schema-v2 image with skills, the launch gate prepares
 `agents/<agent>/image-bridges/<image-digest>/<adapter-contract>/<harness>` before
 an image is promoted or an iteration row is created. The bridge contains copied

@@ -314,7 +314,7 @@ npm ci
 
 `make check` then covers `npx tsc -b`, `npm run lint`, `npm test`, and
 `npm run branding:check`. `make full-check` adds `npm run test:tasks-browser`
-and `npm run test:workspace-browser`, and builds the desktop bundle through its
+and `npm run test:images-browser`, and builds the desktop bundle through its
 desktop step. Run any of them directly under `ui/` while iterating:
 
 ```bash
@@ -323,7 +323,7 @@ npm test
 npm run lint
 npm run build:desktop
 npm run test:tasks-browser
-npm run test:workspace-browser
+npm run test:images-browser
 npm run build:store
 ```
 
@@ -347,13 +347,9 @@ and is not part of either entry point. Tasks changes also run
 `test:tasks-browser`: it builds the current working-tree daemon, starts it with
 temporary isolated state, and exercises real Tasks API, WebSocket updates,
 `PATCH` saves, and pointer drag-and-drop through a test-only Vite fixture.
-Terminal Workspace changes also run `test:workspace-browser`: it starts a
-test-only Vite fixture with
-stopped fake agents, exercises the production sidebar and pane headers with
-real `page.mouse` pointer gestures, validates nested edge previews and splitter
-geometry, and never connects to or starts a daemon. Synthetic
-`DragEvent`/`DataTransfer` dispatch is not an acceptable replacement because it
-does not reproduce Tauri WKWebView dragging.
+Images workspace layout changes also run `test:images-browser`: it starts a
+test-only Vite fixture with fake image data and never connects to or starts a
+daemon.
 
 ### Rust desktop host
 

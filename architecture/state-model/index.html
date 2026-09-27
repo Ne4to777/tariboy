@@ -8,7 +8,7 @@ plus what is actually running, not persisted.</p>
 <code>started_at</code> time is the initial activity point, and every authenticated request
 for that exact agent and iteration updates <code>last_ai_request_at</code> before upstream
 work begins. When the newest point is at least the agent’s positive
-<code>ai_stall_timeout_s</code> old (300 seconds by default), live state is derived as
+<code>ai_stall_timeout_s</code> old (1800 seconds, 30 minutes, by default), live state is derived as
 <code>error</code> with an informational <code>error_reason</code>; the loop and iteration continue.
 The next attributed request updates the timestamp and live state derives as
 <code>running</code> again. Stale requests for older or completed iterations are ignored.</p>
@@ -92,6 +92,12 @@ what lets pre-chats history stay readable without a data migration — a persona
 chat carries <code>legacy_agent</code>, and its feed unions the chat channel with the old
 projection of <code>agent:&lt;a&gt;:inbox</code> and <code>user:&lt;customer&gt;</code> merged by time — and it is
 why a chat can be created, joined and left without risking history.</p>
+<p><code>messages.sender</code> is the one derived column: the effective sender (<code>data.from</code>,
+else a principal-shaped <code>source</code>, else <code>produced_by_agent</code>, else <code>system</code>),
+stored in the same transaction that inserts the message and indexed with
+<code>channel</code> and <code>ts</code>. Migration <code>0048_message_sender.sql</code> backfilled it for
+existing rows with the same expression. It never changes after the insert, and
+chat reads filter on it instead of parsing <code>data</code>.</p>
 <h2 id="nightly-backup-and-data-retention"><a class="blume-heading-anchor" href="#nightly-backup-and-data-retention">Nightly backup and data retention</a></h2>
 <p>Maintenance settings are one JSON value under <code>maintenance</code> in <code>daemon_config</code>;
 a missing value means the defaults: enabled, 03 daemon-host local time, 7
@@ -173,12 +179,22 @@ task moves between parents or between daemons. <code>task_key_aliases</code> hol
 numeric keys retired by that migration so they keep resolving; the daemon
 rewrites any remaining numeric key at start, in one transaction that also
 rewrites <code>agents.current_goal_task_key</code>. <code>task_queues.next_number</code> is left in
-the schema but is no longer read or advanced. Recursive
+the schema but is no longer read or advanced. After that migration the daemon
+inserts the default <code>TASK</code> queue when no queue has that prefix. Recursive
 CTEs derive descendants, inherited access, blocking cycles, and active
 descendants without a configured depth limit.</p>
 <p>Priority is persisted as a constrained <code>P0</code> through <code>P3</code> value and defaults to
 <code>P2</code>. Every root or nested sibling set has canonical order <code>(priority, position, task key)</code>. Manual positions are normalized within a priority bucket,
 so reparenting preserves priority without disturbing other buckets.</p>
+<p><code>started_at</code> records the first time a task’s status became <code>in_progress</code> and
+never moves afterward: a task paused in <code>wait_customer</code>, reopened, or started
+again keeps it. The <code>tasks_started_at</code> trigger stamps it on every status write
+path — update, claim, a resolved customer wait and a workflow transition — with
+that write’s <code>updated_at</code>. Migration <code>0049</code> backfilled existing tasks from the
+earliest <code>task.updated</code> event with status <code>in_progress</code>, <code>task.claimed</code> or
+<code>workflow.transitioned</code> still in <code>task_events</code>; a task with no such event keeps
+an empty value until its next real move into <code>in_progress</code>, rather than taking
+the time of an unrelated edit. Export and import carry the field.</p>
 <p>Every task mutation, its event, and any notification intent commit in one
 SQLite transaction. The channel publisher runs afterward from the durable
 outbox with a stable message idempotency key. The WebSocket is only a delivery

@@ -535,6 +535,13 @@ through the daemon's **in-process AI proxy** (`internal/aiproxy`). The proxy:
   be replayed and inspected after the fact. `tariboy daemon reindex` rebuilds
   the `ai_requests` metadata from these transcripts.
 
+The proxy drops the client's `Accept-Encoding` header when it forwards a
+request. The upstream response still travels compressed, but the proxy
+decompresses it, so the usage parser and transcripts see plain SSE or JSON and
+the client receives the response uncompressed over loopback. Passing the
+client's header through would leave compressed bytes that the usage parser
+cannot read, and requests would be recorded with no model, tokens or cost.
+
 Every agent may also have four independent USD limits for the local calendar
 hour, day, ISO week (Monday start), and month. Each defaults to `0` (unlimited)
 and is separate from the legacy global/group rolling budgets. When one or more
@@ -767,6 +774,14 @@ Immediately before the unchanged harness command is executed, Bash sources
 exports and filesystem effects from either script are available to that
 iteration. A source-time failure prevents the harness from starting and follows
 the existing `harness_error` lifecycle.
+
+Every `harness_error` iteration writes an `iteration_finished` audit event whose
+`error` field states the cause, which the audit timeline shows next to the
+status. A failure before or during launch, such as a configured agent CWD that
+does not exist, records the launch error. A harness that exits non-zero records
+`harness exited with code N`, followed for non-interactive agents by up to 20
+trailing lines (2 KiB) of `harness.stderr.log`; the same lines are already teed
+into the audit as `harness_output`.
 
 For a schema-v2 image with skills, the launch gate prepares
 `agents/<agent>/image-bridges/<image-digest>/<adapter-contract>/<harness>` before
@@ -1027,7 +1042,10 @@ feed reads the chat channel and, for a chat with a `legacy_agent`, unions that
 projection.
 
 The sender is `data.from` when a producer wrote one, else a principal-shaped
-`source`, else `produced_by_agent`, else `system`. Task notifications carry the
+`source`, else `produced_by_agent`, else `system`. It is resolved once, when the
+message is written, into the indexed `messages.sender` column, so the chat list
+and a chat's history seek `(channel, sender)` instead of parsing every message
+body on each read. Task notifications carry the
 principal that caused them in `data.from` and keep `source` as `system:tasks`,
 because moving the author into `source` would exclude an agent from a
 notification it addressed to itself. An operator publish is attributed to the
@@ -1167,7 +1185,7 @@ disconnecting it does not replace or terminate the harness TUI.
 
 When Tariboy creates an interactive tmux session, it disables tmux mouse
 capture for that exact managed session. This leaves browser and OS text
-selection available in Agent Console and Workspace without changing global tmux
+selection available in Agent Console without changing global tmux
 options, user tmux configuration, or unrelated sessions.
 
 Separating the watchdog from the daemon means a runaway or hung iteration can be
@@ -1246,7 +1264,7 @@ A running iteration also has persisted AI-proxy liveness evidence. Its
 `started_at` time is the initial activity point, and every authenticated request
 for that exact agent and iteration updates `last_ai_request_at` before upstream
 work begins. When the newest point is at least the agent's positive
-`ai_stall_timeout_s` old (300 seconds by default), live state is derived as
+`ai_stall_timeout_s` old (1800 seconds, 30 minutes, by default), live state is derived as
 `error` with an informational `error_reason`; the loop and iteration continue.
 The next attributed request updates the timestamp and live state derives as
 `running` again. Stale requests for older or completed iterations are ignored.
@@ -1349,6 +1367,13 @@ chat carries `legacy_agent`, and its feed unions the chat channel with the old
 projection of `agent:<a>:inbox` and `user:<customer>` merged by time — and it is
 why a chat can be created, joined and left without risking history.
 
+`messages.sender` is the one derived column: the effective sender (`data.from`,
+else a principal-shaped `source`, else `produced_by_agent`, else `system`),
+stored in the same transaction that inserts the message and indexed with
+`channel` and `ts`. Migration `0048_message_sender.sql` backfilled it for
+existing rows with the same expression. It never changes after the insert, and
+chat reads filter on it instead of parsing `data`.
+
 ## Nightly backup and data retention
 
 Maintenance settings are one JSON value under `maintenance` in `daemon_config`;
@@ -1441,7 +1466,8 @@ task moves between parents or between daemons. `task_key_aliases` holds the
 numeric keys retired by that migration so they keep resolving; the daemon
 rewrites any remaining numeric key at start, in one transaction that also
 rewrites `agents.current_goal_task_key`. `task_queues.next_number` is left in
-the schema but is no longer read or advanced. Recursive
+the schema but is no longer read or advanced. After that migration the daemon
+inserts the default `TASK` queue when no queue has that prefix. Recursive
 CTEs derive descendants, inherited access, blocking cycles, and active
 descendants without a configured depth limit.
 
@@ -1449,6 +1475,16 @@ Priority is persisted as a constrained `P0` through `P3` value and defaults to
 `P2`. Every root or nested sibling set has canonical order `(priority,
 position, task key)`. Manual positions are normalized within a priority bucket,
 so reparenting preserves priority without disturbing other buckets.
+
+`started_at` records the first time a task's status became `in_progress` and
+never moves afterward: a task paused in `wait_customer`, reopened, or started
+again keeps it. The `tasks_started_at` trigger stamps it on every status write
+path — update, claim, a resolved customer wait and a workflow transition — with
+that write's `updated_at`. Migration `0049` backfilled existing tasks from the
+earliest `task.updated` event with status `in_progress`, `task.claimed` or
+`workflow.transitioned` still in `task_events`; a task with no such event keeps
+an empty value until its next real move into `in_progress`, rather than taking
+the time of an unrelated edit. Export and import carry the field.
 
 Every task mutation, its event, and any notification intent commit in one
 SQLite transaction. The channel publisher runs afterward from the durable
@@ -1606,12 +1642,27 @@ only in Rust process memory, so quitting Desktop discards it. When one is ready,
 the route-independent banner below the titlebar requires an explicit install
 action and reports installation failures for retry.
 
+Application settings also choose the **Interface mode**: **Simple**, the
+default, or **Expert**. The choice persists in WebView localStorage under
+`app:ui-mode:v1` and applies at once; any other stored value, or unavailable
+storage, means Simple. Simple changes only what the agent workspace shows: its
+tabs are **Chat**, **Tasks**, **Console**, and **Configuration**, an agent
+opens on Chat, and a route to a hidden tab (Autopilot, Activity, Advanced) is
+redirected to Chat. Its Chat tab is the personal conversation alone, with the toolbar
+starting at message search: there is no **Chat**/**Channels** switch, no chat
+tablist, and no **New chat**. The sidebar, the server row, and the agent
+header — Start/Stop and Exec included — are the same in both modes. Expert is
+the complete workspace described below. The mode hides interface only; it is
+not an access control, and the API and CLI are unchanged.
+
 The primary agent dialog has **Target**, **Identity**, **Runtime**,
 **Autopilot**, and **Lifecycle** sections. Ordinary creation starts with the
 documented defaults and submits one complete create request; the daemon writes
 one complete stopped agent row. Environment is a string-valued JSON object,
 schema-v1 plugins remain editable, and schema-v2 plugins are image-owned and
-read-only. Bare images force Interactive on and Autopilot off.
+read-only. Bare images force Interactive on and Autopilot off. Selecting an
+image outside clone mode resets Interactive to that image's default: the
+manifest's `harness.interactive` for schema-v1, off for schema-v2.
 
 Ordinary creation defaults the soft iteration timeout to 7,200 seconds (2
 hours) and the hard timeout to 10,800 seconds (3 hours). Clone mode continues
@@ -1882,7 +1933,9 @@ one the workspace has. Arrow keys move it, Shift increases the step, Home and
 double-click restore its default, and the clamped width persists in the
 versioned WebView localStorage record `tasks:workspace:v1`. Route changes and
 app reloads restore that record; a record written before the task rail was
-removed still reads, its rail width ignored.
+removed still reads, its rail width ignored. A task opened from a chat uses
+the same sheet, separator, and stored width, clamped to the window instead of
+the workspace, so a resize in either place carries over to the other.
 
 One toolbar sits above the table in both places. It carries the search field,
 the `Active | Closed | All` segment, the queue control, the `My tasks` and
@@ -1901,8 +1954,9 @@ or in the first queue when `All queues` is selected.
 The table header and its rows read one set of column widths, so a column cannot
 drift from its heading. `Key` is a fixed 168px holding the tree indents, the
 chevron and the key, which truncates rather than wrapping; `Task` takes the
-rest. The agent table adds `Pri` and `Duration` — creation to completion, or to
-now while the task is open — and the server table adds `Agent`. There is no
+rest. The agent table adds `Pri` and `Duration` — the task's first move to
+`in_progress` (`started_at`) to completion, or to now while the task is open,
+and `—` for a task never started — and the server table adds `Agent`. There is no
 `Queue` column: the key prefix already names the queue. In the server table the
 header is sticky. The drag grip lives in the row's left padding and appears on
 hover.
@@ -2054,14 +2108,16 @@ indicator in the UI. `ttasks notifications` remains the operator command for
 reading and dismissing inbox rows. A route-independent coordinator still
 watches every configured host and derives the requesting agent from the
 notification's event actor projection, not from display text; that shared
-attention orders the agent list and marks the agent workspace's **Tasks** tab,
-and customer-authored questions contribute neither.
+attention orders the agent list and puts a count on the agent workspace's
+**Tasks** tab: the number of that agent's tasks with an unread question. The
+count drops only when such a task is opened; reading Chat leaves it unchanged.
+Customer-authored questions contribute to neither.
 
 Each host watcher treats typed HTTP task and notification responses as
 authoritative. The resumable task WebSocket supplies refresh hints and sequence
 progress only; a hint triggers an HTTP refetch and never mutates attention by
 itself. Initial host discovery and recovery both establish a silent baseline:
-current unread questions populate the in-app dots, but do not replay native
+current unread questions populate the in-app indicators, but do not replay native
 notifications. Observed notification IDs and per-host snapshots exist only in
 React memory for the current Desktop session. They are not written to Web
 Storage or persisted by the daemon, and current-session ID tracking deduplicates
@@ -2099,20 +2155,99 @@ infer phases from title prefixes or assignee. Operator history remains
 available after completion. See
 [Configurable task workflows](/docs/task-workflows).
 
-The navigation hierarchy is **Server → Agent**. The existing Workspace canvas
-and `/workspace` route remain available for retained layouts and possible
-future use, but the titlebar entry and agent-list add/drag gesture are hidden.
+The navigation hierarchy is **Server → Agent**.
 A selected server owns Tasks, Images, Stores, and Settings, and its
 context row remains visible above the selected agent's Chat, Tasks, Console,
 Autopilot, Activity, Configuration, and Advanced tabs. Server-owned routes include
 the explicit host id and fail closed rather than silently falling back to local.
 
+### Host workspaces
+
+A workspace is a named group of registered hosts in one app window. The
+titlebar shows the current workspace right after the sidebar toggle; its menu
+lists every workspace with its host count and a check on the current one,
+followed by **New workspace…** and **Manage workspaces…**. Choosing a workspace
+narrows the agent sidebar, its Servers tab and its `N servers · M agents` footer
+to that workspace's hosts. When the open agent's host is not in it, its first
+agent opens in the same tab, or the island shows `<name> has no agents yet`
+with a **Manage workspaces** button when it has none. Polling continues for
+every host, so the manager can show each host as ready or offline, and agents
+on hosts outside the current workspace keep running: a workspace filters the
+window, it does not isolate hosts.
+
+**Default** is built in and cannot be renamed or deleted, and every host
+belongs to exactly one workspace. A host without an assignment, including a
+newly added one, is in Default. The manager dialog creates a workspace (Enter or
+**Create workspace**; blank names are ignored) and selects it, renames a custom
+workspace as its name is typed without ever saving a blank one, and moves a
+host with **Move to…** and a click on the target workspace. **Delete
+workspace** asks inline and returns the workspace's hosts to Default; deleting
+the current workspace switches to Default.
+
+The state is the WebView localStorage record `app:workspaces:v1`:
+`{version: 1, workspaces: [{id, name}], hostWorkspace: {hostId: workspaceId},
+active}`. It is local to one app installation and is not stored by any daemon,
+because hosts are the set of daemons rather than something one daemon owns.
+Malformed storage, unavailable storage, or an assignment to a missing workspace
+falls back to Default.
+
+### All tasks
+
+The titlebar carries an `Agents | All tasks` segment next to the sidebar
+toggle. The view is the `view=all` query on the current route, so it survives
+a reload, Back returns to the previous view, and the selected agent's path is
+untouched. Arrow keys move between the two options. In **All tasks** the
+agent sidebar stays and the island shows one task table for every server
+instead of the agent's header and tabs.
+
+The table reads `GET /api/tasks` from the local daemon and every registered
+server in parallel, each with its own token, following each server's cursor to
+the end; a server's live `/api/tasks/ws` hint re-reads only that server. A
+server that the sidebar cannot reach, or whose read fails, keeps the other
+servers' rows and adds a `<server> unavailable · Retry` line above the table.
+Rows are keyed by server and task key, because a transferred task keeps its key
+and leaves a cancelled copy behind. Trees are built within each server; roots
+are ordered newest-updated first. Six skeleton rows show until the first
+server answers.
+
+Columns are Key, Task, Pri, Agent, Server, Status and Updated. There is no drag
+reparenting or inline child creation, since neither crosses servers. The
+toolbar keeps search and `Active | Closed | All` (sent to every server), merges
+queues by prefix across servers with summed counts, and adds a `Server` menu
+in which an unavailable server is marked and cannot be picked. When an agent is
+selected in the sidebar the table is narrowed to tasks assigned to it on its
+server; the chip's × clears the narrowing for that history entry without
+deselecting the agent, and picking an agent again narrows again. Search,
+status, queue and server are kept per session in `tasks:all-view:v1` and the
+shared `tasks:queue-filter:v1`. An empty result says **No tasks** with
+**Clear filters**. **New task** asks for an agent (labelled with its server) —
+preselected from the chip — and a queue of that agent's server, and creates
+the task there assigned to that agent.
+
+Selecting a row opens the task in place in the same detail sheet, loaded from
+its own server. There the Assignee field lists every agent on every server as
+`agent · server`. Choosing an agent on another server saves any other edits
+on the source, then moves the tree with the export and import of
+[the server-to-server transfer](/docs/tasks#moving-a-task-to-another-server).
+The root is imported unassigned, so an agent of the same name on the target
+cannot take it first, and is then assigned by an ordinary update, which sends
+the agent its assignment notification; subtasks keep their assignees. The
+import's refusals — no queue with that prefix, a taken key, or a
+workflow-managed queue — leave the task on its server and are shown as an
+error. Once the import succeeds the task lives on the target: if cancelling the
+source copy or assigning the agent then fails, the error names the step and
+the sheet still follows the task to its new server. A choice whose server
+stopped answering between the pick and **Save** is refused rather than written
+as an assignee.
+
 Selecting another agent in the sidebar while an agent workspace is open keeps
 the tab that is currently open and shows the new agent in it, so the same view
 answers the same question about the next agent. An unknown tab still falls back
-to Console, and a selected task in the Tasks query is dropped because it belongs
-to the agent being left. Selecting an agent from anywhere else — Workspace, a
-team, or a freshly created agent — still opens Console.
+to Console (Chat in Simple mode), and a selected task in the Tasks query is dropped because it belongs
+to the agent being left. Selecting an agent from anywhere else — a
+team, or a freshly created agent — still opens Console, or Chat in Simple mode.
+Start and Stop live only in the agent header; a stopped agent's Console says so
+without a Start button of its own.
 
 When a known explicit server route temporarily loses its tunnel or its
 authoritative aggregate refresh fails, the Desktop retains its last successful
@@ -2123,18 +2258,6 @@ agent rows are read-only until a successful refresh for the same host replaces
 the snapshot atomically. Cached data is never persisted or used as an API
 target, other server navigation remains available, and a missing host still
 fails closed rather than falling back to local authority.
-
-Workspace is one global tmux-like canvas whose split tree may contain
-several interactive agent terminals from different hosts. Existing tiles can
-be moved by their headers and resized with splitters. Tariboy owns this pointer
-gesture rather than relying on WebView HTML5 `DataTransfer`. Crossing the drag
-threshold reveals a half-pane left/right/top/bottom preview;
-edge distance is normalized to the current leaf dimensions so wide and tall
-panes dock consistently. Dropping relative to any leaf creates arbitrarily
-nested horizontal and vertical splits without center tab stacks. Pointer
-capture keeps the gesture alive outside its source; focus loss, capture loss,
-tab hiding, Escape, and unmount all cancel it without changing the layout.
-Adding the same `{hostId, agentName}` again focuses its existing tile.
 
 For a stopped agent, Configuration offers a working-directory editor backed by
 the selected host's directory autocomplete. Saving changes the CWD used by the
@@ -2164,11 +2287,11 @@ restart, takes effect the next time the agent starts, and leaves the timing of
 any restart under the operator's control.
 
 The Loop section also exposes the positive **AI inactivity timeout** in seconds,
-defaulting to 300 per agent. When a running iteration exceeds it without an
+defaulting to 1800 (30 minutes) per agent. When a running iteration exceeds it without an
 attributed AI-proxy request, the daemon reports `state=error` and the Autopilot
 card shows the informational reason. The controls remain enabled because this
 signal does not stop the loop or iteration; the next request restores
-`state=running`. Ordinary creation starts at 300 seconds, while Clone preserves
+`state=running`. Ordinary creation starts at 1800 seconds, while Clone preserves
 the source agent's configured value.
 
 The **Messages & Channels** section uses that same draft contract for the
@@ -2207,48 +2330,26 @@ the sidebar icon is immediately after their reserved area in the global
 toolbar. The application-settings action and theme icon are the other titlebar
 controls. Empty toolbar space is draggable, while daemon status banners remain
 below the titlebar so they never cover the native controls. The shared
-persisted sidebar state drives both that control and the server/agent shell. Workspace
-xterm content is square and flush inside the single FlexLayout pane border; the
-standalone Agent Console keeps its rounded chrome.
-
-Each Workspace tile resolves its own explicit daemon target and owns an
-independent terminal WebSocket; it never relies on the globally active daemon.
-Closing or rearranging a tile detaches only that browser terminal client and
-never stops, kills, deletes, or otherwise mutates the agent or tmux session.
-Stopped tiles offer Start. Unavailable identities remain in the split tree with
-Retry, Replace, and Close, while non-interactive identities point to
-Configuration.
-
-The versioned WebView localStorage value `terminals:workspace:v1` persists the
-FlexLayout split tree, active terminal identity, and sidebar width/hidden state.
-Terminal nodes contain only `hostId` and `agentName`. The UI validates schema,
-size, weights, node shape, and duplicate identities before loading. It never
-persists terminal bytes or scrollback, prompts, transcripts, messages, output,
-environment values, tokens, secrets, cwd/workdir paths, or user files.
-Malformed state resets only the Workspace canvas.
+persisted sidebar state drives both that control and the server/agent shell. Its
+width and hidden state persist in the WebView localStorage record
+`terminals:sidebar:v1`; the first read after upgrading adopts the sidebar saved by
+the removed terminal canvas under `terminals:workspace:v1`.
 
 **Send files**, Attach, and terminal file drops all upload through the selected
 server's streaming `PUT /api/files/raw` endpoint, with a 1 GiB per-file limit.
 The browser sends each `File` as the raw request body instead of building a
 base64/JSON copy. Uploads have no agent destination: files live in the server's
 shared files directory and the returned absolute paths are inserted into the
-corresponding draft or reported when no terminal is available. Console and
-every Workspace tile retain their explicit host target.
-
-The terminal compose draft is also non-persistent in Workspace: typed text and
-uploaded server paths remain in the mounted tile's memory and are discarded
-when the tile or Workspace unmounts. This differs intentionally from the
-single-Agent Console's retained draft.
+corresponding draft or reported when no terminal is available. Console retains
+its explicit host target.
 
 The agent Console mounts xterm.js and opens
 `GET /api/agents/{name}/terminal`. Binary WebSocket frames carry PTY bytes;
 text frames carry resize messages. A host or agent route change tears down the
 old socket and dials the newly selected target without stopping the tmux
-session. Leaving Workspace similarly unmounts its terminal clients; returning
-reattaches to the live tmux sessions without restoring xterm scrollback.
+session.
 
-Console and Workspace share one terminal implementation, so the web-link gesture
-behaves identically in both. Explicit `http://` and `https://` text in terminal
+In the Console terminal, explicit `http://` and `https://` text in terminal
 output opens in the operator's default browser on **Command-click** (the `Meta`
 modifier); this is a Desktop capability and does nothing in a plain browser. An
 ordinary click never opens anything and keeps xterm's own focus, selection and
@@ -2259,9 +2360,8 @@ natively before anything is launched — the terminal matcher and the WebView ar
 not the authorization boundary. A link that cannot be opened reports a fixed
 message that never contains the terminal line.
 
-The shared terminal toolbar exposes **Scrollback** on both the Console and every
-Workspace tile. It sends tmux's own copy-mode entry sequence (prefix `C-b`, then
-`[`) over the existing byte socket, and the toolbar then shows a persistent
+The Console terminal toolbar exposes **Scrollback**. It sends tmux's own
+copy-mode entry sequence (prefix `C-b`, then `[`) over the existing byte socket, and the toolbar then shows a persistent
 **Viewing scrollback** status, **Page back** / **Page forward** controls, and an
 **Exit scrollback** button. Live keystrokes are paused while tmux is in
 copy-mode; press `q` in the focused terminal or use **Exit scrollback** to
@@ -3101,7 +3201,7 @@ npm ci
 
 `make check` then covers `npx tsc -b`, `npm run lint`, `npm test`, and
 `npm run branding:check`. `make full-check` adds `npm run test:tasks-browser`
-and `npm run test:workspace-browser`, and builds the desktop bundle through its
+and `npm run test:images-browser`, and builds the desktop bundle through its
 desktop step. Run any of them directly under `ui/` while iterating:
 
 ```bash
@@ -3110,7 +3210,7 @@ npm test
 npm run lint
 npm run build:desktop
 npm run test:tasks-browser
-npm run test:workspace-browser
+npm run test:images-browser
 npm run build:store
 ```
 
@@ -3134,13 +3234,9 @@ and is not part of either entry point. Tasks changes also run
 `test:tasks-browser`: it builds the current working-tree daemon, starts it with
 temporary isolated state, and exercises real Tasks API, WebSocket updates,
 `PATCH` saves, and pointer drag-and-drop through a test-only Vite fixture.
-Terminal Workspace changes also run `test:workspace-browser`: it starts a
-test-only Vite fixture with
-stopped fake agents, exercises the production sidebar and pane headers with
-real `page.mouse` pointer gestures, validates nested edge previews and splitter
-geometry, and never connects to or starts a daemon. Synthetic
-`DragEvent`/`DataTransfer` dispatch is not an acceptable replacement because it
-does not reproduce Tauri WKWebView dragging.
+Images workspace layout changes also run `test:images-browser`: it starts a
+test-only Vite fixture with fake image data and never connects to or starts a
+daemon.
 
 ### Rust desktop host
 
@@ -3689,13 +3785,16 @@ combine a Store selector with `--path`.
 
 Store Build advances every requested tag atomically after validation. Existing
 version tags and `latest` do not require a different target name or tag. The
-Store's **Target image name** and **Target image tag** fields remain optional:
-leave them blank for the defaults or use them to publish another ref. An
+Store page's **Build** always publishes the defaults; to publish another name or
+tag, use `tariboy image build <store>/<image> --name NAME --tag TAG`. An
 explicit tag publishes only that ref; other refs remain unchanged.
 
 Before freezing sources, the daemon runs `npx skills experimental_install` in
 the Store root when `skills-lock.json` exists there, then in the image directory
-when it has a separate lock. The installer rewrites `skills-lock.json`, so the
+when it has a separate lock. An image with `extends` instead installs each
+layer's lock in its temporary assembly directory, in layer order, after the
+Store root (see [Inherit from other images](#inherit-from-other-images-with-extends)).
+The installer rewrites `skills-lock.json`, so the
 daemon restores each lock file's original content after it runs, including on
 failure; a build leaves the Store checkout's tracked lock files unchanged and
 does not block a later Refresh. An installation failure stops the build before
@@ -3747,7 +3846,7 @@ images and historical iterations simply omit the version.
 ## Schema version 2
 
 Schema v2 is strict and accepts only `schema_version`, `image_version`,
-`plugins`, `skills`, and `prompts`:
+`extends`, `plugins`, `skills`, and `prompts`:
 
 ```yaml
 schema_version: 2
@@ -3799,6 +3898,61 @@ source-relative directory already declared in `skills`; validation reads that
 directory directly and build reads its frozen snapshot. Other traversal,
 symlinks, missing files, non-regular files, and oversized prompt files are
 rejected.
+
+### Inherit from other images with `extends`
+
+`extends` lists parent image source directories. Each entry uses `./`, `../`,
+or an absolute path and resolves from the directory of the image that declares
+it:
+
+```yaml
+schema_version: 2
+image_version: 0.2.0
+extends:
+  - ../basic
+  - ../reviewer-base
+plugins: [{name: jira}]
+skills: [{dir: ./skills/triage}]
+prompts: [{file: ./instructions.md}]
+```
+
+The build expands the chain into ordered layers: every parent's own parents
+first, then the parent, in `extends` order, with the child last. An image
+reached twice, such as a shared ancestor, is used once at its first position.
+A cycle, a missing parent, a parent that is not schema v2, and a chain deeper
+than 16 images are rejected before anything is built.
+
+Tariboy assembles the layers in a temporary owner-only directory under
+`<base-dir>/image-build/` and removes it after the build:
+
+1. Each layer's directory is copied over the previous one. A file with the
+   same path is replaced; other files remain.
+2. If the copied layer contains `skills-lock.json`, a Store build runs
+   `npx skills experimental_install` in the assembly directory and then removes
+   the lock. A later layer's install replaces a skill of the same name
+   installed by an earlier one.
+3. Each layer's `./` prompt files are copied to
+   `./.tariboy-extends/<layer>/<path>`, so equal prompt paths from different
+   images stay separate files. The reserved `.tariboy-extends` directory must
+   not exist in a source.
+4. `../` skill and prompt paths are rewritten to absolute paths from the
+   layer's original directory.
+
+The lists are then concatenated in layer order. `plugins` keep the first entry
+of each name. `skills` keep the **last** entry of each skill name, so a child
+replaces a parent's skill. `prompts` keep the first entry of each runtime
+placeholder and of each file content, so a shared ancestor's prompt is not
+repeated. The child's `image_version` names the result. The merged
+`Tariboyfile.yaml` has no `extends` and is validated, frozen, and built
+exactly like any other source; Validate shows the merged result.
+
+`extends` works for `--path` builds, Store builds, and an agent's own image
+builds. Only Store builds run the per-layer skills installer; for the other
+builds, restore the lock in each image directory first. Managed image sources
+and team imports reject `extends`. A child can only append: it cannot remove
+an inherited entry or insert a prompt between a parent's prompts. Layering
+never deletes files, so a skill directory copied from a parent keeps files the
+child's copy lacks. Rebuilding a parent does not rebuild its children.
 
 ## Packaged Agent Skills
 
@@ -5681,13 +5835,13 @@ image.
 # Ten-minute quickstart
 Source: https://alekzonder.github.io/tariboy/quickstart
 
-This path is for the `0.70.0` alpha on an Apple Silicon Mac.
+This path is for the `0.71.0` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.70.0_aarch64.dmg`;
+- a verified `Tariboy_0.71.0_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -5784,16 +5938,6 @@ same tmux session.
 
 To try an ordinary terminal with no image instructions, create a separate agent
 from `bare:latest`. Bare requires Interactive and keeps Autopilot off.
-
-For several sessions at once, switch from **Agent** to **Workspace**. Drag
-interactive agents from the left list onto a large left/right/top/bottom
-preview, or drag an existing pane by its header. Dropping against any pane can
-build nested horizontal and vertical splits; separators remain resizable.
-Tiles can belong to different hosts. Adding the same agent again focuses its
-existing tile. Use the sidebar icon next to the macOS window controls to use
-the full window; its width, hidden state, and split layout survive an app
-restart. Closing a Workspace tile only detaches that UI terminal and does not
-stop the agent.
 
 ## 6. Turn on Autopilot
 
@@ -6981,7 +7125,9 @@ URLs are rejected and subprocess output is not returned as error text.
 Refresh uses fast-forward-only pull and never resets or stashes user changes.
 Removing a Store preserves local source directories and built images.
 Building a Store with `skills-lock.json` invokes npm's skills installer on
-that host before freezing sources. Register and build sources you trust to
+that host before freezing sources. For an image with `extends`, the installer
+also runs once per layer with a lock, inside an owner-only temporary assembly
+directory under the base directory that is removed after the build. Register and build sources you trust to
 install their declared skills. Store source contents remain outside the
 support-bundle allowlist.
 
@@ -7017,20 +7163,9 @@ any other support-bundle exclusion. See [AI proxy and
 audit](/docs/architecture/ai-proxy#pricing-catalog-and-request-costs) for its
 runtime lifecycle.
 
-Desktop's Terminal Workspace stores only a validated split layout, active
-`{hostId, agentName}` identity, and sidebar width/hidden state in WebView
-localStorage. It never stores terminal bytes or scrollback, prompts,
-transcripts, messages, model output, environment values, credentials, secrets,
-cwd/workdir paths, or user files. Closing a tile is UI detach only and cannot
-invoke agent Stop, Kill, or Delete. Workspace also disables the shared
-terminal's persistent compose draft, so typed operator text and uploaded server
-paths are discarded when their tile unmounts. Pointer coordinates, drop
-previews, and drag ghost labels are transient React state and are never written
-to localStorage.
-
 ## Alpha signing and Gatekeeper
 
-`0.70.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.71.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &
@@ -7127,7 +7262,7 @@ Source: https://alekzonder.github.io/tariboy/support
    selected harness on the remote host.
 5. For a daemon older than `0.10.1`, finish active work before updating it.
 
-The app and bundled daemons must report `0.70.0`. Resolve a local mismatch with
+The app and bundled daemons must report `0.71.0`. Resolve a local mismatch with
 the menu-bar **Install/Update CLI** action and a remote mismatch with the host
 Update action; do not copy or repoint individual binaries.
 
@@ -8051,6 +8186,12 @@ Source: https://alekzonder.github.io/tariboy/tasks
 Native Tasks are Tariboy's central work domain. They live in the existing
 host-local `tariboyd.db`.
 
+Every daemon starts with a default `TASK` queue named `Tasks`, with no owners
+and no responsible agent. At each start `tariboyd` creates it when it is
+absent and records a `task.queue_created` event by `system:tariboyd`; an
+existing `TASK` queue, whether created by hand or by compose, is left
+unchanged.
+
 Queues may optionally activate a [configurable task workflow](/docs/task-workflows).
 New tasks in such a queue automatically pin that published version; callers do
 not pass a workflow when creating the task. Existing tasks and unmanaged queues
@@ -8269,7 +8410,8 @@ authoritative selected view, and realtime refreshes retain that selection.
 Each host keeps its own tasks, so work that belongs with another host is moved
 rather than copied by hand. In the task panel, the actions menu beside **Save
 task** opens **Move to another server**, which lists the other hosts registered
-in the desktop app.
+in the desktop app. In the **All tasks** view, choosing an assignee that runs on
+another server performs the same move and then assigns the task there.
 
 The desktop app is the only component authenticated against both daemons, so it
 drives the move: it exports the task tree from this daemon, imports it into the

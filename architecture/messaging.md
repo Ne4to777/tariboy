@@ -135,7 +135,10 @@ feed reads the chat channel and, for a chat with a `legacy_agent`, unions that
 projection.
 
 The sender is `data.from` when a producer wrote one, else a principal-shaped
-`source`, else `produced_by_agent`, else `system`. Task notifications carry the
+`source`, else `produced_by_agent`, else `system`. It is resolved once, when the
+message is written, into the indexed `messages.sender` column, so the chat list
+and a chat's history seek `(channel, sender)` instead of parsing every message
+body on each read. Task notifications carry the
 principal that caused them in `data.from` and keep `source` as `system:tasks`,
 because moving the author into `source` would exclude an agent from a
 notification it addressed to itself. An operator publish is attributed to the

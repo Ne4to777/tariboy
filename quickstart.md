@@ -6,13 +6,13 @@ sidebar:
   icon: rocket
 ---
 
-This path is for the `0.70.0` alpha on an Apple Silicon Mac.
+This path is for the `0.71.0` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.70.0_aarch64.dmg`;
+- a verified `Tariboy_0.71.0_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -109,16 +109,6 @@ same tmux session.
 
 To try an ordinary terminal with no image instructions, create a separate agent
 from `bare:latest`. Bare requires Interactive and keeps Autopilot off.
-
-For several sessions at once, switch from **Agent** to **Workspace**. Drag
-interactive agents from the left list onto a large left/right/top/bottom
-preview, or drag an existing pane by its header. Dropping against any pane can
-build nested horizontal and vertical splits; separators remain resizable.
-Tiles can belong to different hosts. Adding the same agent again focuses its
-existing tile. Use the sidebar icon next to the macOS window controls to use
-the full window; its width, hidden state, and split layout survive an app
-restart. Closing a Workspace tile only detaches that UI terminal and does not
-stop the agent.
 
 ## 6. Turn on Autopilot
 

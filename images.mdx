@@ -203,13 +203,16 @@ combine a Store selector with `--path`.
 
 Store Build advances every requested tag atomically after validation. Existing
 version tags and `latest` do not require a different target name or tag. The
-Store's **Target image name** and **Target image tag** fields remain optional:
-leave them blank for the defaults or use them to publish another ref. An
+Store page's **Build** always publishes the defaults; to publish another name or
+tag, use `tariboy image build <store>/<image> --name NAME --tag TAG`. An
 explicit tag publishes only that ref; other refs remain unchanged.
 
 Before freezing sources, the daemon runs `npx skills experimental_install` in
 the Store root when `skills-lock.json` exists there, then in the image directory
-when it has a separate lock. The installer rewrites `skills-lock.json`, so the
+when it has a separate lock. An image with `extends` instead installs each
+layer's lock in its temporary assembly directory, in layer order, after the
+Store root (see [Inherit from other images](#inherit-from-other-images-with-extends)).
+The installer rewrites `skills-lock.json`, so the
 daemon restores each lock file's original content after it runs, including on
 failure; a build leaves the Store checkout's tracked lock files unchanged and
 does not block a later Refresh. An installation failure stops the build before
@@ -261,7 +264,7 @@ images and historical iterations simply omit the version.
 ## Schema version 2
 
 Schema v2 is strict and accepts only `schema_version`, `image_version`,
-`plugins`, `skills`, and `prompts`:
+`extends`, `plugins`, `skills`, and `prompts`:
 
 ```yaml
 schema_version: 2
@@ -313,6 +316,61 @@ source-relative directory already declared in `skills`; validation reads that
 directory directly and build reads its frozen snapshot. Other traversal,
 symlinks, missing files, non-regular files, and oversized prompt files are
 rejected.
+
+### Inherit from other images with `extends`
+
+`extends` lists parent image source directories. Each entry uses `./`, `../`,
+or an absolute path and resolves from the directory of the image that declares
+it:
+
+```yaml
+schema_version: 2
+image_version: 0.2.0
+extends:
+  - ../basic
+  - ../reviewer-base
+plugins: [{name: jira}]
+skills: [{dir: ./skills/triage}]
+prompts: [{file: ./instructions.md}]
+```
+
+The build expands the chain into ordered layers: every parent's own parents
+first, then the parent, in `extends` order, with the child last. An image
+reached twice, such as a shared ancestor, is used once at its first position.
+A cycle, a missing parent, a parent that is not schema v2, and a chain deeper
+than 16 images are rejected before anything is built.
+
+Tariboy assembles the layers in a temporary owner-only directory under
+`<base-dir>/image-build/` and removes it after the build:
+
+1. Each layer's directory is copied over the previous one. A file with the
+   same path is replaced; other files remain.
+2. If the copied layer contains `skills-lock.json`, a Store build runs
+   `npx skills experimental_install` in the assembly directory and then removes
+   the lock. A later layer's install replaces a skill of the same name
+   installed by an earlier one.
+3. Each layer's `./` prompt files are copied to
+   `./.tariboy-extends/<layer>/<path>`, so equal prompt paths from different
+   images stay separate files. The reserved `.tariboy-extends` directory must
+   not exist in a source.
+4. `../` skill and prompt paths are rewritten to absolute paths from the
+   layer's original directory.
+
+The lists are then concatenated in layer order. `plugins` keep the first entry
+of each name. `skills` keep the **last** entry of each skill name, so a child
+replaces a parent's skill. `prompts` keep the first entry of each runtime
+placeholder and of each file content, so a shared ancestor's prompt is not
+repeated. The child's `image_version` names the result. The merged
+`Tariboyfile.yaml` has no `extends` and is validated, frozen, and built
+exactly like any other source; Validate shows the merged result.
+
+`extends` works for `--path` builds, Store builds, and an agent's own image
+builds. Only Store builds run the per-layer skills installer; for the other
+builds, restore the lock in each image directory first. Managed image sources
+and team imports reject `extends`. A child can only append: it cannot remove
+an inherited entry or insert a prompt between a parent's prompts. Layering
+never deletes files, so a skill directory copied from a parent keeps files the
+child's copy lacks. Rebuilding a parent does not rebuild its children.
 
 ## Packaged Agent Skills
 
