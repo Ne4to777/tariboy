@@ -312,8 +312,8 @@ function CreateAgentDialogForm({
                 : current.effort,
             interactive:
               next.schema_version === 1
-                ? (next.harness?.interactive ?? current.interactive)
-                : current.interactive,
+                ? (next.harness?.interactive ?? false)
+                : false,
           }));
         }
       })

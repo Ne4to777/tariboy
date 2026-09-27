@@ -435,6 +435,36 @@ it("keeps schema-v1 plugins editable and makes schema-v2 plugins image-owned", a
   );
 });
 
+it("resets Interactive to the schema-v2 default after a bare image was selected", async () => {
+  vi.mocked(listImages).mockResolvedValue({
+    images: [
+      { name: "bare", tag: "latest", bare: true },
+      { name: "worker", tag: "v2", bare: false },
+    ],
+    count: 2,
+  });
+  vi.mocked(imageManifestGet).mockImplementation(async (ref) =>
+    ref === "worker:v2"
+      ? manifest({ schema_version: 2, tag: "v2" })
+      : manifest({
+          name: "bare",
+          tag: "latest",
+          bare: true,
+          harness: { type: "codex", interactive: true },
+        }),
+  );
+  renderDialog({ imageRef: "bare:latest" });
+  expect(await screen.findByText("Terminal only")).toBeInTheDocument();
+  expect(screen.getByRole("switch", { name: "Interactive" })).toBeChecked();
+
+  fireEvent.focus(screen.getByLabelText("image"));
+  fireEvent.click(await screen.findByRole("option", { name: "worker:v2" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Terminal only")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole("switch", { name: "Interactive" })).not.toBeChecked();
+});
+
 it("rejects invalid environment JSON before creation", async () => {
   renderDialog();
   await screen.findByDisplayValue("o3");
