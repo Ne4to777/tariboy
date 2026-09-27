@@ -1,3 +1,52 @@
+## [0.71.0] - 2026-09-27
+
+### Added
+
+- Simple and Expert interface modes in Application settings. Simple (the
+  default) shows an agent's Chat, Tasks, Console and Configuration tabs and
+  opens agents on Chat; Expert keeps the full workspace.
+- An Agents | All tasks switch in the titlebar. All tasks lists every
+  server's tasks in one view and moving a task to another agent moves it to
+  that agent's server.
+- Host workspaces: a titlebar switcher narrows the sidebar, Servers tab and
+  footer counts to a workspace's hosts, and a manager creates, renames and
+  deletes workspaces and moves hosts between them. Default holds every
+  unassigned host, so no migration is needed.
+- Schema-v2 Tariboyfiles can inherit parent images through `extends`.
+- The Tasks tab shows the number of tasks with an unread agent question.
+- The audit log records the cause of `harness_error` iterations (launch
+  error, or exit code and stderr tail).
+- tariboyd creates a default `TASK` queue on start when none exists.
+
+### Changed
+
+- Task Duration is measured from the first move to `in_progress`
+  (`started_at`, backfilled by migration 0049) instead of creation.
+- New agents default to a 30-minute AI inactivity timeout (was 5 minutes);
+  existing agents keep their value.
+- Start and Stop live only in the agent header.
+- The chat task drawer resizes and shares its width with the Tasks sheet.
+- Chat history and chat list reads use a stored, indexed message sender
+  (migration 0048) and agent budget windows are summed in one indexed
+  query, removing multi-second API stalls on large databases. A chat with
+  no messages reports an empty last sender instead of `system`.
+
+### Removed
+
+- The terminal Workspace canvas at `/workspace`. Its saved sidebar width and
+  hidden state carry over.
+- The Store Build name and tag inputs; use `tariboy image build --name` and
+  `--tag` for overrides.
+
+### Fixed
+
+- AI proxy usage is recorded for gzip-compressed upstream responses
+  (previously counted without model, tokens or cost).
+- New agent resets Interactive to the selected image's default.
+- Reordering servers inside a workspace keeps hidden hosts' order.
+
+[0.71.0]: https://github.com/alekzonder/tariboy/compare/v0.70.0...v0.71.0
+
 ## [0.70.0] - 2026-09-24
 
 ### Added

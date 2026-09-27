@@ -72,7 +72,7 @@ Transfer runnable images separately; keep their original sources for rebuilds.
 
 ## Get started
 
-You need an Apple Silicon Mac running macOS 12+, `Tariboy_0.70.0_aarch64.dmg` and
+You need an Apple Silicon Mac running macOS 12+, `Tariboy_0.71.0_aarch64.dmg` and
 its checksums from the matching GitHub Release, and a supported harness
 installed where your agent will run. Remote use also needs a Linux x86_64 host
 reachable through your existing SSH configuration.
