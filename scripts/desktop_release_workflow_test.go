@@ -160,3 +160,68 @@ func TestDesktopReleaseWorkflowPublishesCheckedTagArtifacts(t *testing.T) {
 		t.Fatal("release workflow has no pinned Cargo cache for the desktop target")
 	}
 }
+
+// A tag run restores only caches of its own tag or of main, so the release must
+// restore the cache main warms and never save its own.
+func TestDesktopReleaseRestoresTheCacheWarmedOnMain(t *testing.T) {
+	root := repositoryRoot(t)
+	type step struct {
+		Uses string         `yaml:"uses"`
+		With map[string]any `yaml:"with"`
+		Run  string         `yaml:"run"`
+	}
+	var release, warm struct {
+		On   map[string]any `yaml:"on"`
+		Jobs map[string]struct {
+			RunsOn string `yaml:"runs-on"`
+			Steps  []step `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	for path, workflow := range map[string]any{"desktop-release.yml": &release, "desktop-cache.yml": &warm} {
+		contents, err := os.ReadFile(filepath.Join(root, ".github", "workflows", path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if err := yaml.Unmarshal(contents, workflow); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+	}
+	cache := func(steps []step) map[string]any {
+		for _, s := range steps {
+			if strings.HasPrefix(s.Uses, "Swatinem/rust-cache@") {
+				return s.With
+			}
+		}
+		t.Fatal("no Cargo cache step")
+		return nil
+	}
+
+	releaseCache := cache(release.Jobs["release"].Steps)
+	if releaseCache["shared-key"] != "desktop-release" || releaseCache["save-if"] != false {
+		t.Fatalf("release Cargo cache = %v, want shared-key desktop-release and save-if false", releaseCache)
+	}
+
+	push, _ := warm.On["push"].(map[string]any)
+	if branches, _ := push["branches"].([]any); len(branches) != 1 || branches[0] != "main" {
+		t.Fatalf("cache warm push branches = %v, want [main]", push["branches"])
+	}
+	job, ok := warm.Jobs["warm"]
+	if !ok || job.RunsOn != release.Jobs["release"].RunsOn {
+		t.Fatalf("cache warm job must run on the release runner %q", release.Jobs["release"].RunsOn)
+	}
+	warmCache := cache(job.Steps)
+	if warmCache["shared-key"] != "desktop-release" || warmCache["workspaces"] != releaseCache["workspaces"] {
+		t.Fatalf("cache warm Cargo cache = %v, want the release key and workspace", warmCache)
+	}
+	if _, ok := warmCache["save-if"]; ok {
+		t.Fatalf("cache warm Cargo cache must save, got save-if %v", warmCache["save-if"])
+	}
+	var commands []string
+	for _, s := range job.Steps {
+		commands = append(commands, s.Run)
+	}
+	// The cargo invocation `cargo tauri build` runs for a release.
+	if all := strings.Join(commands, "\n"); !strings.Contains(all, "cargo build --bins --release --locked --features tauri/custom-protocol") {
+		t.Fatalf("cache warm job does not build like cargo tauri build:\n%s", all)
+	}
+}

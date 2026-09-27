@@ -34,6 +34,10 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: desktop/src-tauri -> target
+          # Restore the cache desktop-cache.yml saves on main; a cache saved
+          # under this tag would be invisible to every later tag.
+          shared-key: desktop-release
+          save-if: false
 
       - name: Verify tag version
         run: |
