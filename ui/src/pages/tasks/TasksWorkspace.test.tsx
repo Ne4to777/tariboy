@@ -701,6 +701,40 @@ describe("TasksWorkspace", () => {
     expect(within(await screen.findByTestId("task-row-TEST-1")).queryByRole("img", { name: "Unread question notification for TEST-1" })).toBeNull()
   })
 
+  it("keeps a closed task with an unread question in Active until it is opened", async () => {
+    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done" }
+    api.getTask.mockImplementation(async (key: string) => key === closed.key ? { ...detail, task: closed } : detail)
+    api.listTaskNotifications.mockResolvedValue({
+      notifications: [notification, { ...notification, id: "closed-question", task_key: closed.key }],
+      count: 2,
+    })
+
+    render(<TasksWorkspace />)
+
+    const closedRow = await screen.findByTestId("task-row-TEST-9")
+    expect(await within(closedRow).findByRole("img", { name: "Unread question notification for TEST-9" })).toBeVisible()
+    expect(api.getTask).toHaveBeenCalledWith("TEST-9", undefined)
+    expect(api.getTask).not.toHaveBeenCalledWith("TEST-1", undefined)
+    await userEvent.click(within(closedRow).getByRole("button", { name: /Closed with a question/ }))
+    await waitFor(() => expect(api.markTaskNotificationRead).toHaveBeenCalledWith("closed-question", undefined))
+  })
+
+  it("pulls in only the scoped agent's closed questions", async () => {
+    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done" }
+    api.getTask.mockImplementation(async (key: string) => key === closed.key ? { ...detail, task: closed } : detail)
+    api.listTaskNotifications.mockResolvedValue({
+      notifications: [{ ...notification, id: "other-agent", task_key: closed.key, requesting_principal: "agent:triager" }],
+      count: 1,
+    })
+
+    render(<TasksWorkspace scopeAgent="worker" />)
+
+    await screen.findByTestId("task-row-TEST-1")
+    await act(async () => {})
+    expect(screen.queryByTestId("task-row-TEST-9")).toBeNull()
+    expect(api.getTask).not.toHaveBeenCalled()
+  })
+
   it("has no notification inbox of its own: the task rows carry the questions", async () => {
     render(<TasksWorkspace />)
 

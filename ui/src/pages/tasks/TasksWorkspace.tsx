@@ -469,11 +469,44 @@ function TasksWorkspaceContent({
     [notifications],
   )
 
+  // An unread question stays until its task is opened, but the Active list
+  // leaves out closed tasks, so their questions would count in the badge with
+  // no row to open. Such tasks are read one by one and kept in the Active list
+  // until their question is read.
+  const [questionTasks, setQuestionTasks] = useState<Task[]>([])
+  const missingQuestionKeys = useMemo(() => {
+    if (statusView !== "active" || query || view !== "") return []
+    const listed = new Set(tasks.map((task) => task.key))
+    return [...new Set(notifications
+      .filter((notification) => notification.type === "task.question" && !notification.read_at && !notification.dismissed_at
+        && (!scopeAgent || notification.requesting_principal === actorAgent(scopeAgent)))
+      .map((notification) => notification.task_key))]
+      .filter((key) => !listed.has(key))
+      .sort()
+  }, [notifications, query, scopeAgent, statusView, tasks, view])
+  const missingQuestionKey = missingQuestionKeys.join(" ")
+  useEffect(() => {
+    if (!missingQuestionKey) return
+    let current = true
+    void Promise.all(missingQuestionKey.split(" ").map((key) =>
+      getTask(key, target).then((loaded) => loaded.task, () => null)))
+      .then((loaded) => {
+        if (current && mountedRef.current) setQuestionTasks(loaded.filter((task): task is Task => task !== null))
+      })
+    return () => { current = false }
+  }, [missingQuestionKey, target])
+  const listedTasks = useMemo(() => {
+    const wanted = new Set(missingQuestionKeys)
+    const extra = questionTasks.filter((task) => wanted.has(task.key) || task.key === selectedKey)
+    const listed = new Set(tasks.map((task) => task.key))
+    return [...tasks, ...extra.filter((task) => !listed.has(task.key))]
+  }, [missingQuestionKeys, questionTasks, selectedKey, tasks])
+
   // The queue filter is applied here rather than in `listTasks`, so the queue
   // menu can count the queues from the same load instead of asking again.
   const visibleTasks = useMemo(
-    () => queue ? tasks.filter((task) => task.queue === queue) : tasks,
-    [queue, tasks],
+    () => queue ? listedTasks.filter((task) => task.queue === queue) : listedTasks,
+    [listedTasks, queue],
   )
   const queueCounts = useMemo(() => {
     const counts = new Map<string, number>()

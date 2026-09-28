@@ -501,7 +501,10 @@ the queue sheet, and the notification state is rendered
 as one indicator. A small red indicator on a task row identifies an unread,
 non-dismissed `task.question` notification for that task, and opening that task
 marks those notifications read, which is the only thing that clears the
-indicator in the UI. `ttasks notifications` remains the operator command for
+indicator in the UI. The unfiltered **Active** view, without a search, also
+lists a closed task that still has such an unread question (in an agent's
+workspace, one asked by that agent), read by its key, so the question can be
+opened and cleared; it leaves the view once read. `ttasks notifications` remains the operator command for
 reading and dismissing inbox rows. A route-independent coordinator still
 watches every configured host and derives the requesting agent from the
 notification's event actor projection, not from display text; that shared
