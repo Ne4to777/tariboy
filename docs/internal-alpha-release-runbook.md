@@ -156,7 +156,10 @@ git push origin v0.71.0
 `.github/workflows/desktop-release.yml` validates the tag against
 `internal/version/version.go` and `scripts/release-version.txt`, runs `make
 desktop-mac` on `macos-15`, and creates the matching GitHub Release as a draft
-with generated notes. Repository checks are completed before the release tag is
+with generated notes. A fixed macOS note precedes the generated notes: the build
+is not notarized by Apple, and a blocked DMG is allowed through **System
+Settings → Privacy & Security → Open Anyway**. Remove that note from the
+workflow once releases are notarized. Repository checks are completed before the release tag is
 pushed rather than repeated by the publication workflow. The workflow uploads
 the versioned DMG, generated updater archive and signature, `SHA256SUMS`,
 `release.json`, and `latest.json` using its job-scoped `contents: write` token,

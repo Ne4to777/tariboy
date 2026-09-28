@@ -139,6 +139,9 @@ func TestDesktopReleaseWorkflowPublishesCheckedTagArtifacts(t *testing.T) {
 		`*.app.tar.gz.sig`,
 		`gh release create "$GITHUB_REF_NAME"`,
 		`--draft`,
+		`--generate-notes`,
+		`This build is not notarized by Apple.`,
+		`If macOS blocks the DMG: **System Settings → Privacy & Security → Open Anyway**`,
 		`gh release upload "$GITHUB_REF_NAME" "$release_dir"/*`,
 		`gh release edit "$GITHUB_REF_NAME" --draft=false`,
 	} {

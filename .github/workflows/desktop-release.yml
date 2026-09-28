@@ -96,9 +96,16 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           release_dir="dist/releases/$version"
+          notes=$(cat <<NOTES
+          **macOS note:** This build is not notarized by Apple.
+
+          If macOS blocks the DMG: **System Settings → Privacy & Security → Open Anyway**
+          NOTES
+          )
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             --verify-tag \
+            --notes "$notes" \
             --generate-notes \
             --title "Tariboy $version"
           gh release upload "$GITHUB_REF_NAME" "$release_dir"/*
