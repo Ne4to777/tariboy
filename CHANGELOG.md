@@ -1,3 +1,22 @@
+## [0.71.1] - 2026-09-28
+
+### Changed
+
+- All tasks hides the agent sidebar and its titlebar toggle, and the agent
+  in the route no longer narrows the table or preselects the New task agent.
+  The saved sidebar state is kept for the Agents view.
+- Every GitHub Release starts with a note that the macOS build is not
+  notarized and how to allow a blocked DMG.
+
+### Fixed
+
+- Closed tasks with an unread agent question stay in the Active task list
+  until the question is read, so the Tasks badge always has a row to open.
+- Tag releases restore a Desktop Rust cache warmed on `main`, instead of
+  compiling every Rust dependency from scratch.
+
+[0.71.1]: https://github.com/alekzonder/tariboy/compare/v0.71.0...v0.71.1
+
 ## [0.71.0] - 2026-09-27
 
 ### Added
