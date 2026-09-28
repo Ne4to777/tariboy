@@ -13,12 +13,6 @@ import { readTaskQueueFilter, persistTaskQueueFilter } from "./taskFilterStorage
 import { useAllServersTasks, type ServerTask } from "./useAllServersTasks"
 import "./tasks.css"
 
-/** The agent the list is narrowed to, on the server that runs it. */
-export interface AgentRef {
-  hostId: string
-  name: string
-}
-
 // Search, status and server survive the Agents <-> All tasks switch the same
 // way the queue filter does: per session, beside it.
 const VIEW_KEY = "tasks:all-view:v1"
@@ -56,15 +50,7 @@ function ServerTasksLive({ serverId, after, onChange }: { serverId: string; afte
  * newest first. A task opens in place, on its own server, and its assignee can
  * be any agent anywhere — one on another server moves the task there.
  */
-export default function AllTasksWorkspace({
-  hosts,
-  agent,
-  onClearAgent,
-}: {
-  hosts: readonly HostAgents[]
-  agent?: AgentRef
-  onClearAgent?: () => void
-}) {
+export default function AllTasksWorkspace({ hosts }: { hosts: readonly HostAgents[] }) {
   const [view, setViewState] = useState(readView)
   const setView = (patch: Partial<ViewFilters>) => setViewState((current) => {
     const next = { ...current, ...patch }
@@ -90,17 +76,14 @@ export default function AllTasksWorkspace({
     statusView: view.statusView,
   })
 
-  const agentTasks = useMemo(() => agent
-    ? tasks.filter((task) => task.serverId === agent.hostId && task.assignee === `agent:${agent.name}`)
-    : tasks, [agent, tasks])
-  const visible = useMemo(() => agentTasks.filter((task) =>
-    (!view.server || hostToParam(task.serverId) === view.server) && (!queue || task.queue === queue)), [agentTasks, queue, view.server])
+  const visible = useMemo(() => tasks.filter((task) =>
+    (!view.server || hostToParam(task.serverId) === view.server) && (!queue || task.queue === queue)), [tasks, queue, view.server])
 
   const queueCounts = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const task of agentTasks) counts.set(task.queue, (counts.get(task.queue) ?? 0) + 1)
+    for (const task of tasks) counts.set(task.queue, (counts.get(task.queue) ?? 0) + 1)
     return counts
-  }, [agentTasks])
+  }, [tasks])
   const queues = useMemo(
     () => [...new Set([...queueCounts.keys(), ...(queue ? [queue] : [])])].sort().map((prefix) => ({ prefix })),
     [queue, queueCounts],
@@ -108,7 +91,7 @@ export default function AllTasksWorkspace({
   const serverItems = servers.map((server) => ({
     id: hostToParam(server.id),
     label: server.label,
-    count: agentTasks.filter((task) => task.serverId === server.id).length,
+    count: tasks.filter((task) => task.serverId === server.id).length,
     unavailable: Boolean(errors[server.id]) && !tasks.some((task) => task.serverId === server.id),
   }))
 
@@ -142,11 +125,10 @@ export default function AllTasksWorkspace({
     }))
   }, [hosts, open])
 
-  const filtersActive = Boolean(view.query || view.statusView !== "active" || view.server || queue || agent)
+  const filtersActive = Boolean(view.query || view.statusView !== "active" || view.server || queue)
   const clearFilters = () => {
     setView(DEFAULT_VIEW)
     setQueue("")
-    onClearAgent?.()
   }
 
   return (
@@ -168,8 +150,6 @@ export default function AllTasksWorkspace({
           servers={serverItems}
           server={view.server}
           onServer={(server) => setView({ server })}
-          scopeAgent={agent?.name}
-          onClearScopeAgent={onClearAgent}
           refreshing={false}
           onRefresh={() => servers.forEach((server) => reload(server.id))}
           onCreate={() => setCreating(true)}
@@ -177,7 +157,6 @@ export default function AllTasksWorkspace({
         {creating && (
           <NewTaskForm
             hosts={hosts}
-            agent={agent}
             onCancel={() => setCreating(false)}
             onCreated={(serverId, key) => {
               setCreating(false)
@@ -260,18 +239,16 @@ export default function AllTasksWorkspace({
  *  decides which queues exist. */
 function NewTaskForm({
   hosts,
-  agent,
   onCancel,
   onCreated,
 }: {
   hosts: readonly HostAgents[]
-  agent?: AgentRef
   onCancel: () => void
   onCreated: (serverId: string, key: string) => void
 }) {
   const choices = hosts.filter((entry) => !entry.error).flatMap((entry) =>
     entry.agents.map((item) => ({ id: `${entry.host.id}\u0000${item.name}`, hostId: entry.host.id, name: item.name, label: `${item.name} · ${entry.host.label}` })))
-  const [choice, setChoice] = useState(agent ? `${agent.hostId}\u0000${agent.name}` : "")
+  const [choice, setChoice] = useState("")
   const picked = choices.find((item) => item.id === choice)
   const [queues, setQueues] = useState<TaskQueue[]>([])
   const [queue, setQueue] = useState("")

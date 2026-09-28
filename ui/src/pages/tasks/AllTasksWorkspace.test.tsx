@@ -112,20 +112,13 @@ it("merges queues by prefix across servers and narrows by server", async () => {
   expect(rowKeys()).toEqual(["IMPROVE-c3"])
 })
 
-it("narrows to the selected agent until the chip is cleared", async () => {
-  const onClearAgent = vi.fn()
-  render(<AllTasksWorkspace hosts={hosts} agent={{ hostId: "h2", name: "builder" }} onClearAgent={onClearAgent} />)
-  await waitFor(() => expect(rowKeys()).toEqual(["IMPROVE-c3"]))
-  await userEvent.click(screen.getByRole("button", { name: "Clear agent filter" }))
-  expect(onClearAgent).toHaveBeenCalled()
-})
-
 it("shows an empty state that clears the filters", async () => {
-  const onClearAgent = vi.fn()
-  render(<AllTasksWorkspace hosts={hosts} agent={{ hostId: "", name: "nobody" }} onClearAgent={onClearAgent} />)
+  api.listTasks.mockResolvedValue({ tasks: [], sequence: 1 })
+  render(<AllTasksWorkspace hosts={hosts} />)
+  await userEvent.type(screen.getByLabelText("Search tasks"), "zzz")
   expect(await screen.findByText("No tasks")).toBeInTheDocument()
   await userEvent.click(screen.getByRole("button", { name: "Clear filters" }))
-  expect(onClearAgent).toHaveBeenCalled()
+  expect(screen.getByLabelText("Search tasks")).toHaveValue("")
 })
 
 it("opens a task on its own server", async () => {
@@ -203,10 +196,11 @@ it("refuses an assignee whose server dropped out of the list before Save", async
 
 it("creates a task for the chosen agent on that agent's server", async () => {
   api.createTask.mockResolvedValue(task("IMPROVE-new"))
-  render(<AllTasksWorkspace hosts={hosts} agent={{ hostId: "h2", name: "builder" }} onClearAgent={() => {}} />)
-  await waitFor(() => expect(rowKeys()).toHaveLength(1))
+  render(<AllTasksWorkspace hosts={hosts} />)
+  await waitFor(() => expect(rowKeys().length).toBeGreaterThan(0))
   await userEvent.click(screen.getByRole("button", { name: "New task" }))
-  expect(screen.getByRole("combobox", { name: "Task agent" })).toHaveDisplayValue("builder · hetzner-02")
+  expect(screen.getByRole("combobox", { name: "Task agent" })).toHaveDisplayValue("Choose an agent")
+  await userEvent.selectOptions(screen.getByRole("combobox", { name: "Task agent" }), "builder · hetzner-02")
   await waitFor(() => expect(screen.getByRole("combobox", { name: "Task queue" })).toHaveDisplayValue("IMPROVE"))
   await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), "Ship it")
   await userEvent.click(screen.getByRole("button", { name: "Create task" }))

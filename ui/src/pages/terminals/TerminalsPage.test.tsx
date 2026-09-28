@@ -330,24 +330,18 @@ describe("TerminalsPage", () => {
     );
   });
 
-  it("shows All tasks in the island, narrowed to the selected agent, and keeps the view when another agent is picked", async () => {
+  it("shows All tasks without the agent sidebar and does not narrow to the route agent", async () => {
     renderAt("/agents/local/a1/console?view=all");
     const workspace = await screen.findByTestId("all-tasks-workspace");
-    expect(within(workspace).getByRole("button", { name: "Clear agent filter" }).parentElement)
-      .toHaveTextContent("a1");
+    await waitFor(() => expect(fetchAllAgents).toHaveBeenCalled());
+    await act(async () => {});
+
+    expect(screen.queryByRole("button", { name: "Open a2" })).toBeNull();
+    expect(screen.queryByRole("separator", { name: "resize sidebar" })).toBeNull();
+    expect(within(workspace).queryByRole("button", { name: "Clear agent filter" })).toBeNull();
     expect(screen.queryByTestId("tui-screen")).toBeNull();
-
-    fireEvent.click(within(workspace).getByRole("button", { name: "Clear agent filter" }));
-    await waitFor(() => expect(within(workspace).queryByRole("button", { name: "Clear agent filter" })).toBeNull());
-    // The agent stays selected in the sidebar; only the filter went.
+    // The route keeps the agent, so switching back to Agents reopens it.
     expect(screen.getByTestId("location").textContent).toBe("/agents/local/a1/console?view=all");
-
-    fireEvent.click(screen.getByRole("button", { name: "Open a2" }));
-    await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/agents/local/a2/console?view=all"),
-    );
-    expect(within(await screen.findByTestId("all-tasks-workspace"))
-      .getByRole("button", { name: "Clear agent filter" }).parentElement).toHaveTextContent("a2");
   });
 
   it("drops the selected task when switching agents on the Tasks tab", async () => {

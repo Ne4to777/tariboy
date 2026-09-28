@@ -70,6 +70,7 @@ function MainApp() {
     location.pathname === "/"
     || location.pathname.startsWith("/agents/")
     || location.pathname.startsWith("/servers/");
+  const allTasks = searchParams.get("view") === "all";
   return (
     <TitlebarSlotContext.Provider value={titlebarSlot}>
       {/* Topbar: 42px, no bottom border — the separation between chrome and the
@@ -84,7 +85,7 @@ function MainApp() {
             aria-hidden="true"
             className="h-full w-[72px] shrink-0"
           />
-          {sidebarRoute && (
+          {sidebarRoute && !allTasks && (
             <Button
               type="button"
               variant="ghost"
@@ -110,7 +111,7 @@ function MainApp() {
               label="View"
               className="ml-2"
               options={VIEW_OPTIONS}
-              value={searchParams.get("view") === "all" ? "all" : "agents"}
+              value={allTasks ? "all" : "agents"}
               onChange={(value) => setSearchParams((current) => {
                 const next = new URLSearchParams(current);
                 if (value === "all") next.set("view", "all");

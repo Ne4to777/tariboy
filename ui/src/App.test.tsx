@@ -89,6 +89,14 @@ describe("product routing", () => {
     expect(screen.getByTestId("location").textContent).toBe("/agents/local/builder/console?task=X-1");
   });
 
+  it("hides the agents sidebar control in All tasks", () => {
+    renderAt("/agents/local/builder/console?view=all");
+
+    const titlebar = screen.getByTestId("app-titlebar");
+    expect(within(titlebar).queryByRole("button", { name: "Hide agents" })).toBeNull();
+    expect(within(titlebar).queryByRole("button", { name: "Show agents" })).toBeNull();
+  });
+
   it("opens daemon-independent application settings from the titlebar", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("daemon down")));
     renderAt("/");

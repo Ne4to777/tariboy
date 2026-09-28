@@ -1,6 +1,6 @@
 import { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { usePolling } from "@/hooks/usePolling";
 import { fetchAllAgents, type HostAgents } from "@/lib/aggregate";
 import { paramToHost, hostToParam, serverPath, targetFor } from "@/lib/terminalsHost";
@@ -40,13 +40,9 @@ export type ServerView = "tasks" | "images" | "image-tags" | "image-detail" | "s
 
 export default function TerminalsPage({ serverView }: { serverView?: ServerView }) {
   const { hostId: hostParam, agent: agentName, tab: agentTab, team: teamName, name: storeName } = useParams();
-  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const allTasks = searchParams.get("view") === "all";
-  // The agent chip follows the route; × hides it for this history entry only,
-  // so picking an agent in the sidebar (a new entry) narrows the list again.
-  const [agentFilterClearedAt, setAgentFilterClearedAt] = useState("");
   const [lastSuccessfulHostsById, setLastSuccessfulHostsById] = useState<Map<string, HostAgents>>(
     () => new Map(),
   );
@@ -314,7 +310,8 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
       {/* Chat order is live: a published message refreshes the authoritative
           snapshot at once rather than waiting for the next poll. */}
       <MessagesLiveRefresh hostIds={hosts.map((entry) => entry.host.id)} onChange={refresh} />
-      {!sidebar.hidden && <AgentSidebar
+      {/* All tasks spans every server, so no agent is the subject there. */}
+      {!sidebar.hidden && !allTasks && <AgentSidebar
         hosts={orderedSidebarHosts}
         selectedHostId={hostId}
         selected={hostId !== undefined && agentName ? { hostId, agent: agentName } : undefined}
@@ -362,13 +359,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
         )}
         <section className="min-h-0 flex-1">
         {allTasks ? (
-          <AllTasksWorkspace
-            hosts={hosts}
-            agent={hostId !== undefined && agentName && agentFilterClearedAt !== location.key
-              ? { hostId, name: agentName }
-              : undefined}
-            onClearAgent={() => setAgentFilterClearedAt(location.key)}
-          />
+          <AllTasksWorkspace hosts={hosts} />
         ) : serverView === "tasks" && hostId !== undefined ? (
           <RouteHostBoundary hostId={hostId} unavailable={routeUnavailable}>
             <TasksWorkspace
