@@ -499,6 +499,15 @@ latest catalog cannot reference missing assets. The first updater-enabled versio
 must still be installed from the DMG; only later, higher signed versions can be
 installed by the updater.
 
+A tag run can restore only caches saved by its own tag or by `main`, so the
+release job restores the Cargo cache but never saves one.
+`.github/workflows/desktop-cache.yml` saves it instead: on `main`, it builds the
+Desktop Rust dependencies with the cargo command `cargo tauri build` uses, under
+the shared `desktop-release` cache key. It runs when `desktop/src-tauri/Cargo.lock`
+or `Cargo.toml` changes on `main`, weekly, and on manual dispatch. If the cache
+is missing or evicted, the release still succeeds and compiles every
+dependency.
+
 The tray action **Install/Update CLI** owns the local five-file payload and
 six-command-path install. It preflights and atomically switches `tariboyd`,
 `tariboy`, `tariboy-tasks`, `ttasks`, `tariboy-shim`, and

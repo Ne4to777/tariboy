@@ -451,7 +451,10 @@ the queue sheet, and the notification state is rendered
 as one indicator. A small red indicator on a task row identifies an unread,
 non-dismissed <code>task.question</code> notification for that task, and opening that task
 marks those notifications read, which is the only thing that clears the
-indicator in the UI. <code>ttasks notifications</code> remains the operator command for
+indicator in the UI. The unfiltered <strong>Active</strong> view, without a search, also
+lists a closed task that still has such an unread question (in an agent’s
+workspace, one asked by that agent), read by its key, so the question can be
+opened and cleared; it leaves the view once read. <code>ttasks notifications</code> remains the operator command for
 reading and dismissing inbox rows. A route-independent coordinator still
 watches every configured host and derives the requesting agent from the
 notification’s event actor projection, not from display text; that shared
@@ -528,12 +531,14 @@ because hosts are the set of daemons rather than something one daemon owns.
 Malformed storage, unavailable storage, or an assignment to a missing workspace
 falls back to Default.</p>
 <h3 id="all-tasks"><a class="blume-heading-anchor" href="#all-tasks">All tasks</a></h3>
-<p>The titlebar carries an <code>Agents | All tasks</code> segment next to the sidebar
-toggle. The view is the <code>view=all</code> query on the current route, so it survives
+<p>The titlebar carries an <code>Agents | All tasks</code> segment, next to the sidebar
+toggle in <strong>Agents</strong>. The view is the <code>view=all</code> query on the current route, so it survives
 a reload, Back returns to the previous view, and the selected agent’s path is
 untouched. Arrow keys move between the two options. In <strong>All tasks</strong> the
-agent sidebar stays and the island shows one task table for every server
-instead of the agent’s header and tabs.</p>
+agent sidebar and its titlebar toggle are hidden, and the island shows one task
+table for every server instead of the agent’s header and tabs. The persisted
+sidebar visibility is not changed, so switching back to <strong>Agents</strong> restores the
+sidebar as it was and reopens the agent the route still names.</p>
 <p>The table reads <code>GET /api/tasks</code> from the local daemon and every registered
 server in parallel, each with its own token, following each server’s cursor to
 the end; a server’s live <code>/api/tasks/ws</code> hint re-reads only that server. A
@@ -547,14 +552,12 @@ server answers.</p>
 reparenting or inline child creation, since neither crosses servers. The
 toolbar keeps search and <code>Active | Closed | All</code> (sent to every server), merges
 queues by prefix across servers with summed counts, and adds a <code>Server</code> menu
-in which an unavailable server is marked and cannot be picked. When an agent is
-selected in the sidebar the table is narrowed to tasks assigned to it on its
-server; the chip’s × clears the narrowing for that history entry without
-deselecting the agent, and picking an agent again narrows again. Search,
+in which an unavailable server is marked and cannot be picked. The agent in
+the route never narrows the table. Search,
 status, queue and server are kept per session in <code>tasks:all-view:v1</code> and the
 shared <code>tasks:queue-filter:v1</code>. An empty result says <strong>No tasks</strong> with
-<strong>Clear filters</strong>. <strong>New task</strong> asks for an agent (labelled with its server) —
-preselected from the chip — and a queue of that agent’s server, and creates
+<strong>Clear filters</strong>. <strong>New task</strong> asks for an agent (labelled with its server)
+and a queue of that agent’s server, and creates
 the task there assigned to that agent.</p>
 <p>Selecting a row opens the task in place in the same detail sheet, loaded from
 its own server. There the Assignee field lists every agent on every server as

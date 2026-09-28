@@ -2104,7 +2104,10 @@ the queue sheet, and the notification state is rendered
 as one indicator. A small red indicator on a task row identifies an unread,
 non-dismissed `task.question` notification for that task, and opening that task
 marks those notifications read, which is the only thing that clears the
-indicator in the UI. `ttasks notifications` remains the operator command for
+indicator in the UI. The unfiltered **Active** view, without a search, also
+lists a closed task that still has such an unread question (in an agent's
+workspace, one asked by that agent), read by its key, so the question can be
+opened and cleared; it leaves the view once read. `ttasks notifications` remains the operator command for
 reading and dismissing inbox rows. A route-independent coordinator still
 watches every configured host and derives the requesting agent from the
 notification's event actor projection, not from display text; that shared
@@ -2193,12 +2196,14 @@ falls back to Default.
 
 ### All tasks
 
-The titlebar carries an `Agents | All tasks` segment next to the sidebar
-toggle. The view is the `view=all` query on the current route, so it survives
+The titlebar carries an `Agents | All tasks` segment, next to the sidebar
+toggle in **Agents**. The view is the `view=all` query on the current route, so it survives
 a reload, Back returns to the previous view, and the selected agent's path is
 untouched. Arrow keys move between the two options. In **All tasks** the
-agent sidebar stays and the island shows one task table for every server
-instead of the agent's header and tabs.
+agent sidebar and its titlebar toggle are hidden, and the island shows one task
+table for every server instead of the agent's header and tabs. The persisted
+sidebar visibility is not changed, so switching back to **Agents** restores the
+sidebar as it was and reopens the agent the route still names.
 
 The table reads `GET /api/tasks` from the local daemon and every registered
 server in parallel, each with its own token, following each server's cursor to
@@ -2214,14 +2219,12 @@ Columns are Key, Task, Pri, Agent, Server, Status and Updated. There is no drag
 reparenting or inline child creation, since neither crosses servers. The
 toolbar keeps search and `Active | Closed | All` (sent to every server), merges
 queues by prefix across servers with summed counts, and adds a `Server` menu
-in which an unavailable server is marked and cannot be picked. When an agent is
-selected in the sidebar the table is narrowed to tasks assigned to it on its
-server; the chip's × clears the narrowing for that history entry without
-deselecting the agent, and picking an agent again narrows again. Search,
+in which an unavailable server is marked and cannot be picked. The agent in
+the route never narrows the table. Search,
 status, queue and server are kept per session in `tasks:all-view:v1` and the
 shared `tasks:queue-filter:v1`. An empty result says **No tasks** with
-**Clear filters**. **New task** asks for an agent (labelled with its server) —
-preselected from the chip — and a queue of that agent's server, and creates
+**Clear filters**. **New task** asks for an agent (labelled with its server)
+and a queue of that agent's server, and creates
 the task there assigned to that agent.
 
 Selecting a row opens the task in place in the same detail sheet, loaded from
@@ -3385,6 +3388,15 @@ Release, uploads the complete set, and only then makes the release public, so th
 latest catalog cannot reference missing assets. The first updater-enabled version
 must still be installed from the DMG; only later, higher signed versions can be
 installed by the updater.
+
+A tag run can restore only caches saved by its own tag or by `main`, so the
+release job restores the Cargo cache but never saves one.
+`.github/workflows/desktop-cache.yml` saves it instead: on `main`, it builds the
+Desktop Rust dependencies with the cargo command `cargo tauri build` uses, under
+the shared `desktop-release` cache key. It runs when `desktop/src-tauri/Cargo.lock`
+or `Cargo.toml` changes on `main`, weekly, and on manual dispatch. If the cache
+is missing or evicted, the release still succeeds and compiles every
+dependency.
 
 The tray action **Install/Update CLI** owns the local five-file payload and
 six-command-path install. It preflights and atomically switches `tariboyd`,
@@ -5835,13 +5847,13 @@ image.
 # Ten-minute quickstart
 Source: https://alekzonder.github.io/tariboy/quickstart
 
-This path is for the `0.71.0` alpha on an Apple Silicon Mac.
+This path is for the `0.71.1` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.71.0_aarch64.dmg`;
+- a verified `Tariboy_0.71.1_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -7165,7 +7177,7 @@ runtime lifecycle.
 
 ## Alpha signing and Gatekeeper
 
-`0.71.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.71.1` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &
@@ -7262,7 +7274,7 @@ Source: https://alekzonder.github.io/tariboy/support
    selected harness on the remote host.
 5. For a daemon older than `0.10.1`, finish active work before updating it.
 
-The app and bundled daemons must report `0.71.0`. Resolve a local mismatch with
+The app and bundled daemons must report `0.71.1`. Resolve a local mismatch with
 the menu-bar **Install/Update CLI** action and a remote mismatch with the host
 Update action; do not copy or repoint individual binaries.
 
