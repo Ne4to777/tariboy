@@ -320,7 +320,7 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
           // Switching agents keeps the tab the operator is reading, so the same
           // view answers the same question about the next agent. Any query
           // (a selected task) belongs to the agent being left, so it is dropped.
-          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(a)}/${agentName && agentTab ? agentTab : defaultAgentTab()}${allTasks ? "?view=all" : ""}`);
+          navigate(`/agents/${hostToParam(h)}/${encodeURIComponent(a)}/${agentName && agentTab ? agentTab : defaultAgentTab()}`);
         }}
         onSelectTeam={(h, team) => {
           navigate(`/agents/${hostToParam(h)}/teams/${encodeURIComponent(team)}`);

@@ -95,6 +95,9 @@ describe("product routing", () => {
     const titlebar = screen.getByTestId("app-titlebar");
     expect(within(titlebar).queryByRole("button", { name: "Hide agents" })).toBeNull();
     expect(within(titlebar).queryByRole("button", { name: "Show agents" })).toBeNull();
+
+    fireEvent.click(within(titlebar).getByRole("radio", { name: "Agents" }));
+    expect(within(titlebar).getByRole("button", { name: "Hide agents" })).toBeInTheDocument();
   });
 
   it("opens daemon-independent application settings from the titlebar", async () => {
