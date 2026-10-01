@@ -123,3 +123,34 @@ func TestMigrateLegacyKeysRewritesKeysAndKeepsOldOnesResolvable(t *testing.T) {
 		t.Fatalf("second run rewrote %q to %q", migrated, after)
 	}
 }
+
+func TestMigrateLegacyKeysKeepsLaterAllDigitRandomKeys(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	actor := CustomerActor("customer")
+	if _, err := svc.CreateQueue(ctx, actor, CreateQueueInput{Prefix: "KEYS", Name: "Keys"}); err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { return time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC) }
+	if err := MigrateLegacyKeys(svc.db, now); err != nil {
+		t.Fatal(err)
+	}
+	task, err := svc.CreateTask(ctx, actor, CreateTaskInput{Queue: "KEYS", Title: "digits"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The random alphabet includes 2-9, so a new key can be all digits.
+	if _, err := svc.db.Exec(`UPDATE tasks SET task_key = 'KEYS-3469' WHERE task_key = ?`, task.Key); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacyKeys(svc.db, now); err != nil {
+		t.Fatal(err)
+	}
+	var after string
+	if err := svc.db.QueryRow(`SELECT task_key FROM tasks`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != "KEYS-3469" {
+		t.Fatalf("a later run rewrote random key KEYS-3469 to %q", after)
+	}
+}

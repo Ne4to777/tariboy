@@ -51,9 +51,17 @@ WHERE substr(task_key, length(queue_prefix) + 2) GLOB '[0-9]*'
 ORDER BY id`
 
 // MigrateLegacyKeys rewrites every remaining numeric task key to a random one
-// and records the old key as a permanent alias. It is idempotent: once no
-// numeric key is left it does nothing, so it can run on every daemon start.
+// and records the old key as a permanent alias. It runs once per database and
+// records that in task_legacy_keys_migrated: a random suffix can be all digits
+// too, so a later run would mistake such a key for a legacy one and rename it.
 func MigrateLegacyKeys(db *sql.DB, now func() time.Time) error {
+	var done int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM task_legacy_keys_migrated`).Scan(&done); err != nil {
+		return err
+	}
+	if done > 0 {
+		return nil
+	}
 	rows, err := db.Query(legacyKeySelect)
 	if err != nil {
 		return err
@@ -76,15 +84,15 @@ func MigrateLegacyKeys(db *sql.DB, now func() time.Time) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if len(pending) == 0 {
-		return nil
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	stamp := now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`INSERT INTO task_legacy_keys_migrated(id, migrated_at) VALUES (1, ?)`, stamp); err != nil {
+		return err
+	}
 	for _, item := range pending {
 		key, err := reserveTaskKey(tx, item.queue)
 		if err != nil {
