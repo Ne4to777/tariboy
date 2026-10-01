@@ -196,7 +196,7 @@ func imageSourceValidate() registry.Command {
 				return nil, imageSourceError(err)
 			}
 			dir := filepath.Join(paths.Paths{Base: c.BaseDir}.ImageSourcesDir(), name)
-			parsed, err := imagefile.ParseAny(dir)
+			parsed, err := imagefile.ParseV2(dir)
 			if err != nil {
 				return map[string]any{
 					"valid": false,
@@ -205,10 +205,7 @@ func imageSourceValidate() registry.Command {
 					}},
 				}, nil
 			}
-			if parsed.Version != 2 {
-				return map[string]any{"valid": false, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": imagefile.SchemaV1MigrationMessage}}}, nil
-			}
-			if len(parsed.V2.Extends) > 0 {
+			if len(parsed.Extends) > 0 {
 				return map[string]any{"valid": false, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": imagefile.ExtendsUnassembledMessage}}}, nil
 			}
 			return map[string]any{"valid": true, "diagnostics": []any{}}, nil
@@ -257,17 +254,14 @@ func imageSourceBuild() registry.Command {
 					return err
 				}
 				record, err = sources.RecordBuild(name, func(dir string) (imagesource.BuildRecord, error) {
-					parsed, err := imagefile.ParseAny(dir)
+					parsed, err := imagefile.ParseV2(dir)
 					if err != nil {
 						parseErr = err
 						return imagesource.BuildRecord{}, err
 					}
-					if parsed.Version != 2 {
-						return imagesource.BuildRecord{}, errors.New(imagefile.SchemaV1MigrationMessage)
-					}
 					layout := paths.Paths{Base: c.BaseDir}
 					pluginsDir := layout.PluginsDir()
-					manifest, err = image.BuildV2(parsed.V2, imagefile.ResolveRoots{Plugins: pluginsDir}, ref, store, time.Now, imagePluginResolver(c, pluginsDir))
+					manifest, err = image.BuildV2(parsed, imagefile.ResolveRoots{Plugins: pluginsDir}, ref, store, time.Now, imagePluginResolver(c, pluginsDir))
 					if err != nil {
 						return imagesource.BuildRecord{}, err
 					}

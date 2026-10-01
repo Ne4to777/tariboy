@@ -112,7 +112,7 @@ func imageBuild() registry.Command {
 			if c.Store != nil {
 				snapshotStore.DB = c.Store.DB
 			}
-			parsed, err := imagefile.ParseAny(sourceCWD)
+			parsed, err := imagefile.ParseV2(sourceCWD)
 			if err != nil {
 				return nil, api.UserError{Code: "bad_imagefile", Msg: err.Error()}
 			}
@@ -127,7 +127,7 @@ func imageBuild() registry.Command {
 				return nil, api.UserError{Code: "build_failed", Msg: err.Error()}
 			}
 			buildDir := sourceCWD
-			if parsed.Version == 2 && len(parsed.V2.Extends) > 0 {
+			if len(parsed.Extends) > 0 {
 				if restoreStoreLock != nil {
 					if err := restoreStoreLock(); err != nil {
 						return nil, storeError(err)
@@ -144,15 +144,11 @@ func imageBuild() registry.Command {
 					return nil, storeError(err)
 				}
 			}
-			parsed, err = imagefile.ParseAny(buildDir)
+			parsed, err = imagefile.ParseV2(buildDir)
 			if err != nil {
 				return nil, api.UserError{Code: "bad_imagefile", Msg: err.Error()}
 			}
-			var skills []imagefile.SkillEntry
-			if parsed.Version == 2 {
-				skills = parsed.V2.Skills
-			}
-			frozen, err := snapshotStore.Freeze(buildDir, skills...)
+			frozen, err := snapshotStore.Freeze(buildDir, parsed.Skills...)
 			if err != nil {
 				return nil, api.UserError{Code: "bad_source_path", Msg: err.Error(), Status: http.StatusBadRequest}
 			}
@@ -160,7 +156,7 @@ func imageBuild() registry.Command {
 			if err != nil {
 				return nil, api.UserError{Code: "bad_source_path", Msg: err.Error(), Status: http.StatusBadRequest}
 			}
-			parsed, err = imagefile.ParseAny(frozenDir)
+			parsed, err = imagefile.ParseV2(frozenDir)
 			if err != nil {
 				return nil, api.UserError{Code: "bad_imagefile", Msg: err.Error()}
 			}
@@ -172,19 +168,13 @@ func imageBuild() registry.Command {
 			}
 			layout := paths.Paths{Base: c.BaseDir}
 			pluginsDir := layout.PluginsDir()
-			resolver := plugins.ResolveInstalled(pluginsDir)
-			if parsed.Version == 2 {
-				resolver = imagePluginResolver(c, pluginsDir)
-			}
+			resolver := imagePluginResolver(c, pluginsDir)
 			productVersion := c.Version
 			if productVersion == "" {
 				productVersion = version.Version
 			}
 			builtAt := time.Now()
 			clock := func() time.Time { return builtAt }
-			if parsed.Version != 2 {
-				return nil, api.UserError{Code: "build_failed", Msg: imagefile.SchemaV1MigrationMessage}
-			}
 			var result any
 			err = image.WithPublicationGate(func() error {
 				store := imageStore(c)
@@ -203,7 +193,7 @@ func imageBuild() registry.Command {
 				}
 				// One build produces one ref; every requested tag is moved onto it,
 				// so a versioned tag and latest always name the same content.
-				man, err := image.BuildV2(parsed.V2, imagefile.ResolveRoots{Plugins: pluginsDir, SourceSkills: frozen.SourceSkills}, refs[0], store, clock, resolver)
+				man, err := image.BuildV2(parsed, imagefile.ResolveRoots{Plugins: pluginsDir, SourceSkills: frozen.SourceSkills}, refs[0], store, clock, resolver)
 				if err != nil {
 					return restore("build_failed", err)
 				}
@@ -246,14 +236,8 @@ func imageBuild() registry.Command {
 	}
 }
 
-func imageBuildRefs(name string, tags []string, parsed *imagefile.Parsed) ([]image.Ref, bool, error) {
-	imageVersion := ""
-	if parsed.Version == 2 {
-		imageVersion = parsed.V2.ImageVersion
-	} else {
-		imageVersion = parsed.V1.ImageVersion
-	}
-	refs, defaultTags, err := image.BuildRefs(name, tags, imageVersion)
+func imageBuildRefs(name string, tags []string, parsed *imagefile.V2) ([]image.Ref, bool, error) {
+	refs, defaultTags, err := image.BuildRefs(name, tags, parsed.ImageVersion)
 	switch {
 	case err == nil:
 		return refs, defaultTags, nil
@@ -318,36 +302,33 @@ func imageValidate() registry.Command {
 			if diagnostic != "" {
 				return map[string]any{"valid": false, "schema_version": 0, "plugins": []string{}, "skills": []image.ManifestSkill{}, "template": nil, "diagnostics": []map[string]string{{"path": "name/tag", "message": diagnostic}}, "warnings": []any{}}, nil
 			}
-			parsed, err := imagefile.ParseAny(str(p, "path"))
-			if err == nil && parsed.Version == 2 && len(parsed.V2.Extends) > 0 {
+			parsed, err := imagefile.ParseV2(str(p, "path"))
+			if err == nil && len(parsed.Extends) > 0 {
 				var cleanup func()
 				var assembled string
-				assembled, cleanup, err = imagefile.Assemble(parsed.V2.Dir, imageBuildRoot(c), imagefile.ResolveRoots{Plugins: paths.Paths{Base: c.BaseDir}.PluginsDir()}, nil)
+				assembled, cleanup, err = imagefile.Assemble(parsed.Dir, imageBuildRoot(c), imagefile.ResolveRoots{Plugins: paths.Paths{Base: c.BaseDir}.PluginsDir()}, nil)
 				if err == nil {
 					defer cleanup()
-					parsed, err = imagefile.ParseAny(assembled)
+					parsed, err = imagefile.ParseV2(assembled)
 				}
 			}
 			if err != nil {
 				return map[string]any{"valid": false, "schema_version": 0, "plugins": []string{}, "skills": []image.ManifestSkill{}, "template": nil, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": err.Error()}}, "warnings": []any{}}, nil
 			}
-			if parsed.Version == 2 {
-				layout := paths.Paths{Base: c.BaseDir}
-				var pluginStore *plugins.Store
-				if c.Store != nil {
-					pluginStore = plugins.NewStore(c.Store, time.Now)
-				}
-				validated, validateErr := image.ValidateV2Detailed(parsed.V2, imagefile.ResolveRoots{Plugins: layout.PluginsDir()}, imagePluginResolver(c, layout.PluginsDir()))
-				pluginNames := make([]string, 0, len(parsed.V2.Plugins))
-				for _, plugin := range parsed.V2.Plugins {
-					pluginNames = append(pluginNames, plugin.Name)
-				}
-				if validateErr != nil {
-					return map[string]any{"valid": false, "schema_version": 2, "plugins": pluginNames, "skills": []image.ManifestSkill{}, "template": nil, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": validateErr.Error()}}, "warnings": []any{}}, nil
-				}
-				return map[string]any{"valid": true, "schema_version": 2, "plugins": pluginNames, "skills": validated.Skills, "template": validated.Template, "diagnostics": []any{}, "warnings": v2ValidationWarnings(parsed.V2, validated, pluginStore)}, nil
+			layout := paths.Paths{Base: c.BaseDir}
+			var pluginStore *plugins.Store
+			if c.Store != nil {
+				pluginStore = plugins.NewStore(c.Store, time.Now)
 			}
-			return map[string]any{"valid": false, "schema_version": parsed.Version, "plugins": []string{}, "skills": []image.ManifestSkill{}, "template": nil, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": imagefile.SchemaV1MigrationMessage}}, "warnings": []any{}}, nil
+			validated, validateErr := image.ValidateV2Detailed(parsed, imagefile.ResolveRoots{Plugins: layout.PluginsDir()}, imagePluginResolver(c, layout.PluginsDir()))
+			pluginNames := make([]string, 0, len(parsed.Plugins))
+			for _, plugin := range parsed.Plugins {
+				pluginNames = append(pluginNames, plugin.Name)
+			}
+			if validateErr != nil {
+				return map[string]any{"valid": false, "schema_version": 2, "plugins": pluginNames, "skills": []image.ManifestSkill{}, "template": nil, "diagnostics": []map[string]string{{"path": "Tariboyfile.yaml", "message": validateErr.Error()}}, "warnings": []any{}}, nil
+			}
+			return map[string]any{"valid": true, "schema_version": 2, "plugins": pluginNames, "skills": validated.Skills, "template": validated.Template, "diagnostics": []any{}, "warnings": v2ValidationWarnings(parsed, validated, pluginStore)}, nil
 		},
 	}
 }

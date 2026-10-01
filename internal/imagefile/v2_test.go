@@ -46,10 +46,6 @@ prompts:
 	if !reflect.DeepEqual(got.Skills, wantSkills) {
 		t.Fatalf("skills = %#v, want %#v", got.Skills, wantSkills)
 	}
-	parsed, err := ParseAny(dir)
-	if err != nil || parsed.Version != 2 || parsed.V2 == nil || parsed.V1 != nil {
-		t.Fatalf("ParseAny = %#v, %v", parsed, err)
-	}
 }
 
 func TestParseV2AcceptsOnlySkillDirectoryObjects(t *testing.T) {
@@ -115,10 +111,10 @@ func TestParseV2RejectsRemovedAndAmbiguousFields(t *testing.T) {
 	}
 }
 
-func TestParseAnyPreservesV1(t *testing.T) {
-	parsed, err := ParseAny(writeV2Source(t, "schema_version: 1\n"))
-	if err != nil || parsed.Version != 1 || parsed.V1 == nil || parsed.V2 != nil {
-		t.Fatalf("ParseAny = %#v, %v", parsed, err)
+func TestParseV2RejectsV1WithMigrationMessage(t *testing.T) {
+	_, err := ParseV2(writeV2Source(t, "schema_version: 1\nharness: {type: claude}\n"))
+	if err == nil || err.Error() != SchemaV1MigrationMessage {
+		t.Fatalf("ParseV2 schema 1 error = %v, want %q", err, SchemaV1MigrationMessage)
 	}
 }
 

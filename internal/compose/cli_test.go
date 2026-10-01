@@ -33,7 +33,7 @@ func TestComposeArchiveWritesPortableTeamArchive(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name, "Tariboyfile.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name, "Tariboyfile.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

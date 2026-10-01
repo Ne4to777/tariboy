@@ -25,7 +25,7 @@ func testStore(t *testing.T) *Store {
 func TestImportTreePublishesValidatedEditableSource(t *testing.T) {
 	root := t.TempDir()
 	incoming := t.TempDir()
-	if err := os.WriteFile(filepath.Join(incoming, "Tariboyfile.yaml"), []byte("schema_version: 1\nprompts: [PROMPT.md]\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(incoming, "Tariboyfile.yaml"), []byte("schema_version: 2\nprompts: [{file: ./PROMPT.md}]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(incoming, "PROMPT.md"), []byte("imported\n"), 0o600); err != nil {

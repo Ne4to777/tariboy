@@ -1,7 +1,9 @@
+// Package imagefile parses and validates Tariboyfile.yaml (spec §8).
 package imagefile
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"github.com/alekzonder/tariboy/internal/imagecontract"
 	"gopkg.in/yaml.v3"
 )
+
+// DefaultFilename is looked up when a parser is given a directory.
+const DefaultFilename = "Tariboyfile.yaml"
 
 const SchemaV1MigrationMessage = "schema 1 image sources are no longer supported; migrate to schema 2"
 
@@ -42,12 +47,6 @@ type V2 struct {
 	Dir           string        `yaml:"-" json:"-"`
 }
 
-type Parsed struct {
-	Version int
-	V1      *Imagefile
-	V2      *V2
-}
-
 func sourcePath(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -67,6 +66,12 @@ func ParseV2(path string) (*V2, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	var header struct {
+		SchemaVersion int `yaml:"schema_version"`
+	}
+	if err := yaml.Unmarshal(data, &header); err == nil && header.SchemaVersion == 1 {
+		return nil, errors.New(SchemaV1MigrationMessage)
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -130,37 +135,4 @@ func ParseV2(path string) (*V2, error) {
 		}
 	}
 	return &out, nil
-}
-
-func ParseAny(path string) (*Parsed, error) {
-	resolved, err := sourcePath(path)
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		return nil, err
-	}
-	var header struct {
-		SchemaVersion int `yaml:"schema_version"`
-	}
-	if err := yaml.Unmarshal(data, &header); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", resolved, err)
-	}
-	switch header.SchemaVersion {
-	case 1:
-		v1, err := Parse(resolved)
-		if err != nil {
-			return nil, err
-		}
-		return &Parsed{Version: 1, V1: v1}, nil
-	case 2:
-		v2, err := ParseV2(resolved)
-		if err != nil {
-			return nil, err
-		}
-		return &Parsed{Version: 2, V2: v2}, nil
-	default:
-		return nil, fmt.Errorf("imagefile schema_version must be 1 or 2, got %d", header.SchemaVersion)
-	}
 }

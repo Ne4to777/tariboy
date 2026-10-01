@@ -449,13 +449,11 @@ func inventory(root string) ([]StoreImage, error) {
 			result = append(result, item)
 			continue
 		}
-		parsed, err := imagefile.ParseAny(dir)
+		parsed, err := imagefile.ParseV2(dir)
 		if err != nil {
 			item.Error = err.Error()
-		} else if parsed.Version == 2 {
-			item.Version = parsed.V2.ImageVersion
 		} else {
-			item.Version = parsed.V1.ImageVersion
+			item.Version = parsed.ImageVersion
 		}
 		result = append(result, item)
 	}

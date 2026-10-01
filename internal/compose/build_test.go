@@ -13,7 +13,7 @@ func TestBuildPublishesDeclaredImagesThroughDaemon(t *testing.T) {
 	if err := os.MkdirAll(ctxDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tariboyfile := "schema_version: 1\n"
+	tariboyfile := "schema_version: 2\n"
 	if err := os.WriteFile(filepath.Join(ctxDir, "Tariboyfile.yaml"), []byte(tariboyfile), 0o600); err != nil {
 		t.Fatal(err)
 	}

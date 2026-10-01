@@ -36,11 +36,11 @@ func TestImageArchiveExportAndUploadPreview(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "Tariboyfile.yaml"), []byte("schema_version: 2\nplugins: []\nskills: []\nprompts: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := imagefile.ParseAny(source)
+	parsed, err := imagefile.ParseV2(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := image.BuildV2(parsed.V2, imagefile.ResolveRoots{}, image.Ref{Name: "demo", Tag: "v1"}, &image.Store{Dir: filepath.Join(base, "images")}, time.Now, nil); err != nil {
+	if _, err := image.BuildV2(parsed, imagefile.ResolveRoots{}, image.Ref{Name: "demo", Tag: "v1"}, &image.Store{Dir: filepath.Join(base, "images")}, time.Now, nil); err != nil {
 		t.Fatal(err)
 	}
 	snapshots := imagesnapshot.Store{DB: db.DB, Root: filepath.Join(base, "image-source-snapshots")}

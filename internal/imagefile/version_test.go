@@ -9,16 +9,16 @@ import (
 )
 
 func TestImageVersionParsing(t *testing.T) {
-	for _, schema := range []int{1, 2} {
+	for _, schema := range []int{2} {
 		for _, value := range []string{"0.1.0", "1.2.3-rc.1+build.7", "999999999999999999999.0.0"} {
 			dir := writeV2Source(t, fmt.Sprintf("schema_version: %d\nimage_version: %s\n", schema, value))
-			if _, err := ParseAny(dir); err != nil {
+			if _, err := ParseV2(dir); err != nil {
 				t.Errorf("%d %s: %v", schema, value, err)
 			}
 		}
 		for _, value := range []string{"v1.2.3", "1.2", "01.2.3", "1.2.3-01", "1.2.3+", "' '", "[]", "''", "null", ""} {
 			dir := writeV2Source(t, fmt.Sprintf("schema_version: %d\nimage_version: %s\n", schema, value))
-			if _, err := ParseAny(dir); err == nil {
+			if _, err := ParseV2(dir); err == nil {
 				t.Errorf("accepted %s", value)
 			}
 		}

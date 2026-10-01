@@ -36,7 +36,7 @@ func TestExportAndPreviewCarryComposeWithoutImageSources(t *testing.T) {
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(source, "Tariboyfile.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "Tariboyfile.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	snapshots := &imagesnapshot.Store{DB: db.DB, Root: filepath.Join(base, "snapshots")}
@@ -88,7 +88,7 @@ func TestCreateFromComposeBuildsArchiveAcceptedByPreview(t *testing.T) {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "Tariboyfile.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "Tariboyfile.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -119,7 +119,7 @@ func TestPreviewRejectsLegacySourceBearingTeamArchive(t *testing.T) {
 	if err := addFile(root, "tariboy-compose.yaml", compose, &files, &paths); err != nil {
 		t.Fatal(err)
 	}
-	if err := addFile(root, "images/source/Tariboyfile.yaml", []byte("schema_version: 1\n"), &files, &paths); err != nil {
+	if err := addFile(root, "images/source/Tariboyfile.yaml", []byte("schema_version: 2\n"), &files, &paths); err != nil {
 		t.Fatal(err)
 	}
 	meta, err := json.Marshal(metadata{Team: "team", Images: []Image{{Ref: "demo:v1", SourceName: "source", SourceDigest: "sha256:legacy"}}})
@@ -143,7 +143,7 @@ func TestPreviewRejectsUnadvertisedImageArchiveMember(t *testing.T) {
 	if err := addFile(root, "tariboy-compose.yaml", []byte("version: 1\ngroups:\n  team: {}\n"), &files, &paths); err != nil {
 		t.Fatal(err)
 	}
-	if err := addFile(root, "images/source/Tariboyfile.yaml", []byte("schema_version: 1\n"), &files, &paths); err != nil {
+	if err := addFile(root, "images/source/Tariboyfile.yaml", []byte("schema_version: 2\n"), &files, &paths); err != nil {
 		t.Fatal(err)
 	}
 	meta, err := json.Marshal(metadata{Team: "team", Images: []Image{}})
@@ -197,7 +197,7 @@ func TestLoadRejectsPreviouslyStagedExtraImageMember(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tariboy-compose.yaml"), []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "images", "source", "Tariboyfile.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "images", "source", "Tariboyfile.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Load("legacy"); err == nil {

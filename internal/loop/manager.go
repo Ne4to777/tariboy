@@ -2611,12 +2611,9 @@ func buildImageForAgentLocked(imgStore *image.Store, workdir, name, tag, path st
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := imagefile.ParseAny(abs)
+	parsed, err := imagefile.ParseV2(abs)
 	if err != nil {
 		return nil, err
-	}
-	if parsed.Version != 2 {
-		return nil, errors.New(imagefile.SchemaV1MigrationMessage)
 	}
 	// An empty tag publishes the declared image_version and latest, exactly as
 	// the operator CLI does.
@@ -2624,20 +2621,20 @@ func buildImageForAgentLocked(imgStore *image.Store, workdir, name, tag, path st
 	if tag != "" {
 		requested = []string{tag}
 	}
-	refs, _, err := image.BuildRefs(name, requested, parsed.V2.ImageVersion)
+	refs, _, err := image.BuildRefs(name, requested, parsed.ImageVersion)
 	if err != nil {
 		return nil, err
 	}
 	baseDir := filepath.Dir(imgStore.Dir)
 	layout := paths.Paths{Base: baseDir}
 	pluginsDir := layout.PluginsDir()
-	if len(parsed.V2.Extends) > 0 {
+	if len(parsed.Extends) > 0 {
 		assembled, cleanup, err := imagefile.Assemble(abs, filepath.Join(baseDir, "image-build"), imagefile.ResolveRoots{Plugins: pluginsDir}, nil)
 		if err != nil {
 			return nil, err
 		}
 		defer cleanup()
-		if parsed, err = imagefile.ParseAny(assembled); err != nil {
+		if parsed, err = imagefile.ParseV2(assembled); err != nil {
 			return nil, err
 		}
 	}
@@ -2648,7 +2645,7 @@ func buildImageForAgentLocked(imgStore *image.Store, workdir, name, tag, path st
 	if err := imgStore.Migrate(); err != nil {
 		return nil, err
 	}
-	man, err := image.BuildV2(parsed.V2, imagefile.ResolveRoots{Plugins: pluginsDir}, refs[0], imgStore, time.Now, resolver)
+	man, err := image.BuildV2(parsed, imagefile.ResolveRoots{Plugins: pluginsDir}, refs[0], imgStore, time.Now, resolver)
 	if err != nil {
 		return nil, err
 	}

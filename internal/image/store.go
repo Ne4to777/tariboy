@@ -395,18 +395,6 @@ func ValidateArchive(archivePath string, ref Ref) (Manifest, error) {
 	return inspectArchive(archivePath, ref)
 }
 
-func (s *Store) ReadBody(ref Ref) (string, error) {
-	path, err := s.archiveFor(ref)
-	if err != nil {
-		return "", err
-	}
-	b, err := readFileFromTar(path, "BODY.md")
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
 func readFileFromTar(archive, want string) ([]byte, error) {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -432,79 +420,6 @@ func readFileFromTar(archive, want string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("%s not found in %s", want, archive)
-}
-
-// writeArchive builds the schema-v1 tar.gz in a temporary file and publishes it.
-func (s *Store) writeArchive(ref Ref, man Manifest, prompt, tail, body string, skillDirs []string, archiveOut *[]byte) (string, error) {
-	if err := os.MkdirAll(s.nameDir(ref.Name), 0o700); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(s.nameDir(ref.Name), "."+ref.Tag+"-*.tmp")
-	if err != nil {
-		return "", err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed
-
-	gz := gzip.NewWriter(tmp)
-	tw := tar.NewWriter(gz)
-
-	manJSON, err := json.MarshalIndent(man, "", "  ")
-	if err != nil {
-		tmp.Close()
-		return "", err
-	}
-	members := []struct {
-		name string
-		data []byte
-	}{
-		{"manifest.json", manJSON},
-		{"PROMPT.md", []byte(prompt)},
-		{"PROMPT_TAIL.md", []byte(tail)},
-		{"BODY.md", []byte(body)},
-	}
-	for _, m := range members {
-		if err := writeTarFile(tw, m.name, m.data); err != nil {
-			tmp.Close()
-			return "", err
-		}
-	}
-	for _, sd := range skillDirs {
-		base := filepath.Base(sd)
-		err := filepath.Walk(sd, func(path string, info os.FileInfo, werr error) error {
-			if werr != nil {
-				return werr
-			}
-			if info.IsDir() {
-				return nil
-			}
-			rel, err := filepath.Rel(sd, path)
-			if err != nil {
-				return err
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			return writeTarFile(tw, filepath.ToSlash(filepath.Join("skills", base, rel)), data)
-		})
-		if err != nil {
-			tmp.Close()
-			return "", err
-		}
-	}
-	if err := tw.Close(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := gz.Close(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	return s.publishArchive(ref, tmpName, archiveOut)
 }
 
 // publishArchive validates staged content, stores it under its ref id and

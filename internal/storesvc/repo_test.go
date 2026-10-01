@@ -26,13 +26,13 @@ func validBlob(t *testing.T, ref image.Ref) ([]byte, string) {
 	if err := os.WriteFile(filepath.Join(src, "task.md"), []byte("do it\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f, err := imagefile.ParseAny(src)
+	f, err := imagefile.ParseV2(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	store := &image.Store{Dir: dir}
-	if _, err := image.BuildV2(f.V2, imagefile.ResolveRoots{}, ref, store, time.Now, nil); err != nil {
+	if _, err := image.BuildV2(f, imagefile.ResolveRoots{}, ref, store, time.Now, nil); err != nil {
 		t.Fatal(err)
 	}
 	blob, err := store.ArchiveBytes(ref)

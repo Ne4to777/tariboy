@@ -277,12 +277,12 @@ func (s *Store) ImportTree(name, incoming string) (Source, error) {
 	if err != nil {
 		return Source{}, err
 	}
-	parsed, err := imagefile.ParseAny(stage)
+	parsed, err := imagefile.ParseV2(stage)
 	if err != nil {
 		return Source{}, err
 	}
 	now := s.now().UTC().Format(time.RFC3339)
-	source := Source{SchemaVersion: parsed.Version, Name: name, CreatedAt: now, UpdatedAt: now}
+	source := Source{SchemaVersion: parsed.SchemaVersion, Name: name, CreatedAt: now, UpdatedAt: now}
 	if err := s.writeMetadataAt(stage, source); err != nil {
 		return Source{}, err
 	}

@@ -3,6 +3,8 @@ package image
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,4 +273,9 @@ func (s *Store) writeV2Archive(ref Ref, man Manifest, template PromptTemplate, l
 		return "", err
 	}
 	return s.publishArchive(ref, tmpName, archiveOut)
+}
+
+func sha256hex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }

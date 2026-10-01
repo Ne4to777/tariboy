@@ -42,16 +42,16 @@ func writeImage(t *testing.T, root, name, version string) {
 
 func buildStoreImage(t *testing.T, store *image.Store, sourceRoot, sourceName, targetName, tag, version, builtAt string) {
 	t.Helper()
-	parsed, err := imagefile.ParseAny(filepath.Join(sourceRoot, "images", sourceName))
+	parsed, err := imagefile.ParseV2(filepath.Join(sourceRoot, "images", sourceName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed.V2.ImageVersion = version
+	parsed.ImageVersion = version
 	when, err := time.Parse(time.RFC3339, builtAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := image.BuildV2(parsed.V2, imagefile.ResolveRoots{}, image.Ref{Name: targetName, Tag: tag}, store, func() time.Time { return when }, nil); err != nil {
+	if _, err := image.BuildV2(parsed, imagefile.ResolveRoots{}, image.Ref{Name: targetName, Tag: tag}, store, func() time.Time { return when }, nil); err != nil {
 		t.Fatal(err)
 	}
 }

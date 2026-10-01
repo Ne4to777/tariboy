@@ -2,74 +2,33 @@ package plugincaps
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
-func TestFragmentsContract(t *testing.T) {
-	orders := map[int]bool{}
-	for _, f := range fragments {
-		if len(f.Teaches) == 0 {
-			t.Errorf("%s teaches nothing", f.Name)
-		}
-		for _, cmd := range f.Teaches {
-			if strings.TrimSpace(cmd) == "" {
-				t.Errorf("%s has an empty Teaches entry", f.Name)
-			}
-		}
-		if !known(f.Plugin) {
-			t.Errorf("%s references unknown plugin %q", f.Name, f.Plugin)
-		}
-		if orders[f.Order] {
-			t.Errorf("duplicate Order %d", f.Order)
-		}
-		orders[f.Order] = true
-	}
-}
-
-func TestSchemaV1FragmentsResolveDirectSkillInstructions(t *testing.T) {
-	for _, fragment := range fragments {
-		if fragment.Tail {
-			if fragment.Path != "prompts/iteration-finish.md" {
-				t.Fatalf("finish fragment path = %q", fragment.Path)
-			}
-			continue
-		}
-		if want := "skills/" + fragment.Plugin + "/SKILL.md"; fragment.Path != want {
-			t.Errorf("%s path = %q, want %q", fragment.Plugin, fragment.Path, want)
-		}
-		for _, command := range fragment.Teaches {
-			if strings.HasPrefix(command, "tools ") {
-				t.Errorf("%s retains dispatcher command %q", fragment.Plugin, command)
-			}
-		}
-	}
-}
-
-func TestResolve(t *testing.T) {
-	got, err := Resolve([]string{"context", "status"})
+func TestResolveWithExternal(t *testing.T) {
+	got, err := ResolveWithExternal([]string{"context", "status"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"whoami", "loop", "messages", "context", "status"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Resolve = %v, want %v", got, want)
+		t.Fatalf("ResolveWithExternal = %v, want %v", got, want)
 	}
 	// dedupe: requesting a CORE plugin does not duplicate it
-	got, _ = Resolve([]string{"whoami", "context"})
+	got, _ = ResolveWithExternal([]string{"whoami", "context"}, nil)
 	if !reflect.DeepEqual(got, []string{"whoami", "loop", "messages", "context"}) {
 		t.Fatalf("dedupe failed: %v", got)
 	}
-	if _, err := Resolve([]string{"nope"}); err == nil {
+	if _, err := ResolveWithExternal([]string{"nope"}, nil); err == nil {
 		t.Fatal("unknown plugin accepted")
 	}
-	if _, err := Resolve([]string{"be" + "ads"}); err == nil {
+	if _, err := ResolveWithExternal([]string{"be" + "ads"}, nil); err == nil {
 		t.Fatal("retired plugin accepted")
 	}
 }
 
 func TestWorkdirIsV2InstructionPluginOnly(t *testing.T) {
-	if _, err := Resolve([]string{"workdir"}); err == nil {
+	if _, err := ResolveWithExternal([]string{"workdir"}, nil); err == nil {
 		t.Fatal("schema-v1 resolution accepted workdir")
 	}
 	got, err := ValidateExplicit([]string{"workdir"}, nil)
@@ -97,9 +56,9 @@ func TestImageCreatorCapability(t *testing.T) {
 	if !IsOptional("image-creator") {
 		t.Fatal("image-creator must be an OPTIONAL capability")
 	}
-	resolved, err := Resolve([]string{"image-creator"})
+	resolved, err := ResolveWithExternal([]string{"image-creator"}, nil)
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("ResolveWithExternal: %v", err)
 	}
 	found := false
 	for _, n := range resolved {
@@ -116,7 +75,7 @@ func TestTasksCapabilityIsOptionalAndContributesItsOwnPrompt(t *testing.T) {
 	if !IsOptional("tasks") {
 		t.Fatal("tasks must be an OPTIONAL built-in capability")
 	}
-	resolved, err := Resolve([]string{"tasks"})
+	resolved, err := ResolveWithExternal([]string{"tasks"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +88,7 @@ func TestTasksCapabilityIsOptionalAndContributesItsOwnPrompt(t *testing.T) {
 	if !found {
 		t.Fatalf("tasks missing from resolved set %v", resolved)
 	}
-	without, err := Resolve(nil)
+	without, err := ResolveWithExternal(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

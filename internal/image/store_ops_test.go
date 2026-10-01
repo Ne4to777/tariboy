@@ -47,13 +47,12 @@ func seed(t *testing.T, st *Store, name string) {
 	if err := os.WriteFile(filepath.Join(src, "b.md"), []byte("BODY "+name), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	im := &imagefile.Imagefile{
-		SchemaVersion: 1,
-		Plugins:       []imagefile.Plugin{{Name: "context"}},
-		Prompts:       []imagefile.Prompt{{Filepath: filepath.Join(src, "b.md")}},
+	im := &imagefile.V2{
+		SchemaVersion: 2,
+		Prompts:       []imagefile.PromptEntry{{File: "./b.md"}},
 		Dir:           src,
 	}
-	if _, err := buildLegacy(t, im, Ref{Name: name, Tag: "latest"}, st, fixedClock()); err != nil {
+	if _, err := BuildV2(im, imagefile.ResolveRoots{}, Ref{Name: name, Tag: "latest"}, st, fixedClock(), nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -73,12 +72,8 @@ func TestStoreListAndRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt, "BODY aaa") || !strings.Contains(prompt, "i-am-done") {
-		t.Fatalf("render missing content: %q", prompt)
-	}
-	// tail renders after the body (recency principle)
-	if strings.LastIndex(prompt, "i-am-done") < strings.Index(prompt, "BODY aaa") {
-		t.Fatalf("tail not after body: %q", prompt)
+	if want := "BODY aaa"; prompt != want {
+		t.Fatalf("render = %q, want %q", prompt, want)
 	}
 }
 
@@ -141,17 +136,7 @@ func TestBuildMovesAnExistingRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	src := t.TempDir()
-	prompt := filepath.Join(src, "changed.md")
-	if err := os.WriteFile(prompt, []byte("CHANGED BODY"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	im := &imagefile.Imagefile{
-		SchemaVersion: 1,
-		Prompts:       []imagefile.Prompt{{Filepath: prompt}},
-		Dir:           src,
-	}
-	rebuilt, err := buildLegacy(t, im, ref, st, fixedClock())
+	rebuilt, err := buildPrompt(t, st, ref, "CHANGED BODY")
 	if err != nil {
 		t.Fatalf("rebuilding an existing ref: %v", err)
 	}
@@ -190,54 +175,6 @@ func TestReservedDefaultRefsCannotBeRemoved(t *testing.T) {
 	}
 }
 
-// TestBuildPacksSkillsDir asserts that a Tariboyfile's skills: directory is
-// packed into the image tarball under skills/<name>/... (Task 6 carry-forward:
-// the packing code in writeArchive existed but had no coverage).
-func TestBuildPacksSkillsDir(t *testing.T) {
-	src := t.TempDir()
-	skillDir := filepath.Join(src, "myskill")
-	if err := os.MkdirAll(filepath.Join(skillDir, "sub"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# my skill"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "sub", "helper.md"), []byte("helper content"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	task := filepath.Join(src, "task.md")
-	if err := os.WriteFile(task, []byte("DO THE TASK"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	st := &Store{Dir: t.TempDir()}
-	im := &imagefile.Imagefile{
-		SchemaVersion: 1,
-		Plugins:       []imagefile.Plugin{{Name: "context"}},
-		Prompts:       []imagefile.Prompt{{Filepath: task}},
-		Skills:        []string{skillDir},
-		Dir:           src,
-	}
-	ref := Ref{Name: "withskill", Tag: "latest"}
-	if _, err := buildLegacy(t, im, ref, st, fixedClock()); err != nil {
-		t.Fatal(err)
-	}
-
-	names := tarEntryNames(t, archivePathFor(t, st, ref))
-	want := []string{"skills/myskill/SKILL.md", "skills/myskill/sub/helper.md"}
-	for _, w := range want {
-		if !names[w] {
-			t.Fatalf("archive missing %q; entries: %v", w, names)
-		}
-	}
-	body, err := readFileFromTar(archivePathFor(t, st, ref), "skills/myskill/SKILL.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "# my skill" {
-		t.Fatalf("skill file contents = %q", body)
-	}
-}
-
 func TestStoreListFiles(t *testing.T) {
 	st := &Store{Dir: t.TempDir()}
 	if _, err := st.ListFiles(Ref{Name: "nope", Tag: "latest"}); err == nil {
@@ -252,7 +189,7 @@ func TestStoreListFiles(t *testing.T) {
 	for _, e := range entries {
 		byPath[e.Path] = e
 	}
-	for _, want := range []string{"manifest.json", "PROMPT.md", "PROMPT_TAIL.md", "BODY.md"} {
+	for _, want := range []string{"manifest.json", "prompt/template.json", "prompt/layers/000-b.md"} {
 		e, ok := byPath[want]
 		if !ok {
 			t.Fatalf("ListFiles missing %q; got %+v", want, entries)
@@ -274,18 +211,18 @@ func TestStoreListFiles(t *testing.T) {
 
 func TestStoreReadFile(t *testing.T) {
 	st := &Store{Dir: t.TempDir()}
-	if _, err := st.ReadFile(Ref{Name: "nope", Tag: "latest"}, "BODY.md"); err == nil {
+	if _, err := st.ReadFile(Ref{Name: "nope", Tag: "latest"}, "prompt/layers/000-b.md"); err == nil {
 		t.Fatal("ReadFile on absent image should error")
 	}
 	seed(t, st, "app")
 	ref := Ref{Name: "app", Tag: "latest"}
 
-	body, err := st.ReadFile(ref, "BODY.md")
+	body, err := st.ReadFile(ref, "prompt/layers/000-b.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(body) != "BODY app" {
-		t.Fatalf("BODY.md = %q", body)
+		t.Fatalf("prompt layer = %q", body)
 	}
 
 	// missing in-archive file → error

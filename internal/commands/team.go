@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -219,15 +218,12 @@ func applyTeamImageLocked(c *registry.Ctx, preview teamportable.Preview, planned
 		onSourceReady()
 	}
 	managedSourceDir := filepath.Join(paths.Paths{Base: c.BaseDir}.ImageSourcesDir(), planned.SourceName)
-	parsed, err := imagefile.ParseAny(managedSourceDir)
+	parsed, err := imagefile.ParseV2(managedSourceDir)
 	if err != nil {
 		return err
 	}
-	if parsed.Version != 2 {
-		return registryError("image_build_failed", errors.New(imagefile.SchemaV1MigrationMessage))
-	}
 	layout := paths.Paths{Base: c.BaseDir}
-	manifest, err := image.BuildV2(parsed.V2, imagefile.ResolveRoots{Plugins: layout.PluginsDir()}, ref, imageStore(c), time.Now, imagePluginResolver(c, layout.PluginsDir()))
+	manifest, err := image.BuildV2(parsed, imagefile.ResolveRoots{Plugins: layout.PluginsDir()}, ref, imageStore(c), time.Now, imagePluginResolver(c, layout.PluginsDir()))
 	if err != nil {
 		return registryError("image_build_failed", err)
 	}

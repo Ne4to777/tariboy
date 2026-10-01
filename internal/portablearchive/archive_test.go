@@ -55,7 +55,7 @@ func fileManifest(path string, body []byte) Manifest {
 }
 
 func TestStageRoundTripValidatesManifest(t *testing.T) {
-	body := []byte("schema_version: 1\n")
+	body := []byte("schema_version: 2\n")
 	archive := makeArchive(t, fileManifest("source/Tariboyfile.yaml", body), []tarEntry{{name: "source/Tariboyfile.yaml", typeflag: tar.TypeReg, body: body}})
 	destination := filepath.Join(t.TempDir(), "staged")
 	manifest, err := Stage(bytes.NewReader(archive), int64(len(archive)), destination, DefaultLimits())
