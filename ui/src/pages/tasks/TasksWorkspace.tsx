@@ -318,8 +318,13 @@ function TasksWorkspaceContent({
   useEffect(() => {
     void Promise.resolve().then(loadTree)
   }, [loadTree])
+  // Open each deep-link key once: loadDetail changes identity whenever the
+  // host Daemon object is re-created, and the key stays in the URL after close.
+  const openedInitialKeyRef = useRef("")
   useEffect(() => {
-    if (initialTaskKey) void Promise.resolve().then(() => loadDetail(initialTaskKey))
+    if (!initialTaskKey || openedInitialKeyRef.current === initialTaskKey) return
+    openedInitialKeyRef.current = initialTaskKey
+    void Promise.resolve().then(() => loadDetail(initialTaskKey))
   }, [initialTaskKey, loadDetail])
 
   useTasksSocket({

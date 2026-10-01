@@ -474,6 +474,24 @@ describe("TasksWorkspace", () => {
     expect(screen.getByRole("textbox", { name: "Description" })).toHaveTextContent("Customer needs a date")
   })
 
+  it("keeps a closed deep-linked task closed when the host target is re-created", async () => {
+    const asked = { ...root, key: "ASK-7", title: "Choose the release date" }
+    api.listTasks.mockResolvedValue({ tasks: [asked], sequence: 10 })
+    api.getTask.mockResolvedValue({ ...detail, task: asked })
+    const target = () => ({ id: "remote", label: "Remote", baseURL: "https://remote.example", token: "test" })
+
+    const view = render(<TasksWorkspace target={target()} initialTaskKey="ASK-7" />)
+    expect(await screen.findByRole("heading", { name: "ASK-7" })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Close task detail" }))
+    const loads = api.listTaskEvents.mock.calls.length
+
+    view.rerender(<TasksWorkspace target={target()} initialTaskKey="ASK-7" />)
+    await act(async () => {})
+
+    expect(api.listTaskEvents).toHaveBeenCalledTimes(loads)
+    expect(screen.queryByRole("heading", { name: "ASK-7" })).not.toBeInTheDocument()
+  })
+
   it("updates the selected task when the deep-link key changes", async () => {
     const first = { ...root, key: "ASK-7", title: "First question", description: "First answer needed" }
     const second = { ...root, key: "ASK-8", title: "Second question", description: "Second answer needed" }
