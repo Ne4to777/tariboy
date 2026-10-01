@@ -517,7 +517,7 @@ func (s *Service) ListTasks(ctx context.Context, actor Actor, filter ListFilter)
 		args = append(args, filter.Group)
 	}
 	if filter.Text != "" {
-		query += ` AND (LOWER(t.title) LIKE ? OR LOWER(t.description) LIKE ? OR LOWER(t.task_key) LIKE ?)`
+		query += ` AND (unicode_lower(t.title) LIKE ? OR unicode_lower(t.description) LIKE ? OR unicode_lower(t.task_key) LIKE ?)`
 		pattern := "%" + strings.ToLower(strings.TrimSpace(filter.Text)) + "%"
 		args = append(args, pattern, pattern, pattern)
 	}

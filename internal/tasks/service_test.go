@@ -681,6 +681,37 @@ func TestListTasksFilterByTextMatchesTaskKey(t *testing.T) {
 	}
 }
 
+// SQLite's own LOWER and LIKE fold only ASCII, so non-Latin text must still match in any case.
+func TestListTasksFilterByTextIsCaseInsensitiveForUnicode(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	customer := CustomerActor("customer")
+	if _, err := svc.CreateQueue(ctx, customer, CreateQueueInput{Prefix: "FIND", Name: "Find"}); err != nil {
+		t.Fatal(err)
+	}
+	ru, err := svc.CreateTask(ctx, customer, CreateTaskInput{
+		Queue: "FIND", Title: "Исправь поиск", Description: "Поиск должен быть CASE insensitive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateTask(ctx, customer, CreateTaskInput{
+		Queue: "FIND", Title: "another task", Description: "another description",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, text := range []string{"Исправь", "исправь", "ИСПРАВЬ", "ДОЛЖЕН", "case INSENSITIVE"} {
+		page, err := svc.ListTasks(ctx, customer, ListFilter{Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Tasks) != 1 || page.Tasks[0].Key != ru.Key {
+			t.Fatalf("ListTasks(Text=%q) returned %d tasks, want only %s", text, len(page.Tasks), ru.Key)
+		}
+	}
+}
+
 // Authorship still carries a whole subtree: an agent running a customer root keeps its
 // children even though a root it files itself would be invisible. Detaching a child hands
 // it out of that subtree, and the counts on the root say how big the subtree has grown.
