@@ -36,6 +36,7 @@ func TestAgentWorkflowCommandsUseToolsActions(t *testing.T) {
 	}{
 		{[]string{"advance", "DEV-1", "--outcome", "ready", "--message", "PR up"}, "advance", map[string]any{"key": "DEV-1", "outcome": "ready", "message": "PR up"}},
 		{[]string{"advance", "DEV-1", "--outcome", "ready"}, "advance", map[string]any{"key": "DEV-1", "outcome": "ready"}},
+		{[]string{"advance", "DEV-1", "--outcome", "ready", "--from", "develop"}, "advance", map[string]any{"key": "DEV-1", "outcome": "ready", "from": "develop"}},
 		{[]string{"artifacts", "set", "DEV-1", "plan", "step 1"}, "artifact_set", map[string]any{"key": "DEV-1", "name": "plan", "value": "step 1"}},
 		{[]string{"artifacts", "ls", "DEV-1"}, "artifact_ls", map[string]any{"key": "DEV-1"}},
 		{[]string{"artifacts", "show", "DEV-1", "plan"}, "artifact_show", map[string]any{"key": "DEV-1", "name": "plan"}},
@@ -63,6 +64,7 @@ func TestOperatorWorkflowCommandsUseRestRoutes(t *testing.T) {
 		body          any
 	}{
 		{[]string{"advance", "DEV-1", "--outcome", "approve", "--message", "ok"}, "POST", "/api/tasks/DEV-1/advance", map[string]any{"outcome": "approve", "message": "ok"}},
+		{[]string{"advance", "DEV-1", "--outcome", "approve", "--from", "approval"}, "POST", "/api/tasks/DEV-1/advance", map[string]any{"outcome": "approve", "from": "approval"}},
 		{[]string{"artifacts", "set", "DEV-1", "plan", "v"}, "PUT", "/api/tasks/DEV-1/artifacts/plan", map[string]any{"value": "v"}},
 		{[]string{"artifacts", "ls", "DEV-1"}, "GET", "/api/tasks/DEV-1/artifacts", map[string]string{}},
 		{[]string{"artifacts", "show", "DEV-1", "plan"}, "GET", "/api/tasks/DEV-1/artifacts/plan", map[string]string{}},
@@ -281,6 +283,7 @@ func TestWorkflowGetTextAndJSON(t *testing.T) {
 		"workflow: development@1.2.0", "status: develop", "category: in_progress", "waiting_on:", "owner: pool:developers", "holder: agent:dev-1",
 		"ready -> review  requires: plan, summary  missing: summary  checks: checks/ci.sh", "abandon -> done",
 		"plan  agent:dev-1  line one line two", "last_request: #7 ready applied by agent:dev-1",
+		"next: ttasks advance DEV-1 --from develop --outcome <name>",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("text lacks %q:\n%s", want, &out)
@@ -345,7 +348,7 @@ func TestWorkflowManagedRefusalHintsTheAdvanceCommand(t *testing.T) {
 			if code := Run(context.Background(), tt.argv, tt.env, io.Discard, &errOut); code != 1 {
 				t.Fatalf("code %d", code)
 			}
-			for _, want := range []string{"workflow_managed", `status "develop"`, `"ready", "abandon"`, "ttasks advance " + tt.key + " --outcome <name>"} {
+			for _, want := range []string{"workflow_managed", `status "develop"`, `"ready", "abandon"`, "ttasks advance " + tt.key + " --from develop --outcome <name>"} {
 				if !strings.Contains(errOut.String(), want) {
 					t.Errorf("stderr lacks %q:\n%s", want, &errOut)
 				}
@@ -366,7 +369,7 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		path  []string
 		wants []string
 	}{
-		{[]string{"advance"}, []string{"--outcome", "--message", "KEY"}},
+		{[]string{"advance"}, []string{"--outcome", "--from", "--message", "KEY", "status_changed"}},
 		{[]string{"artifacts", "set"}, []string{"--file", "stdin", "NAME"}},
 		{[]string{"artifacts", "ls"}, []string{"KEY"}},
 		{[]string{"artifacts", "show"}, []string{"NAME"}},

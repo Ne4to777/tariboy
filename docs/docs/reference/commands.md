@@ -227,7 +227,7 @@ routes as the customer.
 
 | Command | Modes | REST route |
 | --- | --- | --- |
-| `ttasks advance KEY --outcome NAME [--message TEXT]` | agent, operator | `POST /api/tasks/{key}/advance` |
+| `ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT]` (`--from` refuses with `status_changed` when the task has moved on) | agent, operator | `POST /api/tasks/{key}/advance` |
 | `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` (stdin when absent; stored as given, up to 64 KiB) | agent, operator | `PUT /api/tasks/{key}/artifacts/{name}` |
 | `ttasks artifacts ls KEY` | agent, operator | `GET /api/tasks/{key}/artifacts` |
 | `ttasks artifacts show KEY NAME` | agent, operator | `GET /api/tasks/{key}/artifacts/{name}` |
@@ -240,7 +240,7 @@ routes as the customer.
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the
-status's outcomes and the `ttasks advance` form to use. An outcome that declares
+status's outcomes and the `ttasks advance` form to use, with `--from` set to the current status. An outcome that declares
 checks is refused with `checks_unavailable` because scripts do not run yet. `ttasks show` prints
 `status` (the workflow status), `category`, and `waiting_on`.
 

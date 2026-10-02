@@ -29,7 +29,7 @@ func (s *workflowStub) record(actor tasks.Actor, format string, args ...any) {
 	s.calls = append(s.calls, fmt.Sprintf("%s|%s", actor.Principal, fmt.Sprintf(format, args...)))
 }
 func (s *workflowStub) Advance(_ context.Context, a tasks.Actor, key string, in tasks.AdvanceInput) (tasks.TransitionRequest, error) {
-	s.record(a, "advance %s %q %q", key, in.Outcome, in.Message)
+	s.record(a, "advance %s %q %q from=%q", key, in.Outcome, in.Message, in.From)
 	return tasks.TransitionRequest{ID: 7, TaskKey: key, Outcome: in.Outcome, State: "applied"}, s.err
 }
 func (s *workflowStub) SetArtifact(_ context.Context, a tasks.Actor, key, name, value string) (tasks.Artifact, error) {
@@ -88,7 +88,9 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 		result             string // a substring of the JSON result
 	}{
 		{"advance", "POST", "/api/tasks/DEV-1/advance", map[string]any{"outcome": "ready", "message": "PR up"},
-			`advance DEV-1 "ready" "PR up"`, `"state":"applied"`},
+			`advance DEV-1 "ready" "PR up" from=""`, `"state":"applied"`},
+		{"advance from", "POST", "/api/tasks/DEV-1/advance", map[string]any{"outcome": "ready", "from": "develop"},
+			`advance DEV-1 "ready" "" from="develop"`, `"state":"applied"`},
 		{"artifact set keeps the value as given", "PUT", "/api/tasks/DEV-1/artifacts/plan", map[string]any{"value": "step 1\n"},
 			`artifact_set DEV-1 plan "step 1\n"`, `"name":"plan"`},
 		{"artifact ls", "GET", "/api/tasks/DEV-1/artifacts", nil, `artifact_ls DEV-1`, `"count":1`},
@@ -173,6 +175,17 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 	for _, name := range []string{"category", "waiting_on", "workflow_digest", "workflow_name", "workflow_version", "workflow_paused_reason"} {
 		if props[name] == nil {
 			t.Errorf("Task schema lacks %s", name)
+		}
+	}
+	var advance map[string]any
+	if err := json.Unmarshal(doc.Paths["/api/tasks/{key}/advance"]["post"], &advance); err != nil {
+		t.Fatal(err)
+	}
+	body := advance["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	bodyProps, _ := body["properties"].(map[string]any)
+	for _, name := range []string{"outcome", "message", "from"} {
+		if bodyProps[name] == nil {
+			t.Errorf("advance request schema lacks %s", name)
 		}
 	}
 }

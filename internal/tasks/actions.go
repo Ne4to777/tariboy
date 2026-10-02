@@ -118,6 +118,7 @@ func (s *Service) AgentAction(ctx context.Context, actor Actor, action string, b
 	case "advance":
 		return s.Advance(ctx, actor, actionString(body, "key"), AdvanceInput{
 			Outcome: actionString(body, "outcome"), Message: actionRawString(body, "message"),
+			From: actionString(body, "from"),
 		})
 	case "artifact_set":
 		return s.SetArtifact(ctx, actor, actionString(body, "key"), actionString(body, "name"), actionRawString(body, "value"))

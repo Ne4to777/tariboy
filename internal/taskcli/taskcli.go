@@ -102,7 +102,8 @@ func printResult(parsed request, raw json.RawMessage, jsonOut bool, stdout, stde
 	}
 	switch parsed.action {
 	case "workflow_get":
-		if printWorkflow(raw, stdout) {
+		key, _ := parsed.payload["key"].(string)
+		if printWorkflow(raw, key, stdout) {
 			return 0
 		}
 	case "show":

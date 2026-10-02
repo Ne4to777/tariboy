@@ -59,11 +59,15 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 	}
 	now := s.now()
 	from := task.WorkflowStatus
-	if previous, ok := currentStatus(manifest, from); ok && from != "" && !previous.Terminal {
-		// Leaving a customer status by any route answers its question; leaving a
-		// pool status makes the holder's questions to the customer moot.
-		if err := resolveWorkflowWaitsTx(ctx, tx, *task,
-			previous.Owner.Kind == workflowfile.OwnerCustomer, previous.Owner.Kind == workflowfile.OwnerPool, now); err != nil {
+	if from != "" {
+		// Leaving any status by any route answers the workflow's own wait (a
+		// customer status's question); leaving a pool status makes the holder's
+		// questions to the customer moot.
+		holder := ""
+		if previous, ok := currentStatus(manifest, from); ok && !previous.Terminal && previous.Owner.Kind == workflowfile.OwnerPool {
+			holder = task.Assignee
+		}
+		if err := resolveWorkflowWaitsTx(ctx, tx, *task, holder, now); err != nil {
 			return err
 		}
 	}
@@ -148,19 +152,16 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 }
 
 // resolveWorkflowWaitsTx resolves open waits of a workflow task without an
-// answering comment: with systemWait the workflow's own question, and with
-// holderQuestions every question an agent asked the task's customer. Waits
-// requested by anyone else, or expecting another principal, stay open.
-func resolveWorkflowWaitsTx(ctx context.Context, tx *sql.Tx, task Task, systemWait, holderQuestions bool, now string) error {
-	if !systemWait && !holderQuestions {
-		return nil
-	}
+// answering comment: always the workflow's own wait, and with holder set the
+// questions holder asked the task's customer. Waits requested by anyone else,
+// or expecting another principal, stay open.
+func resolveWorkflowWaitsTx(ctx context.Context, tx *sql.Tx, task Task, holder, now string) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE task_waiting_for SET resolved_at = ?
 		WHERE task_id = ? AND resolved_at = '' AND (
-			(? AND requesting_principal = ?) OR
-			(? AND expected_principal = ? AND requesting_principal LIKE 'agent:%'))`,
-		now, task.ID, systemWait, workflowActor, holderQuestions, task.Customer)
+			requesting_principal = ? OR
+			(? <> '' AND requesting_principal = ? AND expected_principal = ?))`,
+		now, task.ID, workflowActor, holder, holder, task.Customer)
 	return err
 }
 

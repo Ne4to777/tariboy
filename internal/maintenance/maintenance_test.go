@@ -230,6 +230,51 @@ func TestCleanupDeletesOnlyOldFinishedTrees(t *testing.T) {
 	}
 }
 
+// addWorkflowRows gives task id the rows a workflow task carries: a visit, a
+// holder, a transition request, and an artifact.
+func addWorkflowRows(t *testing.T, db *sql.DB, id int) {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO task_status_visits(task_id,sequence,status_id,entered_at,entered_by,left_at) VALUES (?,1,'build',?,'system:workflow',?)`,
+		id, ts(400), ts(400))
+	if err != nil {
+		t.Fatal(err)
+	}
+	visit, _ := res.LastInsertId()
+	exec(t, db, `INSERT INTO task_workflow_holders(task_id,pool,agent,dispatched_at) VALUES (?,'builders','a',?)`, id, ts(400))
+	exec(t, db, `INSERT INTO task_transition_requests(task_id,visit_id,outcome,actor,state,created_at,finished_at) VALUES (?,?,'ok','agent:a','applied',?,?)`,
+		id, visit, ts(400), ts(400))
+	exec(t, db, `INSERT INTO task_artifacts(task_id,name,value,author,created_at) VALUES (?,'plan','p','agent:a',?)`, id, ts(400))
+}
+
+func TestCleanupDeletesWorkflowRowsOfClosedTaskTrees(t *testing.T) {
+	svc, st, _ := open(t)
+	db := st.DB
+	exec(t, db, `INSERT INTO task_workflow_images(digest,name,version,manifest,built_at) VALUES ('d1','flow','1.0.0','{}',?)`, ts(400))
+	// Tree 1: an old closed workflow task -> removed with its workflow rows.
+	addTask(t, db, 1, nil, "done", 100)
+	addWorkflowRows(t, db, 1)
+	// Tree 2: an open workflow task -> kept with its workflow rows.
+	addTask(t, db, 2, nil, "in_progress", 0)
+	addWorkflowRows(t, db, 2)
+	exec(t, db, `UPDATE tasks SET workflow_digest='d1', workflow_status='build'`)
+
+	res, err := svc.Run()
+	if err != nil || res.Error != "" {
+		t.Fatalf("run: %+v %v", res, err)
+	}
+	if taskExists(t, db, 1) || !taskExists(t, db, 2) {
+		t.Fatalf("tasks after cleanup: 1=%v 2=%v; want only 2", taskExists(t, db, 1), taskExists(t, db, 2))
+	}
+	for _, table := range []string{"task_status_visits", "task_workflow_holders", "task_transition_requests", "task_artifacts"} {
+		if n := count(t, db, `SELECT COUNT(*) FROM `+table+` WHERE task_id=1`); n != 0 {
+			t.Errorf("%s rows of the purged task = %d, want 0", table, n)
+		}
+		if n := count(t, db, `SELECT COUNT(*) FROM `+table+` WHERE task_id=2`); n != 1 {
+			t.Errorf("%s rows of the kept task = %d, want 1", table, n)
+		}
+	}
+}
+
 func TestCleanupAIRequestsMessagesAndEvents(t *testing.T) {
 	svc, st, _ := open(t)
 	db := st.DB

@@ -69,7 +69,7 @@ func (s *Service) RebindAgentPool(
 		return AgentPool{}, err
 	}
 	if len(agents) == 0 {
-		if err := requirePoolUnusedByBinding(ctx, tx, queue, poolName); err != nil {
+		if err := requirePoolUnused(ctx, tx, queue, poolName); err != nil {
 			return AgentPool{}, err
 		}
 	}
@@ -195,11 +195,13 @@ func (s *Service) ListAgentPools(ctx context.Context, actor Actor, queue string)
 	return items, nil
 }
 
-// WorkflowResolver turns "name:tag" or a digest into a published digest.
+// WorkflowResolver turns a workflow ref, NAME, NAME:TAG, or NAME:<digest>,
+// into a published digest. A bare digest is not a ref.
 type WorkflowResolver func(ref string) (digest string, err error)
 
 // SetWorkflowResolver installs the resolver SetQueueWorkflow uses to turn a
-// workflow ref into a digest. Without one, binding is unavailable.
+// workflow ref into a digest. Without one, binding is unavailable. It must be
+// called before the service handles requests.
 func (s *Service) SetWorkflowResolver(resolve WorkflowResolver) { s.workflowResolver = resolve }
 
 func queueWorkflowRevisionConflict(current int64) error {
@@ -253,20 +255,46 @@ func emptyPools(ctx context.Context, q queryer, queue string, pools []string) ([
 	return missing, nil
 }
 
-// requirePoolUnusedByBinding rejects emptying a pool the queue's bound
-// workflow uses.
-func requirePoolUnusedByBinding(ctx context.Context, q queryer, queue, pool string) error {
+// requirePoolUnused rejects emptying a pool that the queue's bound workflow
+// uses, or that the workflow version an unfinished task of the queue is pinned
+// to uses: such a task would have nobody to assign.
+func requirePoolUnused(ctx context.Context, q queryer, queue, pool string) error {
 	binding, bound, err := queueWorkflowTx(ctx, q, queue)
-	if err != nil || !bound {
-		return err
-	}
-	manifest, err := loadManifestTx(ctx, q, binding.Digest)
 	if err != nil {
 		return err
 	}
-	for _, used := range manifest.Definition.Pools() {
-		if used == pool {
-			return poolsEmptyError([]string{pool})
+	var digests []string
+	if bound {
+		digests = append(digests, binding.Digest)
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT DISTINCT workflow_digest FROM tasks
+		WHERE queue_prefix = ? AND workflow_digest IS NOT NULL AND status NOT IN ('done', 'cancelled')`, queue)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			rows.Close()
+			return err
+		}
+		if !bound || digest != binding.Digest {
+			digests = append(digests, digest)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, digest := range digests {
+		manifest, err := loadManifestTx(ctx, q, digest)
+		if err != nil {
+			return err
+		}
+		for _, used := range manifest.Definition.Pools() {
+			if used == pool {
+				return poolsEmptyError([]string{pool})
+			}
 		}
 	}
 	return nil
@@ -325,6 +353,11 @@ func (s *Service) SetQueueWorkflow(ctx context.Context, actor Actor, queue, ref 
 	if err != nil {
 		return QueueWorkflow{}, err
 	}
+	// The digest already bound is a no-op whatever the revision, so a retry of
+	// a bind that applied succeeds.
+	if bound && current.Digest == digest {
+		return current, nil
+	}
 	if revision != current.Revision {
 		return QueueWorkflow{}, queueWorkflowRevisionConflict(current.Revision)
 	}
@@ -334,9 +367,6 @@ func (s *Service) SetQueueWorkflow(ctx context.Context, actor Actor, queue, ref 
 			return QueueWorkflow{}, domainError(http.StatusNotFound, "not_found", "workflow image "+digest+" is not published")
 		}
 		return QueueWorkflow{}, err
-	}
-	if bound && current.Digest == digest {
-		return current, nil
 	}
 	if missing, err := emptyPools(ctx, tx, queue, manifest.Definition.Pools()); err != nil {
 		return QueueWorkflow{}, err

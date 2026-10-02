@@ -117,11 +117,12 @@ newer version, run `queue workflow set` again with the current binding
 revision: the task already created keeps its old version, and only tasks
 created afterwards pin the new one. `--revision` is `0` for a first binding and
 the revision shown by `queue workflow get` for a rebind or a `clear`. Binding
-the digest that is already bound changes nothing and keeps the revision.
+the digest that is already bound changes nothing and keeps the revision,
+whatever revision is given, so a retried bind succeeds.
 
 | Error | Meaning |
 | --- | --- |
-| `workflow_pool_empty` | A pool the image names is missing or has no agents. The error lists the pools. Emptying a pool that the bound image uses is refused with the same code. |
+| `workflow_pool_empty` | A pool the image names is missing or has no agents. The error lists the pools. Emptying a pool that the bound image uses, or that the pinned version of an unfinished task in the queue uses, is refused with the same code. |
 | `revision_conflict` | The revision is not the current one; read the binding again and retry. |
 | `not_found` | No published image matches the reference. |
 | `invalid_workflow_ref` | The reference is malformed. |
@@ -133,8 +134,9 @@ the digest that is already bound changes nothing and keeps the revision.
 A binding emits `queue.workflow_bound` and `queue.workflow_cleared` queue
 events carrying the image name, version, and digest.
 
-Removing a workflow image that a queue binds, or that a task not yet `done` or
-`cancelled` pins, is refused with `workflow_in_use`; see
+Removing a workflow image that a queue binds, or that any task pins, open or
+closed, is refused with `workflow_in_use`; nightly task retention removes closed
+task trees, which frees the image later. See
 [Workflow images](/docs/workflow-images).
 
 ### Creating a task in a bound queue
@@ -176,6 +178,9 @@ Entering a customer status keeps the assignee, sets the category to
 `wait_customer`, and opens a wait for the customer through a comment by
 `system:workflow` that mentions the customer, lists the outcomes, and includes
 the status instructions. The customer gets the usual question notification.
+The task is not a valid Goal while it waits in a customer status, so the
+holder's Goal is released at once and dispatch may give it other work; the
+customer-wait grace applies only to a holder's own question.
 Entering a script status sets `wait_customer`, clears the assignee, and opens no
 customer wait. Entering a terminal status sets `done` (or `cancelled`) and
 records `completed_at`.
@@ -207,16 +212,24 @@ ttasks artifacts show DEV-ab12 plan
 
 ## Advancing a task
 
-`ttasks advance KEY --outcome NAME [--message TEXT]` leaves the current status
-by one of its outcomes. An agent may advance a task it holds in a pool status;
-the customer or operator may advance a task in a customer status. Nobody can
-advance a script or terminal status.
+`ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT]` leaves the
+current status by one of its outcomes. An agent may advance a task it holds in a
+pool status; the customer or operator may advance a task in a customer status.
+Nobody can advance a script or terminal status.
+
+`--from` (`from` in the REST body and the agent action) names the status the
+caller believes the task is in. When the task is in another status the advance
+is refused with `status_changed` and writes nothing, so a retry after a timeout,
+or a double click, cannot apply a second transition that happens to share the
+outcome name. Without `--from` the advance applies to whatever status is
+current. The `workflow_managed` hint and `ttasks workflow get` print the command
+with `--from` filled in.
 
 ```bash
 ttasks artifacts set DEV-ab12 plan --file plan.md
-ttasks advance DEV-ab12 --outcome planned --message "Plan ready for review"
+ttasks advance DEV-ab12 --outcome planned --from plan --message "Plan ready for review"
 # as the customer, at the approval status
-ttasks advance DEV-ab12 --outcome approved
+ttasks advance DEV-ab12 --outcome approved --from approval
 ```
 
 A transition without checks applies in the request's own transaction: the
@@ -235,18 +248,21 @@ the one reported:
 | 3 | `workflow_not_bound` | 409 | The task has no workflow (a flexible task). |
 | 4 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
 | 5 | `workflow_paused` | 409 | The task is paused. Reserved; it does not occur today. |
-| 6 | `status_unknown` | 409 | The pinned image does not declare the task's status. |
-| 7 | `not_holder` | 403 | The caller does not own the status: an agent that is not the holder, an agent in a customer status, or anyone in a script status. |
-| 8 | `outcome_unknown` | 400 | The status does not declare the outcome; the error lists the outcomes. |
-| 9 | `artifact_missing` | 409 | A required artifact has no value; the error lists the missing names. |
-| 10 | `transition_pending` | 409 | Another request of the task is still pending. |
-| 11 | `checks_unavailable` | 409 | The transition declares `checks`, which cannot run yet. Nothing is written. |
-| 12 | `revision_conflict` | 409 | The task changed while the request was running. Retry. |
+| 6 | `status_changed` | 409 | `from` is set and the task is in another status; the error carries the current `status`. Nothing is written. |
+| 7 | `status_unknown` | 409 | The pinned image does not declare the task's status. |
+| 8 | `not_holder` | 403 | The caller does not own the status: an agent that is not the holder, an agent in a customer status, or anyone in a script status. |
+| 9 | `outcome_unknown` | 400 | The status does not declare the outcome; the error lists the outcomes. |
+| 10 | `artifact_missing` | 409 | A required artifact has no value; the error lists the missing names. |
+| 11 | `transition_pending` | 409 | Another request of the task is still pending. |
+| 12 | `checks_unavailable` | 409 | The transition declares `checks`, which cannot run yet. Nothing is written. |
+| 13 | `revision_conflict` | 409 | The task changed while the request was running. Retry. |
 
 ## Operator move and cancel
 
-The operator, and the customer, can override a workflow. Both commands are
-operator-only: an agent receives `forbidden`.
+The operator (acting as the customer) can override a workflow. Both commands
+are operator-only. An agent that tries `ttasks workflow move` or `ttasks cancel`
+gets the CLI's "unknown command", because no agent action exists for them; a
+caller of the REST route that is not the customer receives `forbidden` (403).
 
 ```bash
 ttasks workflow move DEV-ab12 --to implement --reason 'review found a regression'
@@ -265,7 +281,7 @@ task waiting, and the move is how a task leaves one today: from the example,
 
 `cancel` closes any unfinished task as `cancelled` (`workflow_closed` when it is
 already closed), cancels a pending request, and resolves the workflow's own
-wait and the holder's questions. The workflow status stays as the record of
+wait and the current assignee's questions to the customer. The workflow status stays as the record of
 where the task stopped. It records `workflow.cancelled`.
 
 ## Questions on a workflow task
@@ -275,12 +291,15 @@ Agents still use `ttasks ask` and `ttasks comment`.
 - **In a pool status** the holder's question to the customer moves the category
   to `wait_customer` with `waiting_on: customer`, as for a flexible task, and
   the customer's answer returns it to `in_progress`. Leaving the status by any
-  route, an advance, a move, or a cancel, resolves the holder's open questions
-  to the customer as moot.
+  route, an advance, a move, or a cancel, resolves the holder's own open
+  questions to the customer as moot; a question another agent asked stays
+  open.
 - **In a customer status** the task already waits on the customer through the
   workflow's own wait. A comment that mentions the customer does not add a
   second wait, and a comment does not answer the workflow's question: only an
-  outcome does. Leaving the status by any route resolves that wait.
+  outcome does. Leaving the status by any route resolves that wait; so does
+  leaving any other status, or a cancel, should the workflow have a wait of its
+  own open there.
 - **In a script status** a comment does not change the category.
 
 ## The task view
@@ -310,7 +329,7 @@ generated OpenAPI document is the authority for request and response schemas.
 | `PUT` | `/api/task-queues/{queue}/workflow` | bind an image (`ref`, `revision`) | operator |
 | `GET` | `/api/task-queues/{queue}/workflow` | read the binding | operator |
 | `DELETE` | `/api/task-queues/{queue}/workflow` | unbind (`revision`) | operator |
-| `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`) | agent, operator |
+| `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`) | agent, operator |
 | `PUT` | `/api/tasks/{key}/artifacts/{name}` | set an artifact (`value`) | agent, operator |
 | `GET` | `/api/tasks/{key}/artifacts` | list current artifacts | agent, operator |
 | `GET` | `/api/tasks/{key}/artifacts/{name}` | read an artifact and its history | agent, operator |
@@ -348,11 +367,13 @@ became flexible tasks and keep a `workflow.removed` event.
 | `workflow_managed` | 409 | The command does not apply to a task with a workflow. |
 | `workflow_not_bound` | 409 | The task has no workflow. |
 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
-| `workflow_in_use` | 409 | A queue or an unfinished task still uses the image. |
+| `workflow_in_use` | 409 | A queue binds the image or a task, open or closed, pins it. |
 | `workflow_pool_empty` | 409 | A pool the image names is missing or has no agents. |
 | `workflow_unavailable` | 503 | The workflow image store is not available. |
 | `queue_workflow_not_found` | 404 | The queue has no binding. |
 | `not_holder` | 403 | The caller does not own the current status. |
+| `forbidden` | 403 | A caller that is not the customer used an operator-only route: binding, move, or cancel. |
+| `status_changed` | 409 | An advance named `from`, and the task is in another status. |
 | `outcome_unknown` | 400 | The status does not declare that outcome. |
 | `status_unknown` | 400, 409 | The image does not declare that status (400 for a move, 409 for a task in an undeclared status). |
 | `artifact_missing` | 409 | A required artifact has no value. |

@@ -94,7 +94,19 @@ func printWorkflowManagedHint(apiErr *client.APIError, key string, stderr io.Wri
 	} else {
 		fmt.Fprintln(stderr, "hint: this status offers no outcomes")
 	}
-	fmt.Fprintf(stderr, "hint: ttasks advance %s --outcome <name>\n", key)
+	fmt.Fprintf(stderr, "hint: %s\n", advanceCommand(key, status))
+}
+
+// advanceCommand is the advance command line for key in status, with --from so
+// a retry cannot apply twice. A status that is not a plain identifier is left
+// out rather than printed to the terminal.
+func advanceCommand(key, status string) string {
+	if status == "" || strings.IndexFunc(status, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_')
+	}) >= 0 {
+		return "ttasks advance " + key + " --outcome <name>"
+	}
+	return "ttasks advance " + key + " --from " + status + " --outcome <name>"
 }
 
 // printShowHeader prints the status, category, and waiting_on of the shown task
@@ -119,9 +131,9 @@ func printShowHeader(raw json.RawMessage, stdout io.Writer) {
 	}
 }
 
-// printWorkflow renders a WorkflowView as text. It reports false when raw is
-// not one, so the caller falls back to the generic dump.
-func printWorkflow(raw json.RawMessage, stdout io.Writer) bool {
+// printWorkflow renders the WorkflowView of task key as text. It reports false
+// when raw is not one, so the caller falls back to the generic dump.
+func printWorkflow(raw json.RawMessage, key string, stdout io.Writer) bool {
 	var view tasks.WorkflowView
 	if json.Unmarshal(raw, &view) != nil || view.Name == "" {
 		return false
@@ -146,6 +158,9 @@ func printWorkflow(raw json.RawMessage, stdout io.Writer) bool {
 			line += "  checks: " + strings.Join(outcome.Checks, ", ")
 		}
 		fmt.Fprintln(stdout, line)
+	}
+	if len(view.Outcomes) > 0 && key != "" {
+		field("next", advanceCommand(key, view.Status))
 	}
 	fmt.Fprintln(stdout, "artifacts:")
 	artifacts := append([]tasks.Artifact(nil), view.Artifacts...)

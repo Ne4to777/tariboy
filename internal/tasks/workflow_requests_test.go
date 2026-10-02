@@ -589,3 +589,199 @@ func TestLeavingAPoolStatusResolvesTheHoldersQuestionsToTheCustomer(t *testing.T
 		}
 	})
 }
+
+// applyTransitionTx is what a later script runner calls for a pending request:
+// the request becomes applied and the task enters the target status.
+func TestApplyTransitionAppliesAPendingRequest(t *testing.T) {
+	ctx := context.Background()
+	svc, _, task := requestFixture(t)
+	id := insertPendingRequest(t, svc, task)
+	tx, err := svc.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ := currentStatus(manifest, "develop")
+	transition, _ := statusTransition(status, "ready")
+	if err := svc.applyTransitionTx(ctx, tx, &task, manifest, id, transition, "agent:dev-1", "checks passed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var state, finishedAt string
+	if err := svc.db.QueryRow(`SELECT state, finished_at FROM task_transition_requests WHERE id = ?`, id).Scan(&state, &finishedAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "applied" || finishedAt == "" {
+		t.Fatalf("request = %q finished %q", state, finishedAt)
+	}
+	stored, err := taskByKey(svc.db, task.Key)
+	if err != nil || stored.WorkflowStatus != "review" || stored.Assignee != "agent:reviewer-1" {
+		t.Fatalf("stored = %#v, %v", stored, err)
+	}
+	transitioned := eventPayload(t, svc, task, "workflow.transitioned")
+	if transitioned["outcome"] != "ready" || transitioned["message"] != "checks passed" || transitioned["actor"] != "agent:dev-1" {
+		t.Fatalf("transitioned payload = %v", transitioned)
+	}
+}
+
+// seedOpenWait records an open wait requester asked of expected on task.
+func seedOpenWait(t *testing.T, svc *Service, task Task, requester, expected string) {
+	t.Helper()
+	result, err := svc.db.Exec(`INSERT INTO task_comments(task_id, author, body, created_at, updated_at) VALUES (?, ?, 'q', 'n', 'n')`,
+		task.ID, requester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.db.Exec(`
+		INSERT INTO task_waiting_for(task_id, expected_principal, requesting_principal, requesting_comment_id, requested_at, resolved_at)
+		VALUES (?, ?, ?, ?, 'n', '')`, task.ID, expected, requester, commentID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A system:workflow wait (a later pause opens one in any status) is resolved
+// whenever its status is left, whatever owns that status, and on cancel.
+func TestLeavingAnyStatusResolvesTheWorkflowsOwnWait(t *testing.T) {
+	ctx := context.Background()
+	t.Run("move out of a pool status", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		seedOpenWait(t, svc, task, workflowActor, "user:customer")
+		if _, err := svc.MoveWorkflow(ctx, actor, task.Key, "review", "hand over"); err != nil {
+			t.Fatal(err)
+		}
+		if n := openWaitsBy(t, svc, task, workflowActor, "user:customer"); n != 0 {
+			t.Fatalf("open workflow waits after the move = %d", n)
+		}
+	})
+	t.Run("move out of a script status", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		enter(t, svc, task.Key, "merge", "")
+		seedOpenWait(t, svc, task, workflowActor, "user:customer")
+		if _, err := svc.MoveWorkflow(ctx, actor, task.Key, "develop", "redo"); err != nil {
+			t.Fatal(err)
+		}
+		if n := openWaitsBy(t, svc, task, workflowActor, "user:customer"); n != 0 {
+			t.Fatalf("open workflow waits after the move = %d", n)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		seedOpenWait(t, svc, task, workflowActor, "user:customer")
+		if _, err := svc.CancelWorkflowTask(ctx, actor, task.Key); err != nil {
+			t.Fatal(err)
+		}
+		if n := openWaitsBy(t, svc, task, workflowActor, "user:customer"); n != 0 {
+			t.Fatalf("open workflow waits after the cancel = %d", n)
+		}
+	})
+}
+
+// Leaving a pool status resolves the holder's questions only; another agent's
+// question to the customer on the same task stays open. (A task has at most one
+// open wait per expected principal, so the holder's own question is covered by
+// TestLeavingAPoolStatusResolvesTheHoldersQuestionsToTheCustomer.)
+func TestLeavingAPoolStatusKeepsOtherAgentsQuestions(t *testing.T) {
+	ctx := context.Background()
+	t.Run("advance", func(t *testing.T) {
+		svc, _, task := requestFixture(t)
+		seedOpenWait(t, svc, task, "agent:dev-2", "user:customer")
+		setPlanAndSummary(t, svc, AgentActor("dev-1"), task.Key)
+		if _, err := svc.Advance(ctx, AgentActor("dev-1"), task.Key, AdvanceInput{Outcome: "ready"}); err != nil {
+			t.Fatal(err)
+		}
+		if openWaitsBy(t, svc, task, "agent:dev-2", "user:customer") != 1 {
+			t.Fatal("another agent's question was resolved by the advance")
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		seedOpenWait(t, svc, task, "agent:dev-2", "user:customer")
+		if _, err := svc.CancelWorkflowTask(ctx, actor, task.Key); err != nil {
+			t.Fatal(err)
+		}
+		if openWaitsBy(t, svc, task, "agent:dev-2", "user:customer") != 1 {
+			t.Fatal("another agent's question was resolved by the cancel")
+		}
+	})
+}
+
+func TestAdvanceFromGuardsTheStatusTheCallerSaw(t *testing.T) {
+	ctx := context.Background()
+	holder := AgentActor("dev-1")
+	t.Run("mismatch is refused and writes nothing", func(t *testing.T) {
+		svc, _, task := requestFixture(t)
+		before := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ?`, task.ID)
+		_, err := svc.Advance(ctx, holder, task.Key, AdvanceInput{Outcome: "ask", From: "review"})
+		if ErrorCode(err) != "status_changed" || ErrorStatus(err) != 409 || err.(*Error).Data["status"] != "develop" {
+			t.Fatalf("stale from: %#v", err)
+		}
+		if after := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ?`, task.ID); after != before {
+			t.Fatalf("events %d -> %d", before, after)
+		}
+		if n := countRows(t, svc, `SELECT COUNT(*) FROM task_transition_requests WHERE task_id = ?`, task.ID); n != 0 {
+			t.Fatalf("requests = %d", n)
+		}
+	})
+	t.Run("mismatch is checked before ownership", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		if _, err := svc.Advance(ctx, actor, task.Key, AdvanceInput{Outcome: "ask", From: "approval"}); ErrorCode(err) != "status_changed" {
+			t.Fatalf("customer with a stale from: %v", err)
+		}
+	})
+	for name, from := range map[string]string{"matching from": "develop", "empty from": ""} {
+		t.Run(name+" applies", func(t *testing.T) {
+			svc, _, task := requestFixture(t)
+			if _, err := svc.Advance(ctx, holder, task.Key, AdvanceInput{Outcome: "ask", From: from}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := taskByKey(svc.db, task.Key)
+			if err != nil || stored.WorkflowStatus != "approval" {
+				t.Fatalf("stored = %#v, %v", stored, err)
+			}
+		})
+	}
+}
+
+// A retried advance whose first attempt applied is refused when the new status
+// is owned by the same caller and declares the same outcome.
+func TestAdvanceRetryWithFromAppliesOnce(t *testing.T) {
+	ctx := context.Background()
+	svc, actor := workflowFixture(t)
+	customer := workflowfile.Owner{Kind: workflowfile.OwnerCustomer}
+	seedEngineImage(t, svc, workflowfile.File{
+		SchemaVersion: 1, Name: "signoff", WorkflowVersion: "0.1.0", InitialStatus: "first",
+		Statuses: []workflowfile.Status{
+			{ID: "first", Owner: customer, Transitions: []workflowfile.Transition{{On: "ok", To: "second"}}},
+			{ID: "second", Owner: customer, Transitions: []workflowfile.Transition{{On: "ok", To: "done"}}},
+			{ID: "done", Terminal: true},
+		},
+	})
+	if _, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "signoff:0.1.0", 0); err != nil {
+		t.Fatal(err)
+	}
+	task := mustCreateDev(t, svc, actor, "retry")
+	if _, err := svc.Advance(ctx, actor, task.Key, AdvanceInput{Outcome: "ok", From: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Advance(ctx, actor, task.Key, AdvanceInput{Outcome: "ok", From: "first"})
+	if ErrorCode(err) != "status_changed" || err.(*Error).Data["status"] != "second" {
+		t.Fatalf("retry: %#v", err)
+	}
+	stored, err := taskByKey(svc.db, task.Key)
+	if err != nil || stored.WorkflowStatus != "second" {
+		t.Fatalf("stored = %#v, %v", stored, err)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_transition_requests WHERE task_id = ?`, task.ID); n != 1 {
+		t.Fatalf("requests = %d", n)
+	}
+}

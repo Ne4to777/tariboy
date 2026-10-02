@@ -225,7 +225,7 @@ func TaskOperatorCommands() []registry.Command {
 		taskRoute("tasks.advance", "POST", "/api/tasks/{key}/advance", "Declare an outcome for a workflow task's current status",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.Advance(ctx, actor, stringParam(p, "key"), tasks.AdvanceInput{
-					Outcome: stringParam(p, "outcome"), Message: rawStringParam(p, "message"),
+					Outcome: stringParam(p, "outcome"), Message: rawStringParam(p, "message"), From: stringParam(p, "from"),
 				})
 			}),
 		taskRoute("tasks.artifacts.set", "PUT", "/api/tasks/{key}/artifacts/{name}", "Set a workflow task artifact",
@@ -385,7 +385,7 @@ func taskHTTPArgs(path string) []registry.Arg {
 	case "tasks.queue.trigger.delete":
 		return []registry.Arg{{Name: "id", Type: registry.Int, Required: true, Help: "Resource id"}}
 	case "tasks.advance":
-		return []registry.Arg{{Name: "outcome", Required: true, Help: "Outcome to declare"}, {Name: "message", Help: "Message recorded with the transition"}}
+		return []registry.Arg{{Name: "outcome", Required: true, Help: "Outcome to declare"}, {Name: "message", Help: "Message recorded with the transition"}, {Name: "from", Help: "Status the caller believes the task is in; a different current status is refused with status_changed"}}
 	case "tasks.artifacts.set":
 		return []registry.Arg{{Name: "value", Help: "Artifact value, stored as given"}}
 	case "tasks.workflow.move":

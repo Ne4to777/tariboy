@@ -210,14 +210,15 @@ func TestQueueWorkflowBindingRules(t *testing.T) {
 	if err != nil || same != bound {
 		t.Fatalf("rebind same digest = %#v, %v", same, err)
 	}
-	// A stale revision, or 0 once bound, conflicts and reports the current one.
+	d2 := seedBindingImage(t, svc, "flow", "2", "developers")
+	// A stale revision, or 0 once bound, conflicts and reports the current one
+	// when the ref names another digest.
 	for _, stale := range []int64{0, 7} {
-		_, err = svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:1", stale)
+		_, err = svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:2", stale)
 		if !errors.As(err, &domain) || domain.Code != "revision_conflict" || domain.Status != http.StatusConflict || domain.Data["current_revision"] != int64(1) {
 			t.Fatalf("stale revision %d error = %#v", stale, err)
 		}
 	}
-	d2 := seedBindingImage(t, svc, "flow", "2", "developers")
 	next, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:2", 1)
 	if err != nil || next.Digest != d2 || next.Revision != 2 || next.Version != "2" {
 		t.Fatalf("bind v2 = %#v, %v", next, err)
@@ -288,5 +289,59 @@ func TestRebindAgentPoolKeepsBoundPoolsNonEmpty(t *testing.T) {
 	}
 	if _, err := svc.RebindAgentPool(ctx, actor, "DEV", "other", nil, other.Revision, "empty-unused"); err != nil {
 		t.Fatalf("empty rebind of an unused pool: %v", err)
+	}
+}
+
+// A pool an older version uses stays non-empty while a task pinned to that
+// version is open, even after the queue is rebound to a version without it.
+func TestRebindAgentPoolKeepsPoolsOfPinnedVersionsNonEmpty(t *testing.T) {
+	ctx := context.Background()
+	svc, actor := workflowFixture(t)
+	d1 := seedBindingImage(t, svc, "flow", "1", "developers", "reviewers")
+	seedBindingImage(t, svc, "flow", "2", "developers")
+	mustRebindPool(t, svc, actor, "developers", []string{"dev-1"}, 0)
+	reviewers := mustRebindPool(t, svc, actor, "reviewers", []string{"reviewer-1"}, 0)
+	if _, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:1", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.db.Exec(`
+		INSERT INTO tasks(task_key, queue_prefix, title, status, author, customer, created_at, updated_at, workflow_digest, workflow_status)
+		VALUES ('DEV-1', 'DEV', 't', 'open', 'u', 'u', 'n', 'n', ?, 'in-reviewers')`, d1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:2", 1); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.RebindAgentPool(ctx, actor, "DEV", "reviewers", nil, reviewers.Revision, "empty-pinned")
+	var domain *Error
+	if !errors.As(err, &domain) || domain.Code != "workflow_pool_empty" || domain.Status != http.StatusConflict ||
+		!reflect.DeepEqual(domain.Data["pools"], []string{"reviewers"}) {
+		t.Fatalf("empty pool of a pinned version error = %#v", err)
+	}
+	if _, err := svc.db.Exec(`UPDATE tasks SET status = 'done' WHERE task_key = 'DEV-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RebindAgentPool(ctx, actor, "DEV", "reviewers", nil, reviewers.Revision, "empty-closed"); err != nil {
+		t.Fatalf("empty rebind once the pinned task closed: %v", err)
+	}
+}
+
+// Binding the digest already bound is a no-op even with the revision the
+// original bind used, so a retry of a successful bind succeeds.
+func TestSetQueueWorkflowRetryOfTheSameDigestIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	svc, actor := workflowFixture(t)
+	seedBindingImage(t, svc, "flow", "1", "developers")
+	mustRebindPool(t, svc, actor, "developers", []string{"dev-1"}, 0)
+	bound, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := svc.SetQueueWorkflow(ctx, actor, "DEV", "flow:1", 0)
+	if err != nil || retried != bound {
+		t.Fatalf("retry = %#v, %v; want %#v", retried, err, bound)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE queue_prefix = 'DEV' AND kind = 'queue.workflow_bound'`); n != 1 {
+		t.Fatalf("bound events = %d", n)
 	}
 }

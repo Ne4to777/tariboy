@@ -75,7 +75,10 @@ func TestAgentWorkflowActionsReadAndAdvance(t *testing.T) {
 	if v := view.(WorkflowView); v.Status != "develop" || v.Holder != "agent:dev-1" {
 		t.Fatalf("workflow_get = %#v", view)
 	}
-	advanced, err := svc.AgentAction(ctx, holder, "advance", map[string]any{"key": task.Key, "outcome": "ready", "message": "done"})
+	if _, err := svc.AgentAction(ctx, holder, "advance", map[string]any{"key": task.Key, "outcome": "ready", "from": "review"}); ErrorCode(err) != "status_changed" {
+		t.Fatalf("advance with a stale from: %v", err)
+	}
+	advanced, err := svc.AgentAction(ctx, holder, "advance", map[string]any{"key": task.Key, "outcome": "ready", "message": "done", "from": "develop"})
 	if err != nil {
 		t.Fatal(err)
 	}

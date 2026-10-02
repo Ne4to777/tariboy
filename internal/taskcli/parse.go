@@ -22,7 +22,7 @@ func taskCommandFlags() map[string]map[string]bool {
 		"update": set("title,description,status,pull-request,assignee,manual-block-reason,priority,revision"), "assign": set("revision"),
 		"comment": set("body,idempotency-key"), "ask": set("idempotency-key"),
 		"move": set("parent,before,to-root,revision"), "block": set("by,revision,idempotency-key"), "relate": set("revision,idempotency-key"), "done": set("revision,complete-anyway"),
-		"advance": set("outcome,message"), "artifact_set": set("file"), "artifact_ls": {}, "artifact_show": {},
+		"advance": set("outcome,from,message"), "artifact_set": set("file"), "artifact_ls": {}, "artifact_show": {},
 		"workflow_get": {}, "workflow_move": set("to,reason"), "cancel": {},
 	}
 }
@@ -234,6 +234,9 @@ func parse(argv []string) (request, error) {
 			return request{}, usageError{"tasks advance: --outcome is required"}
 		}
 		p["outcome"] = strings.TrimSpace(flags["outcome"])
+		if from := strings.TrimSpace(flags["from"]); from != "" {
+			p["from"] = from
+		}
 		copyFlag("message", true)
 	case "artifact_set":
 		v, e := require(0, "task key")

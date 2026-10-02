@@ -18,6 +18,10 @@ const maxTransitionMessageBytes = 4 << 10
 type AdvanceInput struct {
 	Outcome string `json:"outcome"`
 	Message string `json:"message"`
+	// From is the status the caller believes the task is in. When set and
+	// different from the current status the advance is refused with
+	// status_changed, so a retry or a double click cannot apply twice.
+	From string `json:"from,omitempty"`
 }
 
 // Advance declares an outcome for the current status. A pool status accepts
@@ -44,6 +48,12 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	}
 	if err := requireOpenWorkflow(task); err != nil {
 		return TransitionRequest{}, err
+	}
+	if in.From = strings.TrimSpace(in.From); in.From != "" && in.From != task.WorkflowStatus {
+		changed := domainError(http.StatusConflict, "status_changed",
+			"task "+task.Key+" is in status "+task.WorkflowStatus+", not "+in.From).(*Error)
+		changed.Data = map[string]any{"status": task.WorkflowStatus}
+		return TransitionRequest{}, changed
 	}
 	status, ok := currentStatus(manifest, task.WorkflowStatus)
 	if !ok {
@@ -102,9 +112,9 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 		return TransitionRequest{}, err
 	}
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO task_transition_requests(task_id, visit_id, outcome, message, actor, state, created_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, 'applied', ?, ?)`,
-		task.ID, visitID, in.Outcome, in.Message, actor.Principal, now, now)
+		INSERT INTO task_transition_requests(task_id, visit_id, outcome, message, actor, state, created_at)
+		VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		task.ID, visitID, in.Outcome, in.Message, actor.Principal, now)
 	if err != nil {
 		return TransitionRequest{}, err
 	}
@@ -119,7 +129,11 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	}, now); err != nil {
 		return TransitionRequest{}, err
 	}
-	if err := s.enterStatusTx(ctx, tx, &task, manifest, transition.To, actor.Principal, in.Outcome, in.Message); err != nil {
+	if err := s.applyTransitionTx(ctx, tx, &task, manifest, id, transition, actor.Principal, in.Message); err != nil {
+		return TransitionRequest{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT finished_at FROM task_transition_requests WHERE id = ?`, id).
+		Scan(&request.FinishedAt); err != nil {
 		return TransitionRequest{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -127,6 +141,20 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	}
 	s.signal()
 	return request, nil
+}
+
+// applyTransitionTx applies a transition request: it marks request requestID
+// applied and enters the transition's target status with its outcome and
+// message. It is the one place a request becomes a status change; a caller
+// that applies a pending request later must first confirm the request's visit
+// is still the task's open visit.
+func (s *Service) applyTransitionTx(ctx context.Context, tx *sql.Tx, task *Task, manifest workflowimage.Manifest, requestID int64, transition workflowfile.Transition, actor, message string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE task_transition_requests SET state = 'applied', finished_at = ? WHERE id = ?`,
+		s.now(), requestID); err != nil {
+		return err
+	}
+	return s.enterStatusTx(ctx, tx, task, manifest, transition.To, actor, transition.On, message)
 }
 
 // MoveWorkflow moves a task to any status without checks. Customer only.
@@ -222,7 +250,8 @@ func (s *Service) CancelWorkflowTask(ctx context.Context, actor Actor, key strin
 	if err := cancelPendingRequestTx(ctx, tx, task, "task cancelled by "+actor.Principal, now); err != nil {
 		return Task{}, err
 	}
-	if err := resolveWorkflowWaitsTx(ctx, tx, task, true, true, now); err != nil {
+	// The current assignee is the holder whose questions the cancel makes moot.
+	if err := resolveWorkflowWaitsTx(ctx, tx, task, task.Assignee, now); err != nil {
 		return Task{}, err
 	}
 	// The workflow status stays as the record of where the task stopped.

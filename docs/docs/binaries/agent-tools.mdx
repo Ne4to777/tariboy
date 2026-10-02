@@ -44,7 +44,8 @@ On a task that follows a queue's [workflow](/docs/task-workflows) the daemon
 assigns the work, and `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` do not apply. The agent reads `ttasks workflow get KEY`,
 sets declared artifacts with `ttasks artifacts set|ls|show`, and leaves its
-status with `ttasks advance KEY --outcome NAME`. `ttasks workflow move`,
+status with `ttasks advance KEY --outcome NAME --from STATUS`, where `--from`
+makes a retried advance fail with `status_changed` instead of applying twice. `ttasks workflow move`,
 `ttasks cancel`, and `ttasks queue workflow` are operator-only.
 
 `tariboyd` normally selects and persists one sticky assigned task per enabled
