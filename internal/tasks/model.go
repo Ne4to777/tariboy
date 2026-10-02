@@ -215,6 +215,9 @@ func (t *Task) UnmarshalJSON(data []byte) error {
 	}
 	switch {
 	case next.WorkflowDigest != "":
+		// A workflow payload carries both fields; an absent one is empty, never
+		// the receiver's previous value.
+		next.Status, next.Category = "", ""
 		if aux.Status != nil {
 			next.WorkflowStatus = *aux.Status
 		}

@@ -5,27 +5,30 @@ import (
 	"testing"
 )
 
-// isRefused reports a not_holder or not_found refusal: a non-holder agent may
-// not even see the task, depending on queue access.
-func isRefused(err error) bool {
-	code := ErrorCode(err)
-	return code == "not_holder" || code == "not_found"
-}
-
 func TestAgentWorkflowActionsUseTheSocketIdentityNotTheBody(t *testing.T) {
 	svc, _, task := requestFixture(t)
 	ctx := context.Background()
 	holder, other := AgentActor("dev-1"), AgentActor("dev-2")
+	// dev-2 may read the task (queue owner) but does not hold it, so the
+	// refusal below is not_holder rather than mere invisibility.
+	queue, err := svc.GetQueue(ctx, CustomerActor("customer"), "DEV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := append(append([]string{}, queue.Owners...), "dev-2")
+	if _, err := svc.UpdateQueue(ctx, CustomerActor("customer"), "DEV", UpdateQueueInput{Owners: &owners, Revision: queue.Revision}); err != nil {
+		t.Fatal(err)
+	}
 	forged := map[string]any{"key": task.Key, "name": "plan", "value": "p", "actor": "agent:dev-1",
 		"author": "agent:dev-1", "principal": "agent:dev-1", "customer": "customer"}
 
 	// A caller that is not the holder cannot pass itself off as the holder.
-	if _, err := svc.AgentAction(ctx, other, "artifact_set", forged); !isRefused(err) {
-		t.Fatalf("forged artifact_set error = %v; want a refusal", err)
+	if _, err := svc.AgentAction(ctx, other, "artifact_set", forged); ErrorCode(err) != "not_holder" {
+		t.Fatalf("forged artifact_set error = %v; want not_holder", err)
 	}
 	if _, err := svc.AgentAction(ctx, other, "advance", map[string]any{
-		"key": task.Key, "outcome": "ready", "actor": "agent:dev-1"}); !isRefused(err) {
-		t.Fatalf("forged advance error = %v; want a refusal", err)
+		"key": task.Key, "outcome": "ready", "actor": "agent:dev-1"}); ErrorCode(err) != "not_holder" {
+		t.Fatalf("forged advance error = %v; want not_holder", err)
 	}
 
 	got, err := svc.AgentAction(ctx, holder, "artifact_set", forged)

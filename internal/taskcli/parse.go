@@ -73,7 +73,7 @@ func parse(argv []string) (request, error) {
 	}
 	require := func(index int, label string) (string, error) {
 		if len(pos) <= index || strings.TrimSpace(pos[index]) == "" {
-			return "", usageError{fmt.Sprintf("tasks %s: %s is required", strings.ReplaceAll(action, "_", " "), label)}
+			return "", usageError{fmt.Sprintf("tasks %s: %s is required", commandName(action), label)}
 		}
 		return pos[index], nil
 	}
@@ -335,11 +335,18 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 	}
 	return flags, pos, nil
 }
+
+// commandName is the command as the user types it: "artifacts set" for the
+// action artifact_set.
+func commandName(action string) string {
+	return strings.Join(sharedHelpPath(action), " ")
+}
+
 func noExtra(action string, pos []string) error {
 	limits := map[string]int{"mine": 0, "ready": 0, "show": 1, "create": 0, "update": 1, "assign": 2, "comment": -1, "ask": -1, "move": 1, "block": 1, "relate": 2, "done": 1,
 		"advance": 1, "artifact_set": 3, "artifact_ls": 1, "artifact_show": 2, "workflow_get": 1, "workflow_move": 1, "cancel": 1}
 	if limit, ok := limits[action]; ok && limit >= 0 && len(pos) > limit {
-		return usageError{fmt.Sprintf("tasks %s: unexpected argument: %s", strings.ReplaceAll(action, "_", " "), pos[limit])}
+		return usageError{fmt.Sprintf("tasks %s: unexpected argument: %s", commandName(action), pos[limit])}
 	}
 	return nil
 }

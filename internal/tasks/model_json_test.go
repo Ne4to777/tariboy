@@ -35,6 +35,16 @@ func TestTaskUnmarshalDecidesFromThePayloadNotTheReceiver(t *testing.T) {
 	}
 }
 
+func TestTaskUnmarshalWorkflowPayloadWithoutStatusClearsReusedStatus(t *testing.T) {
+	task := Task{Status: StatusInProgress, Category: StatusInProgress, WorkflowStatus: "develop"}
+	if err := json.Unmarshal([]byte(`{"key":"DEV-4","workflow_digest":"d1"}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.WorkflowDigest != "d1" || task.WorkflowStatus != "" || task.Status != "" || task.Category != "" {
+		t.Fatalf("decode = %#v; want empty statuses for a workflow payload without them", task)
+	}
+}
+
 func TestTaskUnmarshalWithoutStatusKeepsStatus(t *testing.T) {
 	task := Task{Status: StatusInProgress, Category: StatusInProgress}
 	if err := json.Unmarshal([]byte(`{"key":"DEV-3","title":"t"}`), &task); err != nil {

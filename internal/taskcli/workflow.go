@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/alekzonder/tariboy/internal/client"
 	"github.com/alekzonder/tariboy/internal/tasks"
@@ -14,6 +16,17 @@ import (
 
 // previewRunes caps the one-line artifact preview of "workflow get".
 const previewRunes = 120
+
+// isTerminal reports whether r is an interactive terminal; a read from one
+// would block until the user types. Tests replace it.
+var isTerminal = func(r io.Reader) bool {
+	file, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
 
 // resolveArtifactValue fills the value of "artifacts set" from --file or from
 // stdin when no VALUE argument was given. The value is stored as read, trailing
@@ -27,7 +40,14 @@ func resolveArtifactValue(parsed *request, stderr io.Writer) int {
 		return 0
 	}
 	var source io.Reader = stdin
-	if path, _ := parsed.payload["file"].(string); path != "" {
+	name := "stdin"
+	path, _ := parsed.payload["file"].(string)
+	if path == "" && isTerminal(stdin) {
+		fmt.Fprintln(stderr, "tasks artifacts set: pass VALUE, --file PATH, or pipe the value on stdin")
+		return 2
+	}
+	if path != "" {
+		name = path
 		file, err := os.Open(path)
 		if err != nil {
 			fmt.Fprintf(stderr, "tasks artifacts set: %v\n", err)
@@ -40,6 +60,10 @@ func resolveArtifactValue(parsed *request, stderr io.Writer) int {
 	raw, err := io.ReadAll(io.LimitReader(source, maxArtifactInput))
 	if err != nil {
 		fmt.Fprintf(stderr, "tasks artifacts set: %v\n", err)
+		return 2
+	}
+	if !utf8.Valid(raw) {
+		fmt.Fprintf(stderr, "tasks artifacts set: %s is not valid UTF-8 text; artifacts hold text only\n", name)
 		return 2
 	}
 	parsed.payload["value"] = string(raw)
@@ -59,7 +83,7 @@ func printWorkflowManagedHint(apiErr *client.APIError, key string, stderr io.Wri
 	if list, ok := apiErr.Details["outcomes"].([]any); ok {
 		for _, item := range list {
 			if name, ok := item.(string); ok {
-				outcomes = append(outcomes, name)
+				outcomes = append(outcomes, fmt.Sprintf("%q", name))
 			}
 		}
 	}
@@ -141,7 +165,14 @@ func printWorkflow(raw json.RawMessage, stdout io.Writer) bool {
 
 // preview folds a value onto one line and caps it at previewRunes runes.
 func preview(value string) string {
-	folded := strings.Join(strings.Fields(value), " ")
+	// Control characters, ESC included, would act on the operator's terminal.
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cc, r) {
+			return ' '
+		}
+		return r
+	}, value)
+	folded := strings.Join(strings.Fields(cleaned), " ")
 	runes := []rune(folded)
 	if len(runes) <= previewRunes {
 		return folded

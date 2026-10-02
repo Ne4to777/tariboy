@@ -169,6 +169,94 @@ func TestArtifactInputReadsOneByteMoreThanTheLimit(t *testing.T) {
 	}
 }
 
+func TestArtifactSetFailsFastOnATerminalAndOnInvalidText(t *testing.T) {
+	r := &recorder{result: json.RawMessage(`{}`)}
+	withCaller(t, r)
+	old := isTerminal
+	t.Cleanup(func() { isTerminal = old })
+
+	isTerminal = func(io.Reader) bool { return true }
+	withStdin(t, "never read")
+	var errOut strings.Builder
+	if code := Run(context.Background(), []string{"artifacts", "set", "DEV-1", "plan"}, agentEnv(), io.Discard, &errOut); code != 2 ||
+		!strings.Contains(errOut.String(), "pipe the value on stdin") || len(r.calls) != 0 {
+		t.Fatalf("terminal stdin = %d %q calls %d", code, &errOut, len(r.calls))
+	}
+	// A terminal does not matter when VALUE or --file supplies the value.
+	if code := Run(context.Background(), []string{"artifacts", "set", "DEV-1", "plan", "v"}, agentEnv(), io.Discard, io.Discard); code != 0 {
+		t.Fatalf("VALUE with a terminal stdin = %d", code)
+	}
+	isTerminal = func(io.Reader) bool { return false }
+
+	withStdin(t, "ok \xff\xfe binary")
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"artifacts", "set", "DEV-1", "plan"}, agentEnv(), io.Discard, &errOut); code != 2 ||
+		!strings.Contains(errOut.String(), "stdin is not valid UTF-8") || len(r.calls) != 1 {
+		t.Fatalf("binary stdin = %d %q calls %d", code, &errOut, len(r.calls))
+	}
+	path := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(path, []byte{0x89, 'P', 'N', 'G', 0xff}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errOut.Reset()
+	if code := Run(context.Background(), []string{"artifacts", "set", "DEV-1", "plan", "--file", path}, agentEnv(), io.Discard, &errOut); code != 2 ||
+		!strings.Contains(errOut.String(), path+" is not valid UTF-8") || len(r.calls) != 1 {
+		t.Fatalf("binary file = %d %q calls %d", code, &errOut, len(r.calls))
+	}
+}
+
+func TestOperatorRoutesEscapeKeyAndArtifactName(t *testing.T) {
+	r := &recorder{result: json.RawMessage(`{}`)}
+	withCaller(t, r)
+	for _, argv := range [][]string{
+		{"artifacts", "set", "DEV-1", "a/b?c", "v"},
+		{"artifacts", "show", "DEV-1", "a/b?c"},
+	} {
+		if code := Run(context.Background(), argv, operatorEnv(t), io.Discard, io.Discard); code != 0 {
+			t.Fatalf("%q code %d", argv, code)
+		}
+	}
+	for _, call := range r.calls {
+		if call.route != "/api/tasks/DEV-1/artifacts/a%2Fb%3Fc" {
+			t.Errorf("route = %q; want the name escaped", call.route)
+		}
+	}
+	r.calls = nil
+	if code := Run(context.Background(), []string{"cancel", "DEV/../x?y"}, operatorEnv(t), io.Discard, io.Discard); code != 0 ||
+		r.calls[0].route != "/api/tasks/DEV%2F..%2Fx%3Fy/cancel" {
+		t.Fatalf("cancel calls = %#v", r.calls)
+	}
+}
+
+func TestExtraArgumentErrorsNameTheRealCommand(t *testing.T) {
+	for argv, want := range map[string]string{
+		"artifacts set DEV-1 plan v extra":        "tasks artifacts set: unexpected argument: extra",
+		"artifacts ls DEV-1 extra":                "tasks artifacts ls: unexpected argument: extra",
+		"workflow get DEV-1 extra":                "tasks workflow get: unexpected argument: extra",
+		"workflow move DEV-1 x --to a --reason b": "tasks workflow move: unexpected argument: x",
+		"artifacts show DEV-1":                    "tasks artifacts show: artifact name is required",
+	} {
+		_, err := parse(strings.Fields(argv))
+		if err == nil || err.Error() != want {
+			t.Errorf("parse(%q) error = %v; want %q", argv, err, want)
+		}
+	}
+}
+
+func TestTerminalHostileTextIsNeutralised(t *testing.T) {
+	if got := preview("a\x1b[31mred\x1b[0m\x07\x00b"); strings.ContainsAny(got, "\x1b\x07\x00") || got != "a [31mred [0m b" {
+		t.Fatalf("preview = %q", got)
+	}
+	withCaller(t, &recorder{err: &client.APIError{Code: "workflow_managed", Msg: "m",
+		Details: map[string]any{"status": "s", "outcomes": []any{"ok", "bad\x1b[2Jname"}}}})
+	var errOut strings.Builder
+	Run(context.Background(), []string{"done", "DEV-1", "--revision", "1"}, agentEnv(), io.Discard, &errOut)
+	if strings.Contains(errOut.String(), "\x1b") || !strings.Contains(errOut.String(), `"bad\x1b[2Jname"`) ||
+		!strings.Contains(errOut.String(), "--outcome <name>") {
+		t.Fatalf("hint = %q", &errOut)
+	}
+}
+
 func TestAdvanceFailureExitsNonZero(t *testing.T) {
 	withCaller(t, &recorder{err: &client.APIError{Code: "outcome_unknown", Msg: "no such outcome"}})
 	var errOut strings.Builder
@@ -257,7 +345,7 @@ func TestWorkflowManagedRefusalHintsTheAdvanceCommand(t *testing.T) {
 			if code := Run(context.Background(), tt.argv, tt.env, io.Discard, &errOut); code != 1 {
 				t.Fatalf("code %d", code)
 			}
-			for _, want := range []string{"workflow_managed", `status "develop"`, "ready, abandon", "ttasks advance " + tt.key + " --outcome <name>"} {
+			for _, want := range []string{"workflow_managed", `status "develop"`, `"ready", "abandon"`, "ttasks advance " + tt.key + " --outcome <name>"} {
 				if !strings.Contains(errOut.String(), want) {
 					t.Errorf("stderr lacks %q:\n%s", want, &errOut)
 				}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,24 +100,24 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 		method, route = "POST", "/api/tasks/"+key+"/complete"
 		delete(body, "key")
 	case "advance":
-		method, route = "POST", "/api/tasks/"+key+"/advance"
+		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/advance"
 		delete(body, "key")
 	case "artifact_set":
 		name, _ := body["name"].(string)
-		method, route = "PUT", "/api/tasks/"+key+"/artifacts/"+name
+		method, route = "PUT", "/api/tasks/"+url.PathEscape(key)+"/artifacts/"+url.PathEscape(name)
 		body = map[string]any{"value": body["value"]}
 	case "artifact_ls":
-		method, route, body = "GET", "/api/tasks/"+key+"/artifacts", nil
+		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/artifacts", nil
 	case "artifact_show":
 		name, _ := body["name"].(string)
-		method, route, body = "GET", "/api/tasks/"+key+"/artifacts/"+name, nil
+		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/artifacts/"+url.PathEscape(name), nil
 	case "workflow_get":
-		method, route, body = "GET", "/api/tasks/"+key+"/workflow", nil
+		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/workflow", nil
 	case "workflow_move":
-		method, route = "POST", "/api/tasks/"+key+"/workflow/move"
+		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/workflow/move"
 		delete(body, "key")
 	case "cancel":
-		method, route = "POST", "/api/tasks/"+key+"/cancel"
+		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/cancel"
 		delete(body, "key")
 	default:
 		fmt.Fprintf(stderr, "tasks: unsupported operator command %s\n", parsed.action)
