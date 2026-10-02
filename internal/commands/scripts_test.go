@@ -30,7 +30,7 @@ func (f *fakeScriptControl) ScheduleScript(owner string, in script.CreateSchedul
 	if in.IntervalSeconds <= 0 {
 		return script.Definition{}, script.Run{}, errors.New("recurring interval must be positive")
 	}
-	definition := script.Definition{ID: "scr-2", Agent: owner, Name: in.Name, Description: in.Description, Command: in.Command, Mode: script.ModeEvery, IntervalSeconds: in.IntervalSeconds, QuietExit: in.QuietExit, State: script.StateActive}
+	definition := script.Definition{ID: "scr-2", Agent: owner, Name: in.Name, Description: in.Description, Command: in.Command, Mode: script.ModeEvery, IntervalSeconds: in.IntervalSeconds, State: script.StateActive}
 	run := script.Run{ID: "srun-2", ScriptID: definition.ID, Agent: owner, Status: script.RunPending}
 	f.definitions[definition.ID], f.runs[definition.ID] = definition, []script.Run{run}
 	return definition, run, nil

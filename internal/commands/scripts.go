@@ -89,7 +89,7 @@ func scriptCreateArgs(schedule bool) []registry.Arg {
 	if schedule {
 		args = append(args,
 			registry.Arg{Name: "interval_seconds", Flag: "interval-seconds", Type: registry.Int, Required: true, Help: "delay after each completion"},
-			registry.Arg{Name: "quiet_exit", Flag: "quiet-exit", Type: registry.Int, Help: "exit code that records without notification"})
+			registry.Arg{Name: "quiet_exit", Flag: "quiet-exit", Type: registry.Int, Help: "deprecated: the quiet exit code is always 111; another value wraps the command so that code is reported as 111"})
 	}
 	return args
 }
@@ -197,9 +197,6 @@ func scriptDefinitionView(definition script.Definition) map[string]any {
 	row := map[string]any{"id": definition.ID, "agent": definition.Agent, "name": definition.Name, "description": definition.Description,
 		"command": definition.Command, "mode": definition.Mode, "interval_seconds": definition.IntervalSeconds, "state": definition.State,
 		"created_at": definition.CreatedAt, "next_run_at": definition.NextRunAt}
-	if definition.QuietExit != nil {
-		row["quiet_exit"] = *definition.QuietExit
-	}
 	if definition.LatestRun != nil {
 		row["latest_run"] = scriptRunView(*definition.LatestRun)
 	}

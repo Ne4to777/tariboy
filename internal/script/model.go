@@ -34,7 +34,6 @@ type Definition struct {
 	Command         string
 	Mode            string
 	IntervalSeconds int
-	QuietExit       *int
 	State           string
 	CreatedAt       string
 	NextRunAt       string
@@ -66,7 +65,11 @@ type CreateSchedule struct {
 	Description     string `json:"description"`
 	Command         string `json:"command"`
 	IntervalSeconds int    `json:"interval_seconds"`
-	QuietExit       *int   `json:"quiet_exit,omitempty"`
+	// QuietExit is deprecated input kept for one release. The quiet exit code
+	// is the constant QuietExit; a different value here wraps the command with
+	// LegacyQuietCommand so that code is reported as QuietExit. It is never
+	// stored and never returned.
+	QuietExit *int `json:"quiet_exit,omitempty"`
 }
 
 type Completion struct {

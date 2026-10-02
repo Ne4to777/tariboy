@@ -1097,9 +1097,6 @@ func scriptView(definition script.Definition) map[string]any {
 	row := map[string]any{"id": definition.ID, "agent": definition.Agent, "name": definition.Name, "description": definition.Description,
 		"command": definition.Command, "mode": definition.Mode, "interval_seconds": definition.IntervalSeconds, "state": definition.State,
 		"created_at": definition.CreatedAt, "next_run_at": definition.NextRunAt}
-	if definition.QuietExit != nil {
-		row["quiet_exit"] = *definition.QuietExit
-	}
 	if definition.LatestRun != nil {
 		row["latest_run"] = scriptRunView(*definition.LatestRun)
 	}

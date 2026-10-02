@@ -35,7 +35,7 @@ func (s *Store) CreateOnce(agent string, in CreateOnce) (Definition, Run, error)
 	if err := validateCommon(in.Name, in.Description, in.Command); err != nil {
 		return Definition{}, Run{}, err
 	}
-	return s.create(agent, in.Name, in.Description, in.Command, ModeOnce, 0, nil)
+	return s.create(agent, in.Name, in.Description, in.Command, ModeOnce, 0)
 }
 
 func (s *Store) CreateSchedule(agent string, in CreateSchedule) (Definition, Run, error) {
@@ -45,10 +45,16 @@ func (s *Store) CreateSchedule(agent string, in CreateSchedule) (Definition, Run
 	if in.IntervalSeconds <= 0 {
 		return Definition{}, Run{}, errors.New("recurring interval must be positive")
 	}
-	if in.QuietExit != nil && (*in.QuietExit < 0 || *in.QuietExit > 255) {
-		return Definition{}, Run{}, errors.New("quiet exit must be between 0 and 255")
+	command := in.Command
+	if in.QuietExit != nil {
+		if *in.QuietExit < 0 || *in.QuietExit > 255 {
+			return Definition{}, Run{}, errors.New("quiet exit must be between 0 and 255")
+		}
+		if *in.QuietExit != QuietExit {
+			command = LegacyQuietCommand(command, *in.QuietExit)
+		}
 	}
-	return s.create(agent, in.Name, in.Description, in.Command, ModeEvery, in.IntervalSeconds, in.QuietExit)
+	return s.create(agent, in.Name, in.Description, command, ModeEvery, in.IntervalSeconds)
 }
 
 func validateCommon(name, description, command string) error {
@@ -58,7 +64,7 @@ func validateCommon(name, description, command string) error {
 	return nil
 }
 
-func (s *Store) create(agent, name, description, command, mode string, interval int, quietExit *int) (Definition, Run, error) {
+func (s *Store) create(agent, name, description, command, mode string, interval int) (Definition, Run, error) {
 	now := s.clock().UTC().Format(time.RFC3339)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -73,10 +79,10 @@ func (s *Store) create(agent, name, description, command, mode string, interval 
 	if err != nil {
 		return Definition{}, Run{}, err
 	}
-	definition := Definition{ID: scriptID, Agent: agent, Name: name, Description: description, Command: command, Mode: mode, IntervalSeconds: interval, QuietExit: quietExit, State: StateActive, CreatedAt: now}
+	definition := Definition{ID: scriptID, Agent: agent, Name: name, Description: description, Command: command, Mode: mode, IntervalSeconds: interval, State: StateActive, CreatedAt: now}
 	run := Run{ID: runID, ScriptID: scriptID, Agent: agent, Status: RunPending, CreatedAt: now}
-	if _, err := tx.Exec(`INSERT INTO scripts(id,agent,name,description,command,mode,interval_seconds,quiet_exit,state,created_at,next_run_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)`,
-		definition.ID, definition.Agent, definition.Name, definition.Description, definition.Command, definition.Mode, nullInterval(interval), definition.QuietExit, definition.State, definition.CreatedAt); err != nil {
+	if _, err := tx.Exec(`INSERT INTO scripts(id,agent,name,description,command,mode,interval_seconds,state,created_at,next_run_at) VALUES(?,?,?,?,?,?,?,?,?,NULL)`,
+		definition.ID, definition.Agent, definition.Name, definition.Description, definition.Command, definition.Mode, nullInterval(interval), definition.State, definition.CreatedAt); err != nil {
 		return Definition{}, Run{}, err
 	}
 	if err := insertRun(tx, run); err != nil {
@@ -123,12 +129,12 @@ func nullable(value string) any {
 	return value
 }
 
-const selectDefinition = `SELECT id,agent,name,description,command,mode,COALESCE(interval_seconds,0),quiet_exit,state,created_at,COALESCE(next_run_at,'') FROM scripts`
+const selectDefinition = `SELECT id,agent,name,description,command,mode,COALESCE(interval_seconds,0),state,created_at,COALESCE(next_run_at,'') FROM scripts`
 const selectRun = `SELECT id,script_id,agent,status,cancel_requested,pid,exit_code,created_at,COALESCE(started_at,''),COALESCE(finished_at,''),log_path FROM script_runs`
 
 func scanDefinition(row interface{ Scan(...any) error }) (Definition, error) {
 	var definition Definition
-	err := row.Scan(&definition.ID, &definition.Agent, &definition.Name, &definition.Description, &definition.Command, &definition.Mode, &definition.IntervalSeconds, &definition.QuietExit, &definition.State, &definition.CreatedAt, &definition.NextRunAt)
+	err := row.Scan(&definition.ID, &definition.Agent, &definition.Name, &definition.Description, &definition.Command, &definition.Mode, &definition.IntervalSeconds, &definition.State, &definition.CreatedAt, &definition.NextRunAt)
 	return definition, err
 }
 
@@ -297,10 +303,11 @@ func (s *Store) CompleteRun(agent, runID string, completion Completion) (Run, er
 		}
 		return Run{}, ErrConflict
 	}
-	quiet := definition.QuietExit != nil && completion.ExitCode != nil && *definition.QuietExit == *completion.ExitCode
-	// A recurring script keeps its schedule only while it stays quiet. Any
-	// published result stops it, so the agent is notified once and resumes it
-	// deliberately with Rerun.
+	// QuietExit is the only quiet result, and only for a recurring script: a
+	// one-shot run always reports. A recurring script keeps its schedule only
+	// while it stays quiet. Any published result stops it, so the agent is
+	// notified once and resumes it deliberately with Rerun.
+	quiet := definition.Mode == ModeEvery && completion.ExitCode != nil && *completion.ExitCode == QuietExit
 	state := StateCompleted
 	var nextRun any
 	if definition.Mode == ModeEvery && definition.State == StateActive && quiet {

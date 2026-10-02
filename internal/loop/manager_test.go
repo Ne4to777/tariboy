@@ -201,7 +201,7 @@ func TestScriptSupervisorKeepsOutputInLogAndPublishesPath(t *testing.T) {
 	}
 }
 
-func TestScriptSupervisorExplicitQuietExitTwoSchedulesWithoutResult(t *testing.T) {
+func TestScriptSupervisorDeprecatedQuietExitTwoStaysQuiet(t *testing.T) {
 	m, as, _, raw := newManager(t, &fakeRunner{})
 	st := script.NewStore(raw, time.Now)
 	m.cfg.Scripts, m.cfg.Bus = st, bus.New(raw, time.Now)
@@ -215,6 +215,9 @@ func TestScriptSupervisorExplicitQuietExitTwoSchedulesWithoutResult(t *testing.T
 		t.Fatal(err)
 	}
 	r = awaitScriptRun(t, st, "worker", r.ID, func(r script.Run) bool { return r.Status == script.RunFailed })
+	if r.ExitCode == nil || *r.ExitCode != script.QuietExit {
+		t.Fatalf("run=%#v, want the legacy exit 2 reported as %d", r, script.QuietExit)
+	}
 	definition, err = st.GetDefinition("worker", definition.ID)
 	if err != nil {
 		t.Fatal(err)

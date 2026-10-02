@@ -55,9 +55,38 @@ func TestCreateScheduleValidatesIntervalAndQuietExit(t *testing.T) {
 			t.Fatalf("accepted invalid schedule: %#v", input)
 		}
 	}
-	definition, run, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "true", IntervalSeconds: 20, QuietExit: intPtr(2)})
-	if err != nil || definition.Mode != ModeEvery || definition.QuietExit == nil || *definition.QuietExit != 2 || run.Status != RunPending {
-		t.Fatalf("definition/run=%#v/%#v err=%v", definition, run, err)
+}
+
+func TestCreateScheduleWrapsOnlyADeprecatedQuietExit(t *testing.T) {
+	st := newContractStore(t, time.Now())
+	cases := []struct {
+		name  string
+		quiet *int
+		want  string
+	}{
+		{"no quiet exit", nil, "poll"},
+		{"the protocol code", intPtr(QuietExit), "poll"},
+		{"a legacy code", intPtr(2), LegacyQuietCommand("poll", 2)},
+		{"legacy code zero", intPtr(0), LegacyQuietCommand("poll", 0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			definition, run, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "poll", IntervalSeconds: 20, QuietExit: tc.quiet})
+			if err != nil || definition.Mode != ModeEvery || run.Status != RunPending {
+				t.Fatalf("definition/run=%#v/%#v err=%v", definition, run, err)
+			}
+			if definition.Command != tc.want {
+				t.Fatalf("returned command %q, want %q", definition.Command, tc.want)
+			}
+			stored, err := st.GetDefinition("alice", definition.ID)
+			if err != nil || stored.Command != tc.want {
+				t.Fatalf("stored command %q err=%v, want %q", stored.Command, err, tc.want)
+			}
+			var column *int
+			if err := st.db.QueryRow(`SELECT quiet_exit FROM scripts WHERE id=?`, definition.ID).Scan(&column); err != nil || column != nil {
+				t.Fatalf("quiet_exit column=%v err=%v, want NULL", column, err)
+			}
+		})
 	}
 }
 
@@ -89,10 +118,10 @@ func TestCompleteRunTreatsExitTwoAsFailureAndEnqueuesResult(t *testing.T) {
 	}
 }
 
-func TestCompleteRunSuppressesOnlyExplicitQuietExit(t *testing.T) {
+func TestCompleteRunSuppressesOnlyTheQuietExitCode(t *testing.T) {
 	now := time.Date(2026, 8, 20, 7, 0, 0, 0, time.UTC)
 	st := newContractStore(t, now)
-	definition, run, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "false", IntervalSeconds: 30, QuietExit: intPtr(2)})
+	definition, run, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "false", IntervalSeconds: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +129,7 @@ func TestCompleteRunSuppressesOnlyExplicitQuietExit(t *testing.T) {
 		t.Fatalf("claim=%v err=%v", claimed, err)
 	}
 	finished := now.Add(10 * time.Second)
-	if _, err := st.CompleteRun("alice", run.ID, Completion{Status: RunFailed, ExitCode: intPtr(2), FinishedAt: finished.Format(time.RFC3339), LogPath: "/tmp/watch.log"}); err != nil {
+	if _, err := st.CompleteRun("alice", run.ID, Completion{Status: RunFailed, ExitCode: intPtr(QuietExit), FinishedAt: finished.Format(time.RFC3339), LogPath: "/tmp/watch.log"}); err != nil {
 		t.Fatal(err)
 	}
 	var outboxCount int
@@ -110,6 +139,52 @@ func TestCompleteRunSuppressesOnlyExplicitQuietExit(t *testing.T) {
 	got, err := st.GetDefinition("alice", definition.ID)
 	if err != nil || got.State != StateActive || got.NextRunAt != finished.Add(30*time.Second).Format(time.RFC3339) {
 		t.Fatalf("recurring definition=%#v err=%v", got, err)
+	}
+}
+
+func TestRecurringExitTwoPublishesAndStops(t *testing.T) {
+	now := time.Date(2026, 8, 20, 7, 0, 0, 0, time.UTC)
+	st := newContractStore(t, now)
+	definition, run, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "false", IntervalSeconds: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := st.ClaimRun("alice", run.ID, now.Format(time.RFC3339), "/tmp/watch.log"); err != nil || !claimed {
+		t.Fatalf("claim=%v err=%v", claimed, err)
+	}
+	if _, err := st.CompleteRun("alice", run.ID, Completion{Status: RunFailed, ExitCode: intPtr(2), FinishedAt: now.Add(time.Second).Format(time.RFC3339), LogPath: "/tmp/watch.log"}); err != nil {
+		t.Fatal(err)
+	}
+	var outboxCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM script_result_outbox WHERE run_id=?`, run.ID).Scan(&outboxCount); err != nil || outboxCount != 1 {
+		t.Fatalf("exit 2 outbox count=%d err=%v, want 1", outboxCount, err)
+	}
+	got, err := st.GetDefinition("alice", definition.ID)
+	if err != nil || got.State != StateCompleted || got.NextRunAt != "" {
+		t.Fatalf("exit 2 left the schedule running: %#v err=%v", got, err)
+	}
+}
+
+func TestOneShotQuietExitCodeStillPublishes(t *testing.T) {
+	now := time.Date(2026, 8, 20, 7, 0, 0, 0, time.UTC)
+	st := newContractStore(t, now)
+	definition, run, err := st.CreateOnce("alice", CreateOnce{Name: "check", Description: "checks", Command: "make check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := st.ClaimRun("alice", run.ID, now.Format(time.RFC3339), "/tmp/check.log"); err != nil || !claimed {
+		t.Fatalf("claim=%v err=%v", claimed, err)
+	}
+	if _, err := st.CompleteRun("alice", run.ID, Completion{Status: RunFailed, ExitCode: intPtr(QuietExit), FinishedAt: now.Add(time.Second).Format(time.RFC3339), LogPath: "/tmp/check.log"}); err != nil {
+		t.Fatal(err)
+	}
+	var outboxCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM script_result_outbox WHERE run_id=?`, run.ID).Scan(&outboxCount); err != nil || outboxCount != 1 {
+		t.Fatalf("one-shot exit 111 outbox count=%d err=%v, want 1", outboxCount, err)
+	}
+	got, err := st.GetDefinition("alice", definition.ID)
+	if err != nil || got.State != StateCompleted {
+		t.Fatalf("definition=%#v err=%v", got, err)
 	}
 }
 
@@ -240,7 +315,7 @@ func TestRerunResumesAStoppedRecurringScript(t *testing.T) {
 func TestQuietRecurringRunKeepsItsSchedule(t *testing.T) {
 	now := time.Date(2026, 8, 20, 7, 0, 0, 0, time.UTC)
 	st := newContractStore(t, now)
-	definition, first, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "true", IntervalSeconds: 30, QuietExit: intPtr(2)})
+	definition, first, err := st.CreateSchedule("alice", CreateSchedule{Name: "watch", Description: "watch", Command: "true", IntervalSeconds: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +323,7 @@ func TestQuietRecurringRunKeepsItsSchedule(t *testing.T) {
 		t.Fatalf("claim=%v err=%v", claimed, err)
 	}
 	finished := now.Add(time.Second)
-	if _, err := st.CompleteRun("alice", first.ID, Completion{Status: RunFailed, ExitCode: intPtr(2), FinishedAt: finished.Format(time.RFC3339)}); err != nil {
+	if _, err := st.CompleteRun("alice", first.ID, Completion{Status: RunFailed, ExitCode: intPtr(QuietExit), FinishedAt: finished.Format(time.RFC3339)}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetDefinition("alice", definition.ID)
