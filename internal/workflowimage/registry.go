@@ -142,6 +142,9 @@ func (r *Registry) Remove(name, tag string) (digest string, contentRemoved bool,
 		}
 	}
 	if last {
+		if err := requireUnused(tx, digest); err != nil {
+			return "", false, err
+		}
 		if _, err := tx.Exec(`DELETE FROM task_workflow_images WHERE digest = ?`, digest); err != nil {
 			return "", false, fmt.Errorf("delete workflow image record %s: %w", digest, err)
 		}
@@ -153,6 +156,33 @@ func (r *Registry) Remove(name, tag string) (digest string, contentRemoved bool,
 		return digest, contentRemoved, fmt.Errorf("delete workflow image record %s: %w", digest, err)
 	}
 	return digest, contentRemoved, nil
+}
+
+// requireUnused returns ErrInUse when a queue is bound to the digest or a
+// task that is not finished is pinned to it. A table that does not exist in
+// this database means nothing uses the image through it; any other error is
+// returned.
+func requireUnused(tx *sql.Tx, digest string) error {
+	for _, q := range []struct{ table, query, what string }{
+		{"task_queue_workflows", `SELECT COUNT(*) FROM task_queue_workflows WHERE workflow_digest = ?`, "a queue is bound to it"},
+		{"tasks", `SELECT COUNT(*) FROM tasks WHERE workflow_digest = ? AND status NOT IN ('done', 'cancelled')`, "a task still uses it"},
+	} {
+		var present int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, q.table).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			continue
+		}
+		var n int
+		if err := tx.QueryRow(q.query, digest).Scan(&n); err != nil {
+			return fmt.Errorf("check workflow image use %s: %w", digest, err)
+		}
+		if n > 0 {
+			return fmt.Errorf("%w: %s", ErrInUse, q.what)
+		}
+	}
+	return nil
 }
 
 // Reconcile makes the rows match the stored content. It deletes rows whose

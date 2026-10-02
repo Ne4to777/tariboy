@@ -471,3 +471,73 @@ func TestRegistryReconcileRestoresRow(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", n)
 	}
 }
+
+func seedQueue(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('DEV', 'Dev', 'n', 'n')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedTask(t *testing.T, db *sql.DB, digest, status string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO tasks(task_key, queue_prefix, title, status, author, customer, created_at, updated_at, workflow_digest)
+		VALUES ('DEV-1', 'DEV', 't', ?, 'u', 'u', 'n', 'n', ?)`, status, digest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistryRemoveRefusesImageInUse(t *testing.T) {
+	r, db := newRegistry(t)
+	m, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedQueue(t, db)
+	if _, err := db.Exec(`INSERT INTO task_queue_workflows(queue_prefix, workflow_digest, updated_at) VALUES ('DEV', ?, 'n')`, m.Digest); err != nil {
+		t.Fatal(err)
+	}
+	// Removing a tag that leaves another tag is fine: the content stays.
+	if _, removed, err := r.Remove("demo", "latest"); err != nil || removed {
+		t.Fatalf("Remove latest = %v, %v", removed, err)
+	}
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) {
+		t.Fatalf("Remove bound image: %v, want ErrInUse", err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+	if _, err := os.Stat(r.Store.ContentDir("demo", m.Digest)); err != nil {
+		t.Fatalf("content removed: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM task_queue_workflows`); err != nil {
+		t.Fatal(err)
+	}
+	seedTask(t, db, m.Digest, "in_progress")
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) {
+		t.Fatalf("Remove image used by a live task: %v, want ErrInUse", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'done'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, removed, err := r.Remove("demo", "1.0.0"); err != nil || !removed {
+		t.Fatalf("Remove image used only by a finished task = %v, %v", removed, err)
+	}
+}
+
+func TestRegistryRemoveWithoutEngineTables(t *testing.T) {
+	r, db := newRegistry(t)
+	if _, _, err := r.Publish(writeSource(t, "1.0.0"), t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE task_queue_workflows`); err != nil {
+		t.Fatal(err)
+	}
+	if _, removed, err := r.Remove("demo", "latest"); err != nil || removed {
+		t.Fatalf("Remove latest = %v, %v", removed, err)
+	}
+	if _, removed, err := r.Remove("demo", "1.0.0"); err != nil || !removed {
+		t.Fatalf("Remove last tag without the table = %v, %v", removed, err)
+	}
+}

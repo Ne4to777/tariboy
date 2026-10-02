@@ -22,6 +22,7 @@ type Service struct {
 	clock                                    func() time.Time
 	hub                                      *Hub
 	goalSignal                               func()
+	workflowResolver                         WorkflowResolver
 	workflowIngressEnabled                   atomic.Bool
 	workflowIngressAfterTargetCount          func()
 	workflowActivationAfterWriterReservation func()

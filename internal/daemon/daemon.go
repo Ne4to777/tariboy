@@ -271,6 +271,13 @@ func Run(ctx context.Context, o Options) error {
 	if err := workflowImages.Reconcile(); err != nil {
 		log.Warn("reconcile workflow images", "err", err)
 	}
+	taskService.SetWorkflowResolver(func(ref string) (string, error) {
+		name, tag := ref, ""
+		if i := strings.LastIndex(ref, ":"); i >= 0 {
+			name, tag = ref[:i], ref[i+1:]
+		}
+		return workflowImages.Store.Resolve(name, tag)
+	})
 	exeDir := "."
 	if exe, err := os.Executable(); err == nil {
 		exeDir = filepath.Dir(exe)

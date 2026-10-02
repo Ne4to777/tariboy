@@ -37,6 +37,8 @@ func workflowImageError(err error) error {
 		return workflowInvalid(err.Error(), invalid.Errors)
 	case errors.Is(err, workflowimage.ErrVersionPublished):
 		return api.UserError{Code: "workflow_version_published", Msg: err.Error(), Status: http.StatusConflict}
+	case errors.Is(err, workflowimage.ErrInUse):
+		return api.UserError{Code: "workflow_in_use", Msg: err.Error(), Status: http.StatusConflict}
 	case errors.Is(err, workflowimage.ErrNotFound):
 		return api.UserError{Code: "not_found", Msg: err.Error(), Status: http.StatusNotFound}
 	case errors.Is(err, workflowimage.ErrInvalid):
