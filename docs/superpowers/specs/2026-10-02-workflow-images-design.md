@@ -719,8 +719,11 @@ Each phase leaves `main` working and gets its own plan.
    and API response are removed.
 
    Existing recurring definitions with a stored quiet code are rewritten by the
-   migration: the command is wrapped so that the stored code maps to `111`, and
-   the column is dropped. For one release the `quiet_exit` request parameter,
+   migration: the command is wrapped in a nested `sh -c` whose stored code maps
+   to `111`, and the column is cleared. The column itself stays in the schema,
+   always `NULL`: dropping it needs a rebuild of `scripts`, and a rebuild under
+   enforced foreign keys would cascade into `script_runs`. For one release the
+   `quiet_exit` request parameter,
    which the Store skill's `--quiet-exit N` flag sends, stays accepted as a
    deprecated alias that applies the same wrapping. Agents on images that still
    pass it keep working until their skills are updated. The parameter is removed
