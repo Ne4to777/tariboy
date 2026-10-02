@@ -175,6 +175,17 @@ component with `scope_agent` fixed to that agent. The layout is Tree-first:
   `ttasks notifications` remains the operator command for the inbox state. The
   agent list carries no question dot — only the count of unread chat messages.
 
+A task in a queue bound to a [workflow](/docs/task-workflows) shows its
+workflow status, for example **Approval**, instead of one of the five fixed
+labels; a long status ID is clipped and its full text is the tooltip. The
+colour of the label follows the task's category (`open`, `in_progress`,
+`wait_customer`, `done`, `cancelled`), not the status ID, so a closed workflow
+task reads as closed whatever its last status was. Beside the label a small
+**customer** or **script** marker says who the task waits on, and a red
+**paused** marker replaces it when the daemon paused the task (its tooltip
+gives the reason). Active, Closed, and All use the category too. There is no
+filter by workflow status. Flexible tasks keep the labels described above.
+
 Clicking a task opens a right-side sheet over the tree with its description,
 priority, assignment, status, block reason, pull request URL, comments, and open
 answer requests. It starts at half the viewport width; drag its left separator
@@ -182,6 +193,13 @@ or use its keyboard controls to resize it, and the chosen width survives reloads
 **Back**, **Close**, Escape, or a backdrop click returns to the still-mounted
 tree with its expansion and scroll position preserved. Unsaved task, comment,
 or relation drafts require confirmation before being discarded.
+
+For a workflow task the sheet has no status select, no Done action, and no
+assignee control; it shows the **Workflow** panel instead, where the customer
+chooses outcomes, edits artifacts, reads script runs and logs, decides a pause,
+and moves or cancels the task. See [Desktop](/docs/task-workflows#desktop) in
+the workflow guide. Binding a queue to a workflow, its pools, and its secrets
+are in `Manage queues…`, section **Workflow**.
 
 Descriptions and comments render as Markdown. Their visual editor supports
 headings, bold, italic, strikethrough, links, lists, checklists, code, and tables.

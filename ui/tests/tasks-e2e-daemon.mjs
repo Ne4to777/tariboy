@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,23 @@ const daemon = spawn(daemonBin, ["--http-addr", "127.0.0.1:4176", "--log-level",
   stdio: "inherit",
 });
 
+// A built workflow image is stored read-only; rmSync cannot delete it until the
+// owner may write again.
+function makeWritable(dir) {
+  chmodSync(dir, 0o700);
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) makeWritable(entryPath);
+    else if (!lstatSync(entryPath).isSymbolicLink()) chmodSync(entryPath, 0o600);
+  }
+}
+
 function removeState() {
+  try {
+    makeWritable(testRoot);
+  } catch {
+    // Nothing to unlock when the state is already gone.
+  }
   rmSync(testRoot, { recursive: true, force: true });
 }
 

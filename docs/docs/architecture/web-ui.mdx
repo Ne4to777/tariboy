@@ -333,6 +333,30 @@ removed still reads, its rail width ignored. A task opened from a chat uses
 the same sheet, separator, and stored width, clamped to the window instead of
 the workspace, so a resize in either place carries over to the other.
 
+A task with a workflow (`workflow_name` set, tested by `isWorkflowTask`) is
+presented by category. `TaskRow` takes its tone from `task.category` and its
+label from `taskStatusLabel(task)`: the workflow status ID, humanised, in a
+clipped pill whose title is the ID, plus a `waiting_on` marker (`customer`,
+`script`, or a danger `paused` whose title is the pause reason). `TaskDetail`
+compares `status` only with `category` for its dirty check and tone, and sends
+no `status` or `assignee` on Save for a workflow task. In place of the status
+select it renders `WorkflowPanel`, which loads the view with `getTaskWorkflow`
+(on mount, on a new task revision, and after each change) and composes
+`WorkflowPauseBanner` (`resumeTaskWorkflow`, `cancelWorkflowTask`),
+`WorkflowOutcomes` (`advanceTask`, then `getTransitionRequest` once a second
+until the request settles or `wait_seconds` passes), `WorkflowArtifacts`
+(`setTaskArtifact`, `getTaskArtifactHistory`), `WorkflowRuns`
+(`getTaskScriptRunLog`), the visit list, and the actions menu with
+`moveTaskWorkflow` and `cancelWorkflowTask`. Destructive actions confirm through
+the controlled alert dialog of `useWorkflowConfirm`. Messages, values, and logs
+render as React text. Every call passes the `ApiTarget` of the surrounding
+component. In queue settings, `QueueWorkflowSettings` (`getQueueWorkflow`,
+`setQueueWorkflow`, `clearQueueWorkflow`, `listWorkflowImages`) shows the
+binding and hosts the pools editor, and `QueueSecrets` (`listQueueSecrets`,
+`setQueueSecret`, `removeQueueSecret`) lists keys only: the value lives in a
+password input until it is sent and is never read back. A flexible task renders
+exactly as before. The browser suite covers the path against an isolated daemon.
+
 One toolbar sits above the table in both places. It carries the search field,
 the `Active | Closed | All` segment, the queue control, the `My tasks` and
 `Waiting for me` chips — off by default, and still the daemon's `assignee` and

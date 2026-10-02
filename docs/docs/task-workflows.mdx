@@ -18,9 +18,10 @@ write workflow scripts. The manifest format, build, and storage are described
 in [Workflow images](/docs/workflow-images).
 
 :::note
-Not built yet: the Desktop UI for workflows. Drive workflow tasks, including the
-customer's pause decision, with `ttasks` and the REST API. See
-[Not built yet](#not-built-yet).
+Desktop shows workflow tasks, lets the customer choose outcomes and pause
+decisions, and binds images, pools, and secrets in queue settings; see
+[Desktop](#desktop). `ttasks` and the REST API stay the way to script the same
+operations.
 :::
 
 ## Mental model
@@ -1261,12 +1262,78 @@ task. A new trigger matches only messages committed after it was created.
 
 The routes keep their `workflow-triggers` path for compatibility.
 
-## Not built yet
+## Desktop
 
-These are designed but not built. Do not rely on them.
+Desktop's Tasks workspace reads the routes on this page, always against the
+server the task or queue belongs to. A flexible task looks and behaves as it
+always did; everything below applies to a workflow task and a workflow queue.
+How the list shows these tasks is in [Tasks](/docs/tasks#desktop).
 
-- **Desktop has no workflow UI.** The task list does not separate status from
-  category, there are no outcome buttons, run logs are not shown, the customer
-  cannot continue or release a paused task there, and queue settings cannot bind
-  a workflow or set secrets. Drive workflow tasks through `ttasks` and the REST
-  API.
+### The workflow panel
+
+Opening a workflow task shows a **Workflow** panel in the task sheet in place of
+the status select. The header gives `name@version`, the status, the owner, and
+the holder; a pause banner comes first when the task is paused. The task's
+assignee is read-only, because the workflow assigns pool work. The panel has
+these sections:
+
+- **Pause banner.** Appears when the task is paused. It explains the reason and
+  offers **Continue** and **Cancel task**, plus **Release holder** when the
+  status is a pool status. Each asks for confirmation and sends
+  `POST /api/tasks/{key}/workflow/resume` or the cancel route.
+- **Outcomes.** Each outcome shows its target status, the artifacts it
+  requires (a name with no value is highlighted), and its checks. In a customer
+  status each outcome is a button, with an optional message; Desktop sends the
+  advance request and polls it until the checks finish, then shows an
+  `applied` result by reloading the task or a refusal with the daemon's
+  message. A button is disabled while a request is checking, while the task is
+  paused, and while a required artifact has no value. In a pool or script
+  status the outcomes are listed for reference, because the agent or the watch
+  script decides.
+- **Artifacts.** The current value of each artifact, collapsed when long, with
+  **Edit** (or **Set** for a required artifact with no value) and **History**,
+  which loads the earlier values on demand.
+- **Runs.** The newest script runs with kind, script, state, verdict, exit code,
+  and times, and a **Log** toggle that loads the log on demand and says when it
+  is truncated. Who may read a log is described in
+  [Runs and logs](#runs-and-logs); a refusal is shown in place of the log.
+- **Visits.** Every stay in a status, with who entered it, who left it and by
+  which outcome, and the message.
+- **Move and cancel.** The panel's actions menu has **Move to status…** (a
+  target status and a required reason) and **Cancel task**. Both ask for
+  confirmation, because they skip outcomes, checks, and required artifacts and
+  stop the current scripts. They are shown only to a principal that may edit
+  the task.
+
+Messages, artifact values, and logs are text; Desktop never interprets them as
+Markdown or HTML.
+
+### Queue settings
+
+`Manage queues…` has a **Workflow** section on each queue card:
+
+- **Binding.** The bound image's name, version, and the first 12 characters of
+  its digest, or **No workflow**. Choose an image as `name:tag` and press
+  **Bind**; **Clear** asks for confirmation and unbinds. A binding changed
+  elsewhere (`revision_conflict`) is reloaded with a notice so you can retry.
+- **Pools.** The queue's agent pools editor sits in the same section. A bind
+  refused with `workflow_pool_empty` lists the pools the image names above
+  it.
+- **Secrets.** The secret keys with their update time, a form to **Set** one,
+  and **Remove** with confirmation. A value is write-only: it is cleared from
+  the form when sent and is never read back or shown. A bind refused with
+  `workflow_secret_missing` lists the missing names here.
+
+### What Desktop does not do
+
+- There is no filter by workflow status. The Active, Closed, and All segment
+  uses the daemon's categories.
+- It cannot set a declared artifact that has no value and that no current
+  outcome requires, because the task view does not list declared artifact
+  names.
+- **Move to status…** offers only statuses the view has revealed: those the
+  task visited, the current one, and the targets of its current outcomes. Use
+  `ttasks workflow move` or the REST route for another status; the daemon names
+  the declared statuses when it refuses an unknown one.
+- It does not list the pools an image needs when a bind succeeds; they appear
+  only when a bind is refused for an empty pool.

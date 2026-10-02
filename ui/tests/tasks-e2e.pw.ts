@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "playwright/test";
 
 const daemonURL = "http://127.0.0.1:4176";
@@ -364,4 +367,117 @@ test("Tasks production workspace persists PATCH saves, release fields, and the f
   await expect(page.getByText("Realtime injected task")).toBeVisible();
   await expect(page.getByText("Root task updated")).toBeVisible();
   await assertNoLoadFailedToast(page);
+});
+
+const approvalWorkflow = `schema_version: 1
+name: wfui
+workflow_version: 0.1.0
+initial_status: approval
+statuses:
+  - id: approval
+    owner: customer
+    instructions: ./statuses/approval.md
+    transitions:
+      - { on: approved, to: done }
+  - id: done
+    terminal: true
+`;
+
+test("Tasks production workspace drives a workflow queue: bind, approve, secrets", async ({ page, request }) => {
+  test.setTimeout(90_000);
+  const started = Date.now();
+  const step = (name: string) => console.log(`[workflow-ui] ${((Date.now() - started) / 1000).toFixed(1)}s ${name}`);
+
+  // Step 1: publish the fixture image through the daemon's build route, then
+  // bind the queue from the queue settings.
+  const source = mkdtempSync(path.join(tmpdir(), "tasks-e2e-workflow-"));
+  mkdirSync(path.join(source, "statuses"));
+  writeFileSync(path.join(source, "Workflowfile.yaml"), approvalWorkflow);
+  writeFileSync(path.join(source, "statuses", "approval.md"), "Approve the work when it looks right.\n");
+  let response = await request.post(`${daemonURL}/api/workflow-images/build`, { data: { path: source } });
+  rmSync(source, { recursive: true, force: true });
+  expect(response.ok(), "step 1: the fixture workflow image must build").toBe(true);
+  response = await request.post(`${daemonURL}/api/task-queues`, { data: { prefix: "WFUI", name: "Workflow browser" } });
+  expect(response.ok()).toBe(true);
+  response = await request.post(`${daemonURL}/api/task-queues`, { data: { prefix: "WFLEX", name: "Flexible browser" } });
+  expect(response.ok()).toBe(true);
+
+  await page.goto("/tests/tasks-fixture.html#/servers/local/tasks");
+  await expect(page.getByLabel("Search tasks")).toBeVisible();
+  await page.getByRole("button", { name: "Queue: all" }).click();
+  await page.getByRole("menuitem", { name: "Manage queues…" }).click();
+  await page.getByRole("button", { name: "Workflow WFUI" }).click();
+  const settings = page.getByRole("region", { name: "Workflow WFUI" });
+  await expect(settings.getByText("No workflow")).toBeVisible();
+  await settings.getByLabel("Workflow image").selectOption("wfui:latest");
+  await settings.getByRole("button", { name: "Bind", exact: true }).click();
+  await expect(settings.getByTestId("binding"), "step 1: the binding shows after Bind").toContainText("wfui");
+  step("1 published and bound");
+
+  // Step 2: a task in the bound queue.
+  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "New task" }).click();
+  await page.getByLabel("Task queue").selectOption("WFUI");
+  await page.getByLabel("Task title").fill("Approve the plan");
+  await page.getByRole("button", { name: "Create task" }).click();
+  const key = await keyByTitle(request, "Approve the plan");
+  expect((await taskFromAPI(request, key)).status).toBe("approval");
+  step("2 task created");
+
+  // Step 3: the list shows the label and the waiting indicator.
+  await page.getByRole("button", { name: "Close task detail" }).click();
+  const row = page.getByTestId(`task-row-${key}`);
+  await expect(row, "step 3: the row shows the workflow status label").toContainText("Approval");
+  await expect(row, "step 3: the row shows who is awaited").toContainText("customer");
+  step("3 list label and indicator");
+
+  // Step 4: the drawer shows the workflow panel and no status or assignee control.
+  await row.locator(".task-row-main").click();
+  const detail = page.locator(".task-detail-panel");
+  await expect(detail.getByText("wfui@0.1.0"), "step 4: the panel header").toBeVisible();
+  await expect(detail.getByText("status approval")).toBeVisible();
+  await expect(detail.getByRole("button", { name: "approved", exact: true })).toBeEnabled();
+  await expect(detail.getByRole("combobox", { name: "Status", exact: true }), "step 4: no status select").toHaveCount(0);
+  await expect(detail.getByLabel("Assignee"), "step 4: no assignee control").toHaveCount(0);
+  step("4 drawer panel");
+
+  // Step 5: approve; the task closes.
+  await detail.getByRole("button", { name: "approved", exact: true }).click();
+  await expect(detail.getByText("status done"), "step 5: the panel shows the terminal status").toBeVisible();
+  await expect.poll(async () => (await taskFromAPI(request, key)).status).toBe("done");
+  await detail.getByRole("button", { name: "Close task detail" }).click();
+  await page.getByRole("radio", { name: "Closed", exact: true }).click();
+  await expect(page.getByTestId(`task-row-${key}`), "step 5: the closed task is listed").toContainText("Done");
+  step("5 approved and closed");
+
+  // Step 6: queue settings show the binding and manage secrets.
+  await page.getByRole("button", { name: "Queue: all" }).click();
+  await page.getByRole("menuitem", { name: "Manage queues…" }).click();
+  await page.getByRole("button", { name: "Workflow WFUI" }).click();
+  const queueSettings = page.getByRole("region", { name: "Workflow WFUI" });
+  await expect(queueSettings.getByTestId("binding")).toContainText(/wfui\s+0\.1\.0\s+[0-9a-f]{12}/);
+  const secrets = queueSettings.getByRole("region", { name: "Secrets WFUI" });
+  await expect(secrets.getByText("No secrets.")).toBeVisible();
+  await secrets.getByLabel("Secret key").fill("GH_TOKEN");
+  await secrets.getByLabel("Secret value").fill("ghp_browser-secret-value");
+  await secrets.getByRole("button", { name: "Set", exact: true }).click();
+  await expect(secrets.getByText("GH_TOKEN", { exact: true }), "step 6: the key is listed").toBeVisible();
+  await expect(page.locator("body"), "step 6: no value on the page").not.toContainText("ghp_browser-secret-value");
+  await expect(secrets.getByLabel("Secret value")).toHaveValue("");
+  await secrets.getByRole("button", { name: "Remove GH_TOKEN" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove secret" }).click();
+  await expect(secrets.getByText("No secrets."), "step 6: the removed key is gone").toBeVisible();
+  step("6 binding and secrets");
+
+  // Step 7: a flexible queue keeps its status select.
+  await page.getByRole("button", { name: "Close" }).click();
+  response = await request.post(`${daemonURL}/api/tasks`, { data: {
+    queue: "WFLEX", title: "Flexible stays flexible", idempotency_key: "tasks-browser-wfui-flex",
+  } });
+  expect(response.ok()).toBe(true);
+  const flexKey = (await response.json()).result.key as string;
+  await page.getByRole("radio", { name: "Active", exact: true }).click();
+  await page.getByTestId(`task-row-${flexKey}`).locator(".task-row-main").click();
+  await expect(page.locator(".task-detail-panel").getByRole("combobox", { name: "Status", exact: true }), "step 7: flexible task keeps its status select").toBeVisible();
+  step("7 flexible unchanged");
 });
