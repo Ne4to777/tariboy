@@ -15,10 +15,9 @@ absent and records a `task.queue_created` event by `system:tariboyd`; an
 existing `TASK` queue, whether created by hand or by compose, is left
 unchanged.
 
-Queues may optionally activate a [configurable task workflow](/docs/task-workflows).
-New tasks in such a queue automatically pin that published version; callers do
-not pass a workflow when creating the task. Existing tasks and unmanaged queues
-retain the flexible model described below.
+Every task follows the flexible model described below. Binding a queue to a
+workflow is being rebuilt on [workflow images](/docs/workflow-images); see
+[Task workflows](/docs/task-workflows) for what remains.
 
 ## Work model
 
@@ -63,12 +62,6 @@ incoming blocker. Completing a parent with active descendants returns a
 conflict unless the caller explicitly chooses **complete anyway**. Reading one
 task also returns `descendants` and `active_descendants` for its whole subtree,
 so a tree that keeps growing instead of closing is visible without walking it.
-
-Workflow-managed tasks are excluded from this legacy ready/claim path. Their
-`assignee` is not a phase owner: the workflow materializes pool-scoped
-assignments, leases one to a running agent iteration, and advances only through
-declared outcomes. See [Configurable task workflows](/docs/task-workflows) for
-work packets, artifacts, questions, and observations.
 
 Flexible tasks use `open`, `in_progress`, `wait_customer`, `done`, or
 `cancelled` status. When the assigned agent asks the task customer a question,
@@ -245,19 +238,13 @@ host — so a failure part-way leaves the task readable on both sides.
 What moves: the task, its whole descendant subtree, their comments with the
 original authors and times, and the relations whose two ends are both inside
 that subtree. What does not move: the event log, notifications, reminders,
-relations pointing outside the subtree, and workflow execution state.
+relations pointing outside the subtree.
 
 The target daemon refuses the import, changing nothing, when:
 
 - it has no queue with the same prefix (`queue_not_found`);
 - a task or a retired key alias already uses one of the keys
-  (`task_key_taken`);
-- its queue runs a [task workflow](/docs/task-workflows)
-  (`transfer_managed_queue`).
-
-A task in a managed queue cannot be exported either
-(`transfer_managed_task`): its assignments, leases and requirement history are
-daemon-local runtime that a transfer would silently drop.
+  (`task_key_taken`).
 
 The two endpoints behind the menu are `GET /api/tasks/{key}/export` and
 `POST /api/tasks/import`. Both are customer-authenticated; agents do not
@@ -297,7 +284,7 @@ required fields, and examples:
 ttasks --help
 ttasks create --help
 ttasks ask -h
-ttasks work complete --help
+ttasks queue trigger --help
 ttasks queue pool --help
 tariboy-tasks notifications read --help
 ttasks --help-json
@@ -305,10 +292,7 @@ ttasks --help-json
 
 Help never executes the command, resolves a daemon socket, or requires a
 running daemon. It lists both modes and labels operator-only administration
-and agent-only workflow operations; showing help does not grant execution
-access. `ask --help` describes both the flexible `KEY PRINCIPAL TEXT` form and
-the workflow `ASSIGNMENT --question ...` form, including its required context,
-blocking scope, revisions, and retry key.
+and agent-only operations; showing help does not grant execution access.
 
 Root `--help-json` returns the complete command tree with descriptions and
 examples. Shared commands retain their `flags` name array and add `flag_help`
@@ -342,10 +326,6 @@ ttasks block TEST-fkt3 --by TEST-2xwv
 ttasks relate TEST-fkt3 TEST-hb4k
 ttasks done TEST-fkt3
 ```
-
-For workflow-managed work, agents instead use `ttasks work next`, `ttasks work
-show`, `ttasks artifacts add`, `ttasks ask`, and `ttasks work complete`. Direct
-status/claim operations cannot bypass the pinned state machine.
 
 Create, comment, and relation actions accept stable idempotency keys internally
 so transport retries return the original result without duplicating a task,

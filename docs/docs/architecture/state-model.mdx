@@ -145,9 +145,7 @@ transaction:
 
 - **Native Tasks** — only whole trees whose every task is `done` or
   `cancelled` with `completed_at` before the cutoff, with their comments,
-  waits, events, notifications and read state, relations, and workflow
-  executions, assignments, artifacts, questions, holds, subscriptions,
-  observations, and outbox rows. A tree related to a task that stays is kept.
+  waits, events, notifications and read state, relations, and outbox rows. A tree related to a task that stays is kept.
 - **AI proxy Usage** — `ai_requests` rows. Retention is `0` (keep everything)
   or at least 31 days, so the calendar-month budget window never loses rows,
   and rows inside the longest rolling `budgets` period are kept even when it
@@ -155,7 +153,7 @@ transaction:
   rows from retained transcripts; the next run deletes them again.
 - **Messages** — messages whose every delivery is acknowledged or
   dead-lettered, with those deliveries. Unacknowledged work, and messages that
-  workflow ingress has not consumed yet, are never deleted.
+  queue-trigger ingress has not consumed yet, are never deleted.
   This is the only path that removes `messages` rows; old chat history
   therefore ends at the retention period.
 - **Daemon events** (`events`) and task mutation idempotency records.
@@ -233,10 +231,10 @@ so reparenting preserves priority without disturbing other buckets.
 `started_at` records the first time a task's status became `in_progress` and
 never moves afterward: a task paused in `wait_customer`, reopened, or started
 again keeps it. The `tasks_started_at` trigger stamps it on every status write
-path — update, claim, a resolved customer wait and a workflow transition — with
+path — update, claim, and a resolved customer wait — with
 that write's `updated_at`. Migration `0049` backfilled existing tasks from the
-earliest `task.updated` event with status `in_progress`, `task.claimed` or
-`workflow.transitioned` still in `task_events`; a task with no such event keeps
+earliest `task.updated` event with status `in_progress`, or `task.claimed`
+still in `task_events`; a task with no such event keeps
 an empty value until its next real move into `in_progress`, rather than taking
 the time of an unrelated edit. Export and import carry the field.
 
@@ -246,13 +244,12 @@ outbox with a stable message idempotency key. The WebSocket is only a delivery
 optimization: `task_events.sequence` is the resume authority and HTTP queries
 remain authoritative. See [Native Tasks](/docs/tasks).
 
-Managed queues add normalized workflow definitions/bindings/pools, immutable
-status and requirement executions, assignment attempts and leases, artifacts,
-questions/holds, subscriptions/observations, idempotency rows, and a workflow
-outbox. A task snapshots the active published version at creation; later queue
-activation or pool rebinding cannot rewrite its history. Startup reconciles
-expired leases, question deadlines, pending workflow outbox rows, and the
-persisted bus-ingress cursor. See [Configurable task workflows](/docs/task-workflows).
+Queues also own agent pools and queue triggers, and the daemon keeps a
+persisted bus-ingress cursor that startup reconciles so a trigger never creates
+a task twice. The earlier task workflow engine tables were dropped by migration
+`0054`; tasks that had been managed became ordinary tasks and keep a
+`workflow.removed` event that records what they ran on. See
+[Task workflows](/docs/task-workflows).
 
 ## Image assignment state
 

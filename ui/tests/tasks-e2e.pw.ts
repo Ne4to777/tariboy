@@ -140,33 +140,16 @@ test("Tasks production workspace opens, closes, resizes, and restores the detail
   await expect(page.getByText("Are you sure you want to close this task? Unsaved changes will be discarded.")).toBeVisible();
 });
 
-test("Tasks production workspace publishes and selects a workflow version", async ({ page, request }) => {
-  const call = async (method: "post" | "patch" | "put", path: string, data: unknown) => {
-    const response = await request[method](`${daemonURL}${path}`, { data })
-    expect(response.ok()).toBe(true)
-    return (await response.json()).result
-  }
-  await call("post", "/api/task-queues", { prefix: "FLOW", name: "Workflow browser" })
-  const definition = {
-    name: "browser-flow", version: 1, initial_status: "work",
-    statuses: [
-      { id: "work", requirements: [{ id: "implementation", pool: "workers", dispatch: "claim_one", inputs: [], produces: ["result"], outcomes: ["done"] }], transitions: [{ when: "implementation.done", to: "done" }] },
-      { id: "done", requirements: [], transitions: [], terminal: true },
-    ],
-  }
+test("Tasks production workspace lists the agent pools of a queue", async ({ page, request }) => {
+  const response = await request.post(`${daemonURL}/api/task-queues`, { data: { prefix: "FLOW", name: "Pool browser" } })
+  expect(response.ok()).toBe(true)
 
   await page.goto("/tests/tasks-fixture.html#/servers/local/tasks")
   await page.getByRole("button", { name: "Queue: all" }).click()
   await page.getByRole("menuitem", { name: "Manage queues…" }).click()
-  await page.getByRole("button", { name: "Workflow settings FLOW" }).click()
-  await page.getByLabel("Workflow FLOW").getByText("Create definition (JSON)").click()
-  await page.getByLabel("Workflow definition FLOW").fill(JSON.stringify(definition))
-  await page.getByRole("button", { name: "Validate and publish" }).click()
-  await expect(page.getByText("Workflow published", { exact: true })).toBeVisible()
-  await page.getByLabel("Workflow name FLOW").fill("browser-flow")
-  await page.getByLabel("Workflow FLOW").getByRole("button", { name: "Load versions" }).click()
-  await expect(page.getByLabel("Published workflow version FLOW")).toContainText("browser-flow@1")
-  await expect(page.getByLabel("Workflow FLOW").getByText("Legacy queue (no workflow)")).toBeVisible()
+  await page.getByRole("button", { name: "Agent pools FLOW" }).click()
+  await expect(page.getByLabel("Agent pools FLOW").getByRole("heading", { name: "Agent pools" })).toBeVisible()
+  await expect(page.getByLabel("Pool name FLOW")).toBeVisible()
   await assertNoLoadFailedToast(page)
 })
 

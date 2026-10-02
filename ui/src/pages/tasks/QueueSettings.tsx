@@ -1,24 +1,16 @@
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
-import { ApiError, type ApiTarget } from "@/lib/api"
+import type { ApiTarget } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  activateQueueWorkflow,
-  createWorkflowDraft,
-  getQueueWorkflow,
   listAgentPools,
-  listWorkflowVersions,
-  publishWorkflowVersion,
   rebindAgentPool,
   type AgentPool,
   type CreateQueueInput,
-  type QueueWorkflowBinding,
   type TaskQueue,
   type UpdateQueueInput,
-  type WorkflowDefinition,
-  type WorkflowVersion,
 } from "@/lib/tasks"
 
 export default function QueueSettings({
@@ -82,11 +74,11 @@ export default function QueueSettings({
                 type="button"
                 size="xs"
                 variant="secondary"
-                aria-label={`Workflow settings ${queue.prefix}`}
-                aria-expanded={open === `workflow:${queue.prefix}`}
-                onClick={() => setOpen((current) => current === `workflow:${queue.prefix}` ? "" : `workflow:${queue.prefix}`)}
+                aria-label={`Agent pools ${queue.prefix}`}
+                aria-expanded={open === `pools:${queue.prefix}`}
+                onClick={() => setOpen((current) => current === `pools:${queue.prefix}` ? "" : `pools:${queue.prefix}`)}
               >
-                Workflow
+                Pools
               </Button>
             </div>
             {open === `name:${queue.prefix}` && (
@@ -108,7 +100,7 @@ export default function QueueSettings({
                 <button type="submit">Save {queue.prefix}</button>
               </form>
             )}
-            {open === `workflow:${queue.prefix}` && <QueueWorkflowEditor queue={queue} target={target} />}
+            {open === `pools:${queue.prefix}` && <QueuePoolEditor queue={queue} target={target} />}
           </article>
         ))}
       </div>
@@ -132,15 +124,10 @@ function actionKey(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random()}`
 }
 
-function QueueWorkflowEditor({ queue, target }: { queue: TaskQueue; target?: ApiTarget }) {
-  const [binding, setBinding] = useState<QueueWorkflowBinding | null>(null)
-  const [versions, setVersions] = useState<WorkflowVersion[]>([])
+function QueuePoolEditor({ queue, target }: { queue: TaskQueue; target?: ApiTarget }) {
   const [pools, setPools] = useState<AgentPool[]>([])
-  const [workflowName, setWorkflowName] = useState("")
-  const [selectedVersion, setSelectedVersion] = useState("")
   const [poolName, setPoolName] = useState("")
   const [poolAgents, setPoolAgents] = useState("")
-  const [definition, setDefinition] = useState("")
   const [busy, setBusy] = useState(false)
   const [stateLoading, setStateLoading] = useState(true)
   const [stateError, setStateError] = useState("")
@@ -149,23 +136,11 @@ function QueueWorkflowEditor({ queue, target }: { queue: TaskQueue; target?: Api
   const loadState = useCallback(async () => {
     setStateLoading(true)
     setStateError("")
-    const [bound, poolPage] = await Promise.allSettled([
-      getQueueWorkflow(queue.prefix, target), listAgentPools(queue.prefix, target),
-    ])
-    const bindingMissing = bound.status === "rejected" && bound.reason instanceof ApiError &&
-      bound.reason.status === 404 && ["workflow_not_found", "queue_workflow_not_found"].includes(bound.reason.code)
-    const errors = [
-      bound.status === "rejected" && !bindingMissing ? bound.reason : null,
-      poolPage.status === "rejected" ? poolPage.reason : null,
-    ].filter(Boolean)
-    if (errors.length > 0) {
-      setStateError(errors.map((error) => error instanceof Error ? error.message : String(error)).join("; "))
-    } else {
-      if (bound.status === "fulfilled") {
-        setBinding(bound.value)
-        setWorkflowName(bound.value.workflow_name ?? "")
-      } else setBinding(null)
-      if (poolPage.status === "fulfilled") setPools(poolPage.value.items ?? [])
+    try {
+      const page = await listAgentPools(queue.prefix, target)
+      setPools(page.items ?? [])
+    } catch (error) {
+      setStateError(error instanceof Error ? error.message : String(error))
     }
     setStateLoading(false)
   }, [queue.prefix, target])
@@ -185,35 +160,12 @@ function QueueWorkflowEditor({ queue, target }: { queue: TaskQueue; target?: Api
     } finally { setBusy(false) }
   }
 
-  return <section className="task-queue-workflow" aria-label={`Workflow ${queue.prefix}`}>
-    <h4>Workflow</h4>
-    {stateLoading ? <p>Loading workflow state…</p> : stateError ? <div role="alert" aria-label={`Workflow ${queue.prefix} error`}><p>{stateError}</p><button type="button" aria-label={`Retry workflow state ${queue.prefix}`} onClick={() => void loadState()}>Retry</button></div> : <p>{binding ? `Active: ${binding.workflow_name}@${binding.workflow_version} · rev ${binding.revision}` : "Legacy queue (no workflow)"}</p>}
+  return <section className="task-queue-pools" aria-label={`Agent pools ${queue.prefix}`}>
+    <h4>Agent pools</h4>
+    {stateLoading ? <p>Loading agent pools…</p> : stateError ? <div role="alert" aria-label={`Agent pools ${queue.prefix} error`}><p>{stateError}</p><button type="button" aria-label={`Retry agent pools ${queue.prefix}`} onClick={() => void loadState()}>Retry</button></div> : null}
     {staleMessage && <p role="alert">{staleMessage}</p>}
     <fieldset disabled={stateLoading || Boolean(stateError)}>
-    <form onSubmit={(event) => { event.preventDefault(); void protect(async () => {
-      const page = await listWorkflowVersions(workflowName.trim(), target)
-      setVersions(page.items.filter((item) => item.state === "published"))
-    }) }}>
-      <label>Workflow name<Input aria-label={`Workflow name ${queue.prefix}`} value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} /></label>
-      <button type="submit" disabled={busy || !workflowName.trim()}>Load versions</button>
-    </form>
-    {versions.length > 0 && <form onSubmit={(event) => { event.preventDefault(); void protect(async () => {
-      const next = await activateQueueWorkflow(queue.prefix, Number(selectedVersion), binding?.revision ?? 0, actionKey("activate"), target)
-      setBinding(next)
-      toast.success("Workflow activated")
-    }) }}>
-      <label>Published version<select aria-label={`Published workflow version ${queue.prefix}`} value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)}><option value="">Select…</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.name}@{item.version}</option>)}</select></label>
-      <button type="submit" disabled={busy || !selectedVersion}>Activate workflow</button>
-    </form>}
-    <details><summary>Create definition (JSON)</summary><form onSubmit={(event) => { event.preventDefault(); void protect(async () => {
-      const parsed = JSON.parse(definition) as WorkflowDefinition
-      const draft = await createWorkflowDraft(parsed, target)
-      await publishWorkflowVersion(draft.name, draft.version, target)
-      setWorkflowName(draft.name)
-      setVersions((current) => [...current.filter((item) => item.id !== draft.id), { ...draft, state: "published" }])
-      toast.success("Workflow published")
-    }) }}><label>Workflow definition<Textarea aria-label={`Workflow definition ${queue.prefix}`} value={definition} onChange={(event) => setDefinition(event.target.value)} placeholder='{"name":"development","version":1,...}' /></label><button type="submit" disabled={busy || !definition.trim()}>Validate and publish</button></form></details>
-    <div className="task-workflow-list"><h3>Explicit pools <span>{pools.length}</span></h3><ul>{pools.map((pool) => <li key={pool.name}><strong>{pool.name}</strong><span>{pool.agents.join(", ")} · rev {pool.revision}</span></li>)}</ul></div>
+    <div className="task-pool-list"><h3>Explicit pools <span>{pools.length}</span></h3><ul>{pools.map((pool) => <li key={pool.name}><strong>{pool.name}</strong><span>{pool.agents.join(", ")} · rev {pool.revision}</span></li>)}</ul></div>
     <form onSubmit={(event) => { event.preventDefault(); void protect(async () => {
       const previous = pools.find((pool) => pool.name === poolName.trim())
       const updated = await rebindAgentPool(queue.prefix, poolName.trim(), poolAgents.split(",").map((agent) => agent.trim()).filter(Boolean), previous?.revision ?? 0, actionKey("pool"), target)

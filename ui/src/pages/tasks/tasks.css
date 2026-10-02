@@ -116,18 +116,16 @@
 .task-queue-card-agents span { font-family: ui-monospace, monospace; font-size: 11px; }
 .task-queue-card-actions { display: flex; gap: 6px; }
 .task-queue-list p, .task-queue-list span { font-size: 11px; color: var(--muted-foreground); }
-.task-queue-workflow { display: grid; gap: 9px; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
-.task-queue-workflow h4 { font-size: 12px; font-weight: 650; }
-.task-queue-workflow form { display: grid; gap: 7px; }
-.task-queue-workflow fieldset { display: grid; gap: 9px; min-width: 0; border: 0; padding: 0; }
-.task-queue-workflow textarea { min-height: 120px; font-family: ui-monospace, monospace; font-size: 10px; }
-.task-queue-workflow details { font-size: 11px; color: var(--muted-foreground); }
-.task-workflow-list h3 { display: flex; justify-content: space-between; font-size: 11px; font-weight: 650; }
-.task-workflow-list h3 span { color: var(--muted-foreground); }
-.task-workflow-list ul { display: grid; gap: 5px; margin-top: 5px; }
-.task-workflow-list li { display: grid; gap: 2px; border-radius: 6px; background: var(--muted); padding: 7px; }
-.task-workflow-list li strong { color: var(--foreground); font-size: 11px; }
-.task-workflow-list li span, .task-workflow-list > p { overflow-wrap: anywhere; font-size: 10px; color: var(--muted-foreground); }
+.task-queue-pools { display: grid; gap: 9px; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.task-queue-pools h4 { font-size: 12px; font-weight: 650; }
+.task-queue-pools form { display: grid; gap: 7px; }
+.task-queue-pools fieldset { display: grid; gap: 9px; min-width: 0; border: 0; padding: 0; }
+.task-pool-list h3 { display: flex; justify-content: space-between; font-size: 11px; font-weight: 650; }
+.task-pool-list h3 span { color: var(--muted-foreground); }
+.task-pool-list ul { display: grid; gap: 5px; margin-top: 5px; }
+.task-pool-list li { display: grid; gap: 2px; border-radius: 6px; background: var(--muted); padding: 7px; }
+.task-pool-list li strong { color: var(--foreground); font-size: 11px; }
+.task-pool-list li span, .task-pool-list > p { overflow-wrap: anywhere; font-size: 10px; color: var(--muted-foreground); }
 
 @media (max-width: 1000px) {
   /* Too narrow for an island: the panel takes the window and drops the inset,

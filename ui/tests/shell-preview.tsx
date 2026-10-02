@@ -42,7 +42,6 @@ const RELATIONS = [
 const EVENTS = [
   { sequence: 4, event_id: "e4", task_key: DETAIL_KEY, queue: "TB", kind: "task.comment.added", actor: "customer:ops", task_revision: 4, payload: { comment_id: 2 }, created_at: "2026-09-13T13:52:00Z" },
   { sequence: 3, event_id: "e3", task_key: DETAIL_KEY, queue: "TB", kind: "task.status.changed", actor: "agent:builder", task_revision: 3, payload: { from: "in_progress", to: "wait_customer" }, created_at: "2026-09-13T13:20:00Z" },
-  { sequence: 2, event_id: "e2", task_key: DETAIL_KEY, queue: "TB", kind: "workflow.assignment.started", actor: "agent:builder", task_revision: 2, payload: { attempt: 1, node: "write_migration" }, created_at: "2026-09-13T09:40:00Z" },
   { sequence: 1, event_id: "e1", task_key: DETAIL_KEY, queue: "TB", kind: "task.created", actor: "customer:ops", task_revision: 1, payload: {}, created_at: "2026-09-13T09:14:00Z" },
 ];
 const DESCRIPTION = "The migration has to run without a maintenance window on hosts that are already serving.\n\n### Repro\n\n1. Start the daemon on a store built before the schema change.\n2. Apply the migration while a session is open.\n3. The session is reaped instead of resumed.";
@@ -62,10 +61,7 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes("/api/task-queues")) return json({ queues: [{ prefix: "TB", title: "Tariboy", description: "" }], count: 1 });
   if (url.includes("/api/task-notifications")) return json({ notifications: [], count: 0 });
   if (url.includes("/api/task-principals")) return json({ customer: "customer:ops", agents: AGENTS.map((agent) => agent.name) });
-  if (url.includes(`/api/tasks/${DETAIL_KEY}/artifacts`)) return json({ items: [], count: 0 });
-  if (url.includes(`/api/tasks/${DETAIL_KEY}/questions`)) return json({ items: [], count: 0 });
   if (url.includes(`/api/tasks/${DETAIL_KEY}/events`)) return json({ events: EVENTS, count: EVENTS.length });
-  if (url.includes(`/api/tasks/${DETAIL_KEY}/workflow`)) return json(null);
   if (url.includes(`/api/tasks/${DETAIL_KEY}`)) {
     const task = { ...TASKS.find((candidate) => candidate.key === DETAIL_KEY)!, description: DESCRIPTION, access: "write" };
     return json({ task, comments: COMMENTS, waiting_for: WAITS, relations: RELATIONS });

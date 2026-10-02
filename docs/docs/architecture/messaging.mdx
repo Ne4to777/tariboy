@@ -60,7 +60,7 @@ Operators can physically clear one agent's pending queue with
 The bus removes that agent's unacknowledged, non-DLQ deliveries in one SQLite
 transaction and deletes only message rows orphaned by that operation. Processed
 and DLQ deliveries, shared messages, other agents' deliveries, and messages not
-yet consumed by workflow ingress are retained.
+yet consumed by queue-trigger ingress are retained.
 
 ## Channel names
 
@@ -207,12 +207,9 @@ them: enabled loops wake for pending deliveries, while disabled loops leave
 them queued. `agent:<a>:inbox` remains the direct inbox for group sends,
 request replies and system events.
 
-Workflow runtime wakes use the same bus/outbox path. An incoming message never
-changes a workflow status directly. An operator-declared external trigger may
-create a new task; an assignment-scoped, policy-allowed subscription may append
-an observation and apply only its declared reaction (`record_only`, wake, hold,
-or optional acknowledgement work). Late events degrade to record-only. See
-[Configurable task workflows](/docs/task-workflows#channels-triggers-subscriptions-and-observations).
+An operator-declared external queue trigger may create a new task from a
+plugin-produced message; no incoming message changes a task's status. See
+[Task workflows](/docs/task-workflows#queue-triggers).
 
 See the [channel bus reference](/docs/reference/channels) for message fields,
 subscription matchers, schedules and scripts, groups, and failure-mode

@@ -26,11 +26,6 @@ The loop is driven two ways, both requiring the loop to be **enabled**:
 - **Message** — a publish that matches one of the agent's subscriptions nudges
   the loop to start an iteration now (only if pending deliveries exist).
 
-For a workflow assignment, the wake is only scheduling. The running iteration
-must atomically claim work with `tasks work next`; the returned lease-bound work
-packet is the execution authority. Assignment completion or an allowed
-observation reaction advances durable workflow state, not receipt of the wake.
-
 Loop policy is per-agent: `interval`, `timeout` (soft), `hard-timeout`,
 `on_timeout` and `on_error` (e.g. `restart`). An iteration ends when it signals
 completion, exits, or reaches an enforced deadline.
@@ -189,11 +184,6 @@ are:
 - **whoami** — identity: which agent, cwd, current iteration, and client/daemon versions.
 - **loop** — iteration control: signal done, start/stop the loop.
 - **messages** — publish to and receive from channels.
-
-During a managed workflow iteration, the active work packet narrows this core:
-direct send/reply/group coordination and raw channel management are denied by
-default. Workflow-defined tools may be allowed explicitly; dynamic observation
-subscriptions use `tasks observe` and must match the packet's channel policy.
 
 On top of the core, an image opts into **optional capabilities**:
 

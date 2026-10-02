@@ -48,13 +48,6 @@ must be active and assigned to that agent. Subsequent requests use the new
 task/root attribution; earlier requests remain unattributed. A second call with
 a different key is rejected.
 
-In a workflow-managed queue, `ttasks work next` returns a leased work packet;
-`ttasks artifacts`, workflow-form `ttasks ask`/`answer`, `ttasks observe`, and
-`ttasks work complete` are the only execution path. The active packet also makes
-ordinary direct messaging/group/channel tools deny-by-default, except for tools
-explicitly declared by the pinned workflow. See
-[Configurable task workflows](/docs/task-workflows#agent-capability-security-boundary).
-
 Task priority is one of `P0` (Critical), `P1` (High), `P2` (Normal), or `P3`
 (Low). New tasks default to `P2`; set or change it explicitly with:
 

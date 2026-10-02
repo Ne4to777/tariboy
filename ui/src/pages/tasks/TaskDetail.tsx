@@ -8,7 +8,6 @@ import type {
   TaskPriority,
   TaskRelationType,
   TaskStatus,
-  WorkflowExecutionView,
 } from "@/lib/tasks"
 import TaskComments from "./TaskComments"
 import { Input } from "@/components/ui/input"
@@ -38,7 +37,6 @@ export default function TaskDetail({
   detail,
   target,
   events,
-  workflow,
   principals,
   width,
   resizeHandle,
@@ -53,7 +51,6 @@ export default function TaskDetail({
   detail: Detail
   target?: ApiTarget
   events: TaskEvent[]
-  workflow: WorkflowExecutionView | null
   principals: TaskPrincipals | null
   width: number
   resizeHandle: ReactNode
@@ -77,7 +74,6 @@ export default function TaskDetail({
   assigneeOptions?: ReadonlyArray<{ value: string; label: string }>
 }) {
   const task = detail.task
-  const managed = Boolean(task.workflow_version_id)
   const [baseline, setBaseline] = useState(task)
   const [returnFocus] = useState(() => document.activeElement as HTMLElement | null)
   const initialFocusRef = useRef<HTMLButtonElement>(null)
@@ -163,11 +159,9 @@ export default function TaskDetail({
         description,
         pull_request: pullRequest.trim(),
         priority,
-        ...(managed ? {} : {
-          status,
-          assignee: assignee.trim(),
-          manual_block_reason: blockReason,
-        }),
+        status,
+        assignee: assignee.trim(),
+        manual_block_reason: blockReason,
       })
       adopt(updated)
     } catch {
@@ -177,7 +171,6 @@ export default function TaskDetail({
     }
   }
 
-  const frozen = workflow?.status_executions.some((execution) => execution.state === "frozen") ?? false
   const openWaits = detail.waiting_for.filter((wait) => !wait.resolved_at)
   const editable = task.access !== "context" && task.access !== "respond"
 
@@ -211,11 +204,7 @@ export default function TaskDetail({
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px]">
             <StatusPill tone={taskTone(task.status)}>{taskStatusLabel(task.status)}</StatusPill>
-            {/* A managed task says so by omission — it simply carries no note.
-                Which version and revision its execution runs on belongs to the
-                workflow, not to this header, and the parent is stated once, in
-                the overview grid below. */}
-            {!managed && <span className="text-[11.5px] text-muted-foreground">unmanaged · status set by hand</span>}
+            <span className="text-[11.5px] text-muted-foreground">unmanaged · status set by hand</span>
             <MetaInline label="agent" value={task.assignee || "unassigned"} />
             <MetaInline label="updated" value={formatTaskTime(task.updated_at)} />
           </div>
@@ -276,10 +265,8 @@ export default function TaskDetail({
         <>
           {/* One banner at a time, and only for what is failing or waiting on a
               person — open, in progress and done speak through the status pill. */}
-          {frozen
-            ? <WorkflowFreezeBanner events={events} />
-            : openWaits.length > 0 && <Banner tone="primary" icon={<HelpCircle className="mt-0.5 size-3.5 [stroke-width:1.4]" />}
-                text={`Waiting for an answer from ${openWaits.map((wait) => wait.expected_principal).join(", ")} — reply in the comments below.`} />}
+          {openWaits.length > 0 && <Banner tone="primary" icon={<HelpCircle className="mt-0.5 size-3.5 [stroke-width:1.4]" />}
+            text={`Waiting for an answer from ${openWaits.map((wait) => wait.expected_principal).join(", ")} — reply in the comments below.`} />}
           <dl className="grid grid-cols-2 gap-x-6 gap-y-[9px]">
             <Meta label="Author" value={task.author} />
             <Meta label="Customer" value={task.customer} />
@@ -306,21 +293,20 @@ export default function TaskDetail({
                 disabled={saving} mode={descriptionMode} />
             </div>
             <div className="task-properties grid min-w-0 grid-cols-2 gap-x-4 gap-y-2.5">
-              {/* A managed task's status belongs to its workflow. */}
-              {!managed && <SelectField label="Status" value={status} onChange={(value) => setStatus(value as TaskStatus)}>
+              <SelectField label="Status" value={status} onChange={(value) => setStatus(value as TaskStatus)}>
                 <option value="open">Open</option>
                 <option value="in_progress">In progress</option>
                 <option value="wait_customer">Wait customer</option>
                 <option value="done">Done</option>
                 <option value="cancelled">Cancelled</option>
-              </SelectField>}
+              </SelectField>
               <SelectField label="Priority" value={priority} onChange={(value) => setPriority(value as TaskPriority)} mono>
                 <option value="P0">P0 Critical</option>
                 <option value="P1">P1 High</option>
                 <option value="P2">P2 Normal</option>
                 <option value="P3">P3 Low</option>
               </SelectField>
-              {!managed && assigneeOptions && <SelectField label="Assignee" value={assignee} onChange={setAssignee} mono>
+              {assigneeOptions && <SelectField label="Assignee" value={assignee} onChange={setAssignee} mono>
                 <option value="">Unassigned</option>
                 {[task.assignee, principals?.customer ?? ""]
                   .filter((value, index, all) => value && all.indexOf(value) === index
@@ -328,7 +314,7 @@ export default function TaskDetail({
                   .map((value) => <option key={value} value={value}>{value}</option>)}
                 {assigneeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </SelectField>}
-              {!managed && !assigneeOptions && <label className="flex min-w-0 flex-col gap-[5px]">
+              {!assigneeOptions && <label className="flex min-w-0 flex-col gap-[5px]">
                 <span className={LABEL}>Assignee</span>
                 <Input aria-label="Assignee" list="task-assignees" className={cn(FIELD, FIELD_MONO)}
                   value={assignee} onChange={(event) => setAssignee(event.target.value)} />
@@ -340,10 +326,10 @@ export default function TaskDetail({
                 <span className={LABEL}>Pull request</span>
                 <Input className={cn(FIELD, FIELD_MONO)} value={pullRequest} onChange={(event) => setPullRequest(event.target.value)} />
               </label>
-              {!managed && <label className="flex min-w-0 flex-col gap-[5px]">
+              <label className="flex min-w-0 flex-col gap-[5px]">
                 <span className={LABEL}>Manual block reason</span>
                 <Input className={FIELD} value={blockReason} onChange={(event) => setBlockReason(event.target.value)} />
-              </label>}
+              </label>
             </div>
           </fieldset>
           <section className="flex min-w-0 flex-col gap-1.5">
@@ -544,12 +530,4 @@ function summarizePayload(payload: Record<string, unknown> | undefined): string 
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .map(([key, value]) => `${key} ${typeof value === "object" ? JSON.stringify(value) : String(value)}`)
     .join(" · ")
-}
-
-function WorkflowFreezeBanner({ events }: { events: TaskEvent[] }) {
-  const escalation = [...events].reverse().find((event) => event.kind === "workflow.escalated")
-  const code = typeof escalation?.payload.error_code === "string" ? escalation.payload.error_code : "unknown_error"
-  const message = typeof escalation?.payload.message === "string" ? escalation.payload.message : "Workflow execution is frozen"
-  return <Banner tone="danger" role="alert" icon={<AlertCircle className="size-3.5 [stroke-width:1.4]" />} text={message}
-    actions={<span className="shrink-0 self-center font-mono text-[11px] opacity-80">{code}</span>} />
 }

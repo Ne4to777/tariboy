@@ -32,64 +32,12 @@ export interface Task {
   assignee: string
   manual_block_reason: string
   blocked: boolean
-  workflow_version_id?: number
-  workflow_version?: string
-  workflow_status?: string
-  workflow_revision?: number
   revision: number
   created_at: string
   started_at?: string
   updated_at: string
   completed_at: string
   access?: TaskAccess
-}
-
-export interface WorkflowRequirement {
-  id: string
-  pool: string
-  dispatch: "claim_one" | "require_all"
-  inputs: string[]
-  produces: string[]
-  outcomes: string[]
-  optional?: boolean
-}
-
-export interface WorkflowStatusDefinition {
-  id: string
-  instructions?: string
-  requirements: WorkflowRequirement[]
-  transitions: { when: string; to: string }[]
-  join?: string
-  terminal?: boolean
-}
-
-export interface WorkflowDefinition {
-  name: string
-  version: number
-  initial_status: string
-  statuses: WorkflowStatusDefinition[]
-  [key: string]: unknown
-}
-
-export interface WorkflowVersion {
-  id: number
-  name: string
-  version: number
-  state: "draft" | "published"
-  definition: WorkflowDefinition
-  created_at: string
-  updated_at: string
-  published_at?: string
-}
-
-export interface QueueWorkflowBinding {
-  queue: string
-  workflow_version_id: number
-  workflow_name?: string
-  workflow_version?: number
-  revision: number
-  bound_by: string
-  bound_at: string
 }
 
 export interface AgentPool {
@@ -100,106 +48,6 @@ export interface AgentPool {
   revision: number
   created_at: string
   updated_at: string
-}
-
-export interface StatusExecution {
-  id: number
-  task_key: string
-  workflow_version_id: number
-  status: string
-  sequence: number
-  state: string
-  transition_to?: string
-  task_revision: number
-  created_at: string
-  completed_at?: string
-}
-
-export interface RequirementExecution {
-  id: number
-  status_execution_id: number
-  requirement_id: string
-  pool: string
-  dispatch: string
-  optional: boolean
-  pool_snapshot: string[]
-  inputs: string[]
-  produces: string[]
-  outcomes: string[]
-  state: string
-  created_at: string
-  completed_at?: string
-}
-
-export interface WorkflowAssignment {
-  id: number
-  requirement_execution_id: number
-  agent: string
-  attempt: number
-  state: string
-  lease_owner?: string
-  lease_iteration?: string
-  lease_expires_at?: string
-  revision: number
-  outcome?: string
-  created_at: string
-  updated_at: string
-  completed_at?: string
-}
-
-export interface WorkflowArtifact {
-  id: number
-  task_key: string
-  assignment_id?: number
-  name: string
-  type: string
-  content?: string
-  metadata?: Record<string, unknown>
-  revision: number
-  created_by: string
-  created_at: string
-  updated_at: string
-}
-
-export interface WorkflowQuestion {
-  id: number
-  task_key: string
-  assignment_id?: number
-  question: string
-  context: string
-  blocking_scope: string
-  state: string
-  answer?: string
-  created_at: string
-}
-
-export interface WorkflowHold {
-  id: number
-  task_key: string
-  assignment_id?: number
-  scope: string
-  reason?: string
-  created_at: string
-  released_at?: string
-}
-
-export interface WorkflowObservation {
-  id: number
-  task_key: string
-  assignment_id?: number
-  kind: string
-  payload?: Record<string, unknown>
-  observed_at: string
-}
-
-export interface WorkflowExecutionView {
-  task: Task
-  workflow: WorkflowVersion
-  status_executions: StatusExecution[]
-  requirement_executions: RequirementExecution[]
-  assignments: WorkflowAssignment[]
-  holds: WorkflowHold[]
-  observations: WorkflowObservation[]
 }
 
 export interface TaskComment {
@@ -384,18 +232,6 @@ export const createTaskQueue = (input: CreateQueueInput, target?: ApiTarget) =>
 export const updateTaskQueue = (prefix: string, input: UpdateQueueInput, target?: ApiTarget) =>
   call<TaskQueue>(target, "PATCH", `/api/task-queues/${encodeURIComponent(prefix)}`, input)
 
-export const createWorkflowDraft = (definition: WorkflowDefinition, target?: ApiTarget) =>
-  call<WorkflowVersion>(target, "POST", "/api/workflows", { definition })
-export const publishWorkflowVersion = (name: string, version: number, target?: ApiTarget) =>
-  call<WorkflowVersion>(target, "POST", `/api/workflows/${encodeURIComponent(name)}/versions/${version}/publish`)
-export const listWorkflowVersions = (name: string, target?: ApiTarget) =>
-  call<{ items: WorkflowVersion[]; count: number }>(target, "GET", `/api/workflows/${encodeURIComponent(name)}/versions`)
-export const getQueueWorkflow = (queue: string, target?: ApiTarget) =>
-  call<QueueWorkflowBinding>(target, "GET", `/api/task-queues/${encodeURIComponent(queue)}/workflow`)
-export const activateQueueWorkflow = (queue: string, versionID: number, revision: number, idempotencyKey: string, target?: ApiTarget) =>
-  call<QueueWorkflowBinding>(target, "PUT", `/api/task-queues/${encodeURIComponent(queue)}/workflow`, {
-    workflow_version_id: versionID, revision, idempotency_key: idempotencyKey,
-  })
 export const listAgentPools = (queue: string, target?: ApiTarget) =>
   call<{ items: AgentPool[]; count: number }>(target, "GET", `/api/task-queues/${encodeURIComponent(queue)}/pools`)
 export const rebindAgentPool = (queue: string, pool: string, agents: string[], revision: number, idempotencyKey: string, target?: ApiTarget) =>
@@ -407,12 +243,6 @@ export const listTasks = (filters: TaskFilters = {}, target?: ApiTarget) =>
   call<TaskPage>(target, "GET", queryPath("/api/tasks", filters))
 export const getTask = (key: string, target?: ApiTarget) =>
   call<TaskDetail>(target, "GET", `/api/tasks/${encodeURIComponent(key)}`)
-export const getTaskWorkflow = (key: string, target?: ApiTarget) =>
-  call<WorkflowExecutionView>(target, "GET", `/api/tasks/${encodeURIComponent(key)}/workflow`)
-export const listWorkflowArtifacts = (key: string, target?: ApiTarget) =>
-  call<{ items: WorkflowArtifact[]; count: number }>(target, "GET", `/api/tasks/${encodeURIComponent(key)}/artifacts`)
-export const listWorkflowQuestions = (key: string, target?: ApiTarget) =>
-  call<{ items: WorkflowQuestion[]; count: number }>(target, "GET", `/api/tasks/${encodeURIComponent(key)}/questions`)
 export const createTask = (input: CreateTaskInput, target?: ApiTarget) =>
   call<Task>(target, "POST", "/api/tasks", input)
 export const updateTask = (key: string, input: UpdateTaskInput, target?: ApiTarget) =>

@@ -12,7 +12,6 @@ import {
   createTaskQueue,
   deleteTaskRelation,
   getTask,
-  getTaskWorkflow,
   listTaskNotifications,
   listTaskEvents,
   listTaskPrincipals,
@@ -34,7 +33,6 @@ import {
   type TaskRelationType,
   type TaskStatus,
   type TaskStatusView,
-  type WorkflowExecutionView,
 } from "@/lib/tasks"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import QueueSettings from "./QueueSettings"
@@ -115,7 +113,6 @@ function TasksWorkspaceContent({
   // opens on it at once instead of waiting for the read.
   const [loadingKey, setLoadingKey] = useState("")
   const [events, setEvents] = useState<TaskEvent[]>([])
-  const [workflow, setWorkflow] = useState<WorkflowExecutionView | null>(null)
   const [creatingParent, setCreatingParent] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -215,18 +212,7 @@ function TasksWorkspaceContent({
       setLoadingKey("")
       setDetail(next)
       setEvents(history)
-      setWorkflow(null)
       setSelectedKey(key)
-      // The execution projection is read for one thing the panel still shows:
-      // whether the workflow is frozen. A failure leaves that banner off
-      // rather than speaking for itself.
-      if (next.task.workflow_version_id) {
-        const current = () => mountedRef.current && request === detailRequestRef.current
-        await getTaskWorkflow(key, target)
-          .then((value) => { if (current()) setWorkflow(value) })
-          .catch(() => {})
-        if (!current()) return
-      }
     } catch (error) {
       if (!mountedRef.current || request !== detailRequestRef.current) return
       setLoadingKey("")
@@ -238,7 +224,6 @@ function TasksWorkspaceContent({
       setSelectedKey("")
       setDetail(null)
       setEvents([])
-      setWorkflow(null)
       toast.error(error instanceof Error ? error.message : String(error))
     }
   }, [target])
@@ -526,7 +511,6 @@ function TasksWorkspaceContent({
     setSelectedKey("")
     setDetail(null)
     setEvents([])
-    setWorkflow(null)
   }
   const detailResizeHandle = <TaskPanelResizeHandle
     width={effectiveDetailWidth}
@@ -602,7 +586,7 @@ function TasksWorkspaceContent({
           <SheetHeader className="px-4 pt-4 pb-2">
             <SheetTitle className="text-[14px] font-semibold">Queues</SheetTitle>
             <SheetDescription className="sr-only">
-              Create a queue, rename one, or bind its workflow.
+              Create a queue, rename one, or manage its agent pools.
             </SheetDescription>
           </SheetHeader>
           <QueueSettings queues={queues} onCreate={createQueue} onUpdate={updateQueue} target={target} />
@@ -625,7 +609,6 @@ function TasksWorkspaceContent({
           resizeHandle={detailResizeHandle}
           onClose={closeDetail}
           events={events}
-          workflow={workflow}
           onSave={saveDetail}
           onComment={comment}
           onAddRelation={async (targetKey: string, type: TaskRelationType) => {

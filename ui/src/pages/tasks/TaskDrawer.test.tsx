@@ -1,14 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
-import { ApiError } from "@/lib/api"
 import type { Task, TaskDetail as Detail } from "@/lib/tasks"
 import TaskDrawer from "./TaskDrawer"
 
 const api = vi.hoisted(() => ({
   addTaskComment: vi.fn(),
   getTask: vi.fn(),
-  getTaskWorkflow: vi.fn(),
   listTaskEvents: vi.fn(),
   listTaskPrincipals: vi.fn(),
   listTasks: vi.fn(),
@@ -64,7 +62,6 @@ beforeEach(() => {
   localStorage.clear()
   taskSocket.options = undefined
   api.getTask.mockResolvedValue(detail)
-  api.getTaskWorkflow.mockRejectedValue(new ApiError(404, "workflow_not_found", "workflow not found"))
   api.listTaskEvents.mockResolvedValue({ events: [], count: 0 })
   api.listTasks.mockResolvedValue({ tasks: [], sequence: 412 })
   api.listTaskPrincipals.mockResolvedValue({ customer: "user:owner", agents: ["worker"], groups: [] })

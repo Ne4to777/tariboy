@@ -8,7 +8,6 @@ import AllTasksWorkspace from "./AllTasksWorkspace"
 const api = vi.hoisted(() => ({
   createTask: vi.fn(),
   getTask: vi.fn(),
-  getTaskWorkflow: vi.fn(),
   listTaskEvents: vi.fn(),
   listTaskPrincipals: vi.fn(),
   listTaskQueues: vi.fn(),
@@ -196,6 +195,7 @@ it("refuses an assignee whose server dropped out of the list before Save", async
 
 it("creates a task for the chosen agent on that agent's server", async () => {
   api.createTask.mockResolvedValue(task("IMPROVE-new"))
+  api.getTask.mockResolvedValue({ task: task("IMPROVE-new"), comments: [], waiting_for: [], relations: [] })
   render(<AllTasksWorkspace hosts={hosts} />)
   await waitFor(() => expect(rowKeys().length).toBeGreaterThan(0))
   await userEvent.click(screen.getByRole("button", { name: "New task" }))

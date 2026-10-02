@@ -12,13 +12,7 @@ const api = vi.hoisted(() => ({
   createTaskQueue: vi.fn(),
   deleteTaskRelation: vi.fn(),
   getTask: vi.fn(),
-  getTaskWorkflow: vi.fn(),
-  getQueueWorkflow: vi.fn(),
   listAgentPools: vi.fn(),
-  listWorkflowArtifacts: vi.fn(),
-  listWorkflowQuestions: vi.fn(),
-  listWorkflowVersions: vi.fn(),
-  activateQueueWorkflow: vi.fn(),
   rebindAgentPool: vi.fn(),
   listTaskNotifications: vi.fn(),
   listTaskEvents: vi.fn(),
@@ -154,12 +148,7 @@ beforeEach(() => {
   })
   api.listTasks.mockResolvedValue({ tasks: [root, child], sequence: 10 })
   api.getTask.mockResolvedValue(detail)
-  api.getTaskWorkflow.mockRejectedValue(new ApiError(404, "workflow_not_found", "workflow not found"))
-  api.getQueueWorkflow.mockRejectedValue(new ApiError(404, "workflow_not_found", "workflow not found"))
   api.listAgentPools.mockResolvedValue({ items: [], count: 0 })
-  api.listWorkflowArtifacts.mockResolvedValue({ items: [], count: 0 })
-  api.listWorkflowQuestions.mockResolvedValue({ items: [], count: 0 })
-  api.listWorkflowVersions.mockResolvedValue({ items: [], count: 0 })
   api.listTaskNotifications.mockResolvedValue({ notifications: [notification], count: 1 })
   api.listTaskEvents.mockResolvedValue({
     events: [{
@@ -565,66 +554,15 @@ describe("TasksWorkspace", () => {
     expect(await screen.findByRole("heading", { name: "TEST-2" })).toBeInTheDocument()
   })
 
-  it("keeps the frozen banner and hides lifecycle controls on a managed task", async () => {
-    const managed = {
-      ...root,
-      workflow_version_id: 7,
-      workflow_version: "development@2",
-      workflow_status: "review",
-      workflow_revision: 5,
-    }
-    api.listTasks.mockResolvedValue({ tasks: [managed], sequence: 10 })
-    api.getTask.mockResolvedValue({ ...detail, task: managed })
-    api.getTaskWorkflow.mockResolvedValue({
-      task: managed,
-      workflow: { id: 7, name: "development", version: 2, state: "published", definition: { name: "development", version: 2, initial_status: "implement", statuses: [] }, created_at: root.created_at, updated_at: root.updated_at, published_at: root.updated_at },
-      status_executions: [{ id: 1, task_key: root.key, workflow_version_id: 7, status: "review", sequence: 2, state: "frozen", task_revision: 2, created_at: root.created_at }],
-      requirement_executions: [],
-      assignments: [
-        { id: 11, requirement_execution_id: 1, agent: "review-a", attempt: 1, state: "leased", lease_owner: "agent:review-a", revision: 1, created_at: root.created_at, updated_at: root.updated_at },
-        { id: 12, requirement_execution_id: 2, agent: "qa-a", attempt: 1, state: "claimable", revision: 1, created_at: root.created_at, updated_at: root.updated_at },
-      ],
-      holds: [{ id: 2, task_key: root.key, assignment_id: 11, scope: "assignment", reason: "Need decision", created_at: root.created_at }],
-      observations: [{ id: 3, task_key: root.key, assignment_id: 11, kind: "logs", payload: { service: "api" }, observed_at: root.created_at }],
-    })
-    api.listTaskEvents.mockResolvedValue({ events: [{ sequence: 9, event_id: "workflow-error", task_key: root.key, queue: "TEST", kind: "workflow.escalated", actor: "system", task_revision: 2, payload: { error_code: "no_matching_transition", message: "No transition matched" }, created_at: root.updated_at }], count: 1 })
-
-    render(<TasksWorkspace />)
-    await userEvent.click(await screen.findByRole("button", { name: /Ship native tasks/ }))
-
-    expect(await screen.findByText("No transition matched")).toBeInTheDocument()
-    // The execution lists left with the workflow section; the freeze it
-    // reports still reaches the panel through the banner.
-    expect(screen.queryByText("review-a")).not.toBeInTheDocument()
-    expect(screen.queryByText("Need decision")).not.toBeInTheDocument()
-    expect(screen.getAllByText("no_matching_transition").length).toBeGreaterThan(0)
-    expect(screen.getByText(/error_code no_matching_transition/)).toBeInTheDocument()
-    expect(screen.queryByLabelText("Status")).not.toBeInTheDocument()
-    expect(screen.queryByLabelText("Assignee")).not.toBeInTheDocument()
-    expect(screen.queryByLabelText("Manual block reason")).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Managed title" } })
-    await userEvent.click(screen.getByRole("button", { name: "Save task" }))
-    expect(api.updateTask).toHaveBeenCalledWith("TEST-1", {
-      title: "Managed title", description: managed.description, pull_request: "", priority: managed.priority, revision: managed.revision,
-    }, undefined)
-  })
-
-  it("activates published workflow revisions and edits explicit pools", async () => {
-    api.getQueueWorkflow.mockResolvedValue({ queue: "TEST", workflow_version_id: 7, workflow_name: "development", workflow_version: 1, revision: 3, bound_by: "user:owner", bound_at: root.created_at })
-    api.listWorkflowVersions.mockResolvedValue({ items: [{ id: 8, name: "development", version: 2, state: "published", definition: { name: "development", version: 2, initial_status: "implement", statuses: [] }, created_at: root.created_at, updated_at: root.updated_at, published_at: root.updated_at }], count: 1 })
+  it("edits explicit pools", async () => {
     api.listAgentPools.mockResolvedValue({ items: [{ id: 4, queue: "TEST", name: "developers", agents: ["dev-a"], revision: 2, created_at: root.created_at, updated_at: root.updated_at }], count: 1 })
-    api.activateQueueWorkflow.mockResolvedValue({ queue: "TEST", workflow_version_id: 8, workflow_name: "development", workflow_version: 2, revision: 4, bound_by: "user:owner", bound_at: root.created_at })
     api.rebindAgentPool.mockResolvedValue({ id: 4, queue: "TEST", name: "developers", agents: ["dev-a", "dev-b"], revision: 3, created_at: root.created_at, updated_at: root.updated_at })
 
     render(<TasksWorkspace />)
     await userEvent.click(screen.getByRole("button", { name: "Queue: all" }))
     await userEvent.click(await screen.findByRole("menuitem", { name: "Manage queues…" }))
-    await userEvent.click(await screen.findByRole("button", { name: "Workflow settings TEST" }))
-    await screen.findByText(/Active: development@1/)
-    await userEvent.click(screen.getByRole("button", { name: "Load versions" }))
-    await userEvent.selectOptions(await screen.findByLabelText("Published workflow version TEST"), "8")
-    await userEvent.click(screen.getByRole("button", { name: "Activate workflow" }))
-    expect(api.activateQueueWorkflow).toHaveBeenCalledWith("TEST", 8, 3, expect.any(String), undefined)
+    await userEvent.click(await screen.findByRole("button", { name: "Agent pools TEST" }))
+    await screen.findByText("developers")
 
     fireEvent.change(screen.getByLabelText("Pool name TEST"), { target: { value: "developers" } })
     fireEvent.change(screen.getByLabelText("Pool agents TEST"), { target: { value: "dev-a, dev-b" } })
@@ -632,23 +570,19 @@ describe("TasksWorkspace", () => {
     expect(api.rebindAgentPool).toHaveBeenCalledWith("TEST", "developers", ["dev-a", "dev-b"], 2, expect.any(String), undefined)
   })
 
-  it("fails queue workflow state closed and refreshes revisions after a conflict", async () => {
-    api.getQueueWorkflow
-      .mockRejectedValueOnce(Object.assign(new Error("permission denied"), { status: 403 }))
-      .mockResolvedValueOnce({ queue: "TEST", workflow_version_id: 7, workflow_name: "development", workflow_version: 1, revision: 5, bound_by: "user:owner", bound_at: root.created_at })
+  it("fails queue pool state closed and refreshes revisions after a conflict", async () => {
     api.listAgentPools
-      .mockResolvedValueOnce({ items: [{ id: 4, queue: "TEST", name: "developers", agents: ["dev-a"], revision: 2, created_at: root.created_at, updated_at: root.updated_at }], count: 1 })
+      .mockRejectedValueOnce(Object.assign(new Error("permission denied"), { status: 403 }))
       .mockResolvedValueOnce({ items: [{ id: 4, queue: "TEST", name: "developers", agents: ["dev-a"], revision: 6, created_at: root.created_at, updated_at: root.updated_at }], count: 1 })
       .mockResolvedValueOnce({ items: [{ id: 4, queue: "TEST", name: "developers", agents: ["dev-a"], revision: 6, created_at: root.created_at, updated_at: root.updated_at }], count: 1 })
 
     render(<TasksWorkspace />)
     await userEvent.click(screen.getByRole("button", { name: "Queue: all" }))
     await userEvent.click(await screen.findByRole("menuitem", { name: "Manage queues…" }))
-    await userEvent.click(await screen.findByRole("button", { name: "Workflow settings TEST" }))
-    expect(await screen.findByRole("alert", { name: "Workflow TEST error" })).toHaveTextContent("permission denied")
-    expect(screen.queryByText("Legacy queue (no workflow)")).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole("button", { name: "Retry workflow state TEST" }))
-    expect(await screen.findByText(/Active: development@1 · rev 5/)).toBeInTheDocument()
+    await userEvent.click(await screen.findByRole("button", { name: "Agent pools TEST" }))
+    expect(await screen.findByRole("alert", { name: "Agent pools TEST error" })).toHaveTextContent("permission denied")
+    await userEvent.click(screen.getByRole("button", { name: "Retry agent pools TEST" }))
+    expect(await screen.findByText("developers")).toBeInTheDocument()
 
     api.rebindAgentPool
       .mockRejectedValueOnce(Object.assign(new Error("revision conflict"), { status: 409 }))
@@ -660,24 +594,6 @@ describe("TasksWorkspace", () => {
     expect(api.listAgentPools).toHaveBeenCalledTimes(3)
     await userEvent.click(screen.getByRole("button", { name: "Save pool" }))
     expect(api.rebindAgentPool).toHaveBeenLastCalledWith("TEST", "developers", ["dev-a", "dev-b"], 6, expect.any(String), undefined)
-  })
-
-  it("shows a managed task without the workflow section and without its auxiliary projections", async () => {
-    const managed = { ...root, workflow_version_id: 7, workflow_version: "development@2", workflow_status: "review", workflow_revision: 5 }
-    api.listTasks.mockResolvedValue({ tasks: [managed], sequence: 10 })
-    api.getTask.mockResolvedValue({ ...detail, task: managed })
-    api.getTaskWorkflow.mockResolvedValue({ task: managed, workflow: { id: 7, name: "development", version: 2, state: "published", definition: { name: "development", version: 2, initial_status: "implement", statuses: [] }, created_at: root.created_at, updated_at: root.updated_at }, status_executions: [], requirement_executions: [], assignments: [], holds: [], observations: [] })
-
-    render(<TasksWorkspace />)
-    await userEvent.click(await screen.findByRole("button", { name: /Ship native tasks/ }))
-    expect(await screen.findByRole("heading", { name: "TEST-1" })).toBeInTheDocument()
-    expect(screen.getByText("Starting now")).toBeInTheDocument()
-    expect(screen.queryByText("Managed workflow")).not.toBeInTheDocument()
-    expect(screen.queryByText("Assignments")).not.toBeInTheDocument()
-    expect(screen.queryByText("development@2")).not.toBeInTheDocument()
-    expect(screen.queryByText(/unmanaged/)).not.toBeInTheDocument()
-    expect(api.listWorkflowArtifacts).not.toHaveBeenCalled()
-    expect(api.listWorkflowQuestions).not.toHaveBeenCalled()
   })
 
   it("names a dependency by its title and status, and the parent only once", async () => {

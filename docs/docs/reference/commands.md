@@ -220,43 +220,19 @@ derives identity from the socket.
 | `ttasks relate KEY OTHER` | Add a symmetric related link |
 | `ttasks done KEY [--complete-anyway]` | Complete, optionally overriding active descendants |
 
-Workflow-managed queues add an assignment-scoped surface that requires agent mode:
-
-| Command | Purpose |
-| --- | --- |
-| `ttasks work next [--queue Q] --idempotency-key K` | Atomically claim eligible work and return its least-context packet |
-| `ttasks work show ASSIGNMENT` | Refresh the current packet and revisions |
-| `ttasks work complete ASSIGNMENT --outcome O ...` | Submit one declared outcome |
-| `ttasks work release ASSIGNMENT ...` | Release a leased attempt |
-| `ttasks artifacts add ASSIGNMENT --name N --type T ...` | Attach a required typed output |
-| `ttasks artifacts show ASSIGNMENT ARTIFACT --task KEY` | Read one packet-visible artifact |
-| `ttasks ask ASSIGNMENT --question Q --context C --blocking-scope S ...` | Ask a universal workflow question and optionally hold work |
-| `ttasks questions ASSIGNMENT` | List questions visible in the packet |
-| `ttasks answer QUESTION --assignment ASSIGNMENT --answer TEXT ...` | Answer a routed question assignment |
-| `ttasks observe subscribe ASSIGNMENT PATTERN ...` | Create a policy-bounded observation subscription |
-| `ttasks observe list ASSIGNMENT` | List its workflow subscriptions |
-| `ttasks observe cancel ASSIGNMENT SUBSCRIPTION ...` | Cancel one subscription |
-
-Mutations represented by `...` require current task/assignment revisions and a
-stable idempotency key. Exact semantics and operator REST routes are in
-[Configurable task workflows](/docs/task-workflows).
-
 The following administration roots are operator-only and are documented by
-`ttasks --help-json`: `queue` (including pools, workflow bindings, and
-triggers), `workflows`, `workflow` task history and artifacts, `events`,
-`principals`, and `notifications`. They are unavailable to agent mode.
+`ttasks --help-json`: `queue` (including pools and triggers; see
+[Task workflows](/docs/task-workflows)), `events`, `principals`, and
+`notifications`. They are unavailable to agent mode.
 
 Resource identifiers are positional (or named flags), for example:
 
 ```bash
 ttasks queue get OPS
 ttasks queue update OPS --name Operations --revision 2
-ttasks workflows get review 1
-ttasks workflow get OPS-1
+ttasks queue pool list OPS
 ttasks notifications read 1
 ttasks events OPS-1 --after 7 --limit 10
 ```
 
-`ttasks workflows create --definition JSON` accepts a workflow definition as a
-JSON object; malformed JSON and non-object values fail before contacting the
-daemon. Use each administration command's `--help` for its required fields.
+Use each administration command's `--help` for its required fields.

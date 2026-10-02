@@ -10,7 +10,6 @@ import {
   deleteTaskRelation,
   exportTask,
   getTask,
-  getTaskWorkflow,
   importTask,
   listTaskEvents,
   listTaskPrincipals,
@@ -24,7 +23,6 @@ import {
   type TaskPriority,
   type TaskRelationType,
   type TaskStatus,
-  type WorkflowExecutionView,
 } from "@/lib/tasks"
 import TaskDetail, { TaskDetailLoading } from "./TaskDetail"
 import TaskPanelResizeHandle from "./TaskPanelResizeHandle"
@@ -90,7 +88,6 @@ export default function TaskDrawer({
   />
   const [detail, setDetail] = useState<Detail | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
-  const [workflow, setWorkflow] = useState<WorkflowExecutionView | null>(null)
   const [principals, setPrincipals] = useState<TaskPrincipals | null>(null)
   const mountedRef = useRef(true)
   useEffect(() => {
@@ -107,14 +104,6 @@ export default function TaskDrawer({
       if (!mountedRef.current) return
       setDetail(next)
       setEvents(history.events ?? [])
-      setWorkflow(null)
-      // The execution projection is read for one thing the panel shows: whether
-      // the workflow is frozen. A failure leaves that banner off.
-      if (next.task.workflow_version_id) {
-        await getTaskWorkflow(taskKey, target)
-          .then((value) => { if (mountedRef.current) setWorkflow(value) })
-          .catch(() => {})
-      }
     } catch (error) {
       if (!mountedRef.current) return
       toast.error(errorMessage(error))
@@ -204,7 +193,6 @@ export default function TaskDrawer({
       detail={detail}
       principals={principals}
       events={events}
-      workflow={workflow}
       width={detailWidth}
       resizeHandle={resizeHandle}
       onClose={onClose}

@@ -18,7 +18,7 @@ export const FIELD = "h-[30px] w-full min-w-0 rounded-[8px] border-0 bg-muted px
 export const FIELD_MONO = "font-mono text-[11.5px] md:text-[11.5px]"
 /** Keys, times, durations and digests line up in one column. */
 export const MONO = "font-mono text-[11.5px] tabular-nums"
-/** The list row shared by workflow items, dependencies and history. */
+/** The list row shared by dependencies and history. */
 export const ROW = "-mx-1.5 flex min-h-[30px] items-center gap-2.5 rounded-[8px] px-2 hover:bg-muted"
 /** The counter that follows a section label. */
 export const COUNT = "font-mono text-[11px] tabular-nums text-muted-foreground opacity-75"
