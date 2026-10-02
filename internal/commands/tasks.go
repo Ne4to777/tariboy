@@ -246,6 +246,25 @@ func TaskOperatorCommands() []registry.Command {
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.GetWorkflow(ctx, actor, stringParam(p, "key"))
 			}),
+		taskRoute("tasks.workflow.requests.get", "GET", "/api/tasks/{key}/workflow/requests/{id}", "Show one transition request of a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.GetTransitionRequest(ctx, actor, stringParam(p, "key"), int64Param(p, "id"))
+			}),
+		taskRoute("tasks.workflow.runs.list", "GET", "/api/tasks/{key}/workflow/runs", "List the script runs of a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				runs, err := control.ListScriptRuns(ctx, actor, stringParam(p, "key"))
+				return map[string]any{"runs": runs, "count": len(runs)}, err
+			}),
+		taskRoute("tasks.workflow.runs.get", "GET", "/api/tasks/{key}/workflow/runs/{id}", "Show one script run of a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.GetScriptRun(ctx, actor, stringParam(p, "key"), int64Param(p, "id"))
+			}),
+		taskRoute("tasks.workflow.runs.log", "GET", "/api/tasks/{key}/workflow/runs/{id}/log", "Read the tail of a script run's log",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				id := int64Param(p, "id")
+				text, truncated, err := control.ScriptRunLog(ctx, actor, stringParam(p, "key"), id, int(int64Param(p, "max_bytes")))
+				return map[string]any{"run_id": id, "text": text, "truncated": truncated}, err
+			}),
 		taskRoute("tasks.workflow.move", "POST", "/api/tasks/{key}/workflow/move", "Move a workflow task to another status",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.MoveWorkflow(ctx, actor, stringParam(p, "key"), stringParam(p, "to"), stringParam(p, "reason"))
@@ -419,6 +438,8 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "outcome", Required: true, Help: "Outcome to declare"}, {Name: "message", Help: "Message recorded with the transition"}, {Name: "from", Help: "Status the caller believes the task is in; a different current status is refused with status_changed"}}
 	case "tasks.artifacts.set":
 		return []registry.Arg{{Name: "value", Help: "Artifact value, stored as given"}}
+	case "tasks.workflow.runs.log":
+		return []registry.Arg{{Name: "max_bytes", Type: registry.Int, Help: "Largest log tail to return in bytes (default 65536, maximum 1048576)"}}
 	case "tasks.workflow.move":
 		return []registry.Arg{{Name: "to", Required: true, Help: "Target status id"}, {Name: "reason", Required: true, Help: "Why the task is moved"}}
 	case "tasks.queue.workflow.set":
@@ -444,8 +465,14 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return schemaRef("QueueWorkflowTrigger")
 	case "tasks.queue.trigger.list":
 		return listSchema("QueueWorkflowTrigger")
-	case "tasks.advance":
+	case "tasks.advance", "tasks.workflow.requests.get":
 		return schemaRef("TransitionRequest")
+	case "tasks.workflow.runs.list":
+		return objectSchema([]string{"runs", "count"}, map[string]any{"runs": arrayOf("ScriptRun"), "count": map[string]any{"type": "integer"}})
+	case "tasks.workflow.runs.get":
+		return schemaRef("ScriptRun")
+	case "tasks.workflow.runs.log":
+		return objectSchema([]string{"run_id", "text", "truncated"}, map[string]any{"run_id": map[string]any{"type": "integer"}, "text": map[string]any{"type": "string"}, "truncated": map[string]any{"type": "boolean"}})
 	case "tasks.artifacts.set":
 		return schemaRef("Artifact")
 	case "tasks.artifacts.list":

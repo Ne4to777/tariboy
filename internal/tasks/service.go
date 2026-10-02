@@ -23,6 +23,7 @@ type Service struct {
 	hub                                      *Hub
 	goalSignal                               func()
 	workflowResolver                         WorkflowResolver
+	runBaseDir                               string
 	workflowIngressEnabled                   atomic.Bool
 	workflowIngressAfterTargetCount          func()
 	workflowActivationAfterWriterReservation func()
@@ -49,6 +50,10 @@ func (s *Service) refreshWorkflowIngressEnabled(ctx context.Context) {
 func (s *Service) CustomerLogin() string { return s.customer }
 
 func (s *Service) SetHub(hub *Hub) { s.hub = hub }
+
+// SetRunBaseDir sets the daemon base directory under which workflow script runs
+// keep their files, so a run's log is read only from where the worker wrote it.
+func (s *Service) SetRunBaseDir(dir string) { s.runBaseDir = dir }
 
 func (s *Service) SetGoalSignal(signal func()) { s.goalSignal = signal }
 

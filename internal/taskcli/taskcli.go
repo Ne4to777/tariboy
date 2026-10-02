@@ -71,7 +71,7 @@ func Run(ctx context.Context, argv []string, getenv func(string) string, stdout,
 		if code := resolveArtifactValue(&parsed, stderr); code != 0 {
 			return code
 		}
-		return runAgent(parsed, newCaller(toolsSocket), jsonOut, stdout, stderr)
+		return runAgent(ctx, parsed, newCaller(toolsSocket), jsonOut, stdout, stderr)
 	}
 	resolved, err := paths.Resolve(getenv)
 	if err != nil {
@@ -84,20 +84,31 @@ func Run(ctx context.Context, argv []string, getenv func(string) string, stdout,
 	return runOperator(ctx, parsed, newCaller(resolved.Socket()), jsonOut, stdout, stderr)
 }
 
-func runAgent(parsed request, caller Caller, jsonOut bool, stdout, stderr io.Writer) int {
+func runAgent(ctx context.Context, parsed request, caller Caller, jsonOut bool, stdout, stderr io.Writer) int {
+	key, _ := parsed.payload["key"].(string)
 	raw, err := caller.Call("POST", "/tools/tasks/"+parsed.action, parsed.payload)
 	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) {
-			fmt.Fprintf(stderr, "error (%s): %s\n", apiErr.Code, apiErr.Msg)
-			key, _ := parsed.payload["key"].(string)
-			printWorkflowManagedHint(apiErr, key, stderr)
-			return 1
-		}
-		fmt.Fprintln(stderr, "tools: agent socket is not reachable")
-		return 2
+		return agentFailure(err, key, stderr)
+	}
+	if parsed.action == "advance" && !parsed.noWait {
+		return waitForAdvance(ctx, parsed, raw, func(id int64) (json.RawMessage, error) {
+			return caller.Call("POST", "/tools/tasks/request_get", map[string]any{"key": key, "id": id})
+		}, func(err error) int { return agentFailure(err, key, stderr) }, jsonOut, stdout, stderr)
 	}
 	return printResult(parsed, raw, jsonOut, stdout, stderr)
+}
+
+// agentFailure reports a failed agent socket call: a refusal by the daemon
+// exits 1, an unreachable socket 2.
+func agentFailure(err error, key string, stderr io.Writer) int {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		fmt.Fprintf(stderr, "error (%s): %s\n", apiErr.Code, apiErr.Msg)
+		printWorkflowManagedHint(apiErr, key, stderr)
+		return 1
+	}
+	fmt.Fprintln(stderr, "tools: agent socket is not reachable")
+	return 2
 }
 
 func printResult(parsed request, raw json.RawMessage, jsonOut bool, stdout, stderr io.Writer) int {
@@ -109,6 +120,14 @@ func printResult(parsed request, raw json.RawMessage, jsonOut bool, stdout, stde
 	case "workflow_get":
 		key, _ := parsed.payload["key"].(string)
 		if printWorkflow(raw, key, stdout) {
+			return 0
+		}
+	case "workflow_runs":
+		if printRuns(raw, stdout) {
+			return 0
+		}
+	case "workflow_run_log":
+		if printRunLog(raw, stdout, stderr) {
 			return 0
 		}
 	case "show":

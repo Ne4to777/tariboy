@@ -113,6 +113,13 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/artifacts/"+url.PathEscape(name), nil
 	case "workflow_get":
 		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/workflow", nil
+	case "workflow_runs":
+		method, route, body = "GET", "/api/tasks/"+url.PathEscape(key)+"/workflow/runs", nil
+	case "workflow_run_log":
+		id, _ := body["id"].(int64)
+		method, route = "GET", "/api/tasks/"+url.PathEscape(key)+"/workflow/runs/"+strconv.FormatInt(id, 10)+"/log"
+		delete(body, "key")
+		delete(body, "id")
 	case "workflow_move":
 		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/workflow/move"
 		delete(body, "key")
@@ -130,6 +137,11 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 	raw, err := caller.Call(method, route, requestBody)
 	if err != nil {
 		return operatorErrorFor(err, key, stderr)
+	}
+	if parsed.action == "advance" && !parsed.noWait {
+		return waitForAdvance(ctx, parsed, raw, func(id int64) (json.RawMessage, error) {
+			return caller.Call("GET", "/api/tasks/"+url.PathEscape(key)+"/workflow/requests/"+strconv.FormatInt(id, 10), map[string]string{})
+		}, func(err error) int { return operatorErrorFor(err, key, stderr) }, jsonOut, stdout, stderr)
 	}
 	return printResult(parsed, raw, jsonOut, stdout, stderr)
 }

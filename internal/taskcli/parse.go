@@ -2,18 +2,22 @@ package taskcli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 type request struct {
 	action  string
 	payload map[string]any
+	// noWait makes advance return a pending request at once instead of waiting
+	// for its checks. It is a client option and never part of the payload.
+	noWait bool
 }
 type usageError struct{ message string }
 
 func (e usageError) Error() string { return e.message }
 
-var boolFlags = map[string]bool{"claim": true, "to-root": true, "complete-anyway": true}
+var boolFlags = map[string]bool{"claim": true, "to-root": true, "complete-anyway": true, "no-wait": true}
 
 func taskCommandFlags() map[string]map[string]bool {
 	return map[string]map[string]bool{
@@ -22,8 +26,9 @@ func taskCommandFlags() map[string]map[string]bool {
 		"update": set("title,description,status,pull-request,assignee,manual-block-reason,priority,revision"), "assign": set("revision"),
 		"comment": set("body,idempotency-key"), "ask": set("idempotency-key"),
 		"move": set("parent,before,to-root,revision"), "block": set("by,revision,idempotency-key"), "relate": set("revision,idempotency-key"), "done": set("revision,complete-anyway"),
-		"advance": set("outcome,from,message"), "artifact_set": set("file"), "artifact_ls": {}, "artifact_show": {},
-		"workflow_get": {}, "workflow_move": set("to,reason"), "cancel": {},
+		"advance": set("outcome,from,message,no-wait"), "artifact_set": set("file"), "artifact_ls": {}, "artifact_show": {},
+		"workflow_get": {}, "workflow_runs": {}, "workflow_run_log": set("max-bytes"),
+		"workflow_move": set("to,reason"), "cancel": {},
 	}
 }
 
@@ -31,7 +36,7 @@ func taskCommandFlags() map[string]map[string]bool {
 // agent tools-socket action where one exists.
 var commandWords = map[string]map[string]string{
 	"artifacts": {"set": "artifact_set", "ls": "artifact_ls", "show": "artifact_show"},
-	"workflow":  {"get": "workflow_get", "move": "workflow_move"},
+	"workflow":  {"get": "workflow_get", "runs": "workflow_runs", "log": "workflow_run_log", "move": "workflow_move"},
 }
 
 // operatorOnlyActions are served only by the host daemon as the customer.
@@ -66,6 +71,7 @@ func parse(argv []string) (request, error) {
 		return request{}, err
 	}
 	p := map[string]any{}
+	noWait := false
 	copyFlag := func(name string, present bool) {
 		if v, ok := flags[name]; ok && (present || v != "") {
 			p[strings.ReplaceAll(name, "-", "_")] = v
@@ -238,6 +244,7 @@ func parse(argv []string) (request, error) {
 			p["from"] = from
 		}
 		copyFlag("message", true)
+		noWait = flags["no-wait"] == "true"
 	case "artifact_set":
 		v, e := require(0, "task key")
 		if e != nil {
@@ -255,12 +262,33 @@ func parse(argv []string) (request, error) {
 			p["value"] = pos[2]
 		}
 		copyFlag("file", false)
-	case "artifact_ls", "workflow_get", "cancel":
+	case "artifact_ls", "workflow_get", "workflow_runs", "cancel":
 		v, e := require(0, "task key")
 		if e != nil {
 			return request{}, e
 		}
 		p["key"] = v
+	case "workflow_run_log":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		run, e := require(1, "run id")
+		if e != nil {
+			return request{}, e
+		}
+		id, convErr := strconv.ParseInt(strings.TrimSpace(run), 10, 64)
+		if convErr != nil || id <= 0 {
+			return request{}, usageError{fmt.Sprintf("tasks workflow log: run id must be a positive number, got %q", run)}
+		}
+		p["key"], p["id"] = v, id
+		if text, ok := flags["max-bytes"]; ok {
+			n, convErr := strconv.Atoi(strings.TrimSpace(text))
+			if convErr != nil || n <= 0 {
+				return request{}, usageError{fmt.Sprintf("tasks workflow log: --max-bytes must be a positive number, got %q", text)}
+			}
+			p["max_bytes"] = n
+		}
 	case "artifact_show":
 		v, e := require(0, "task key")
 		if e != nil {
@@ -287,7 +315,7 @@ func parse(argv []string) (request, error) {
 	if err := noExtra(action, pos); err != nil {
 		return request{}, err
 	}
-	return request{action, p}, nil
+	return request{action: action, payload: p, noWait: noWait}, nil
 }
 
 func set(csv string) map[string]bool {
@@ -347,7 +375,7 @@ func commandName(action string) string {
 
 func noExtra(action string, pos []string) error {
 	limits := map[string]int{"mine": 0, "ready": 0, "show": 1, "create": 0, "update": 1, "assign": 2, "comment": -1, "ask": -1, "move": 1, "block": 1, "relate": 2, "done": 1,
-		"advance": 1, "artifact_set": 3, "artifact_ls": 1, "artifact_show": 2, "workflow_get": 1, "workflow_move": 1, "cancel": 1}
+		"advance": 1, "artifact_set": 3, "artifact_ls": 1, "artifact_show": 2, "workflow_get": 1, "workflow_runs": 1, "workflow_run_log": 2, "workflow_move": 1, "cancel": 1}
 	if limit, ok := limits[action]; ok && limit >= 0 && len(pos) > limit {
 		return usageError{fmt.Sprintf("tasks %s: unexpected argument: %s", commandName(action), pos[limit])}
 	}

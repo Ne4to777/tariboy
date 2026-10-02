@@ -298,6 +298,7 @@ func Run(ctx context.Context, o Options) error {
 	workflowIngress := newWorkflowIngressSignal()
 	taskHub := tasks.NewHub(taskService)
 	taskService.SetHub(taskHub)
+	taskService.SetRunBaseDir(p.Base)
 	taskPublisher := tasknotify.New(st.DB, channelBus, time.Now, log)
 	goalReconciler := taskgoal.NewReconciler(taskgoal.ReconcilerConfig{
 		Store: st, Bus: channelBus, Clock: time.Now, Log: log,

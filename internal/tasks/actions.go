@@ -130,10 +130,35 @@ func (s *Service) AgentAction(ctx context.Context, actor Actor, action string, b
 		return map[string]any{"artifact": artifact, "history": history}, err
 	case "workflow_get":
 		return s.GetWorkflow(ctx, actor, actionString(body, "key"))
+	case "request_get":
+		id, err := actionID(body)
+		if err != nil {
+			return nil, err
+		}
+		return s.GetTransitionRequest(ctx, actor, actionString(body, "key"), id)
+	case "workflow_runs":
+		runs, err := s.ListScriptRuns(ctx, actor, actionString(body, "key"))
+		return map[string]any{"runs": runs, "count": len(runs)}, err
+	case "workflow_run_log":
+		id, err := actionID(body)
+		if err != nil {
+			return nil, err
+		}
+		text, truncated, err := s.ScriptRunLog(ctx, actor, actionString(body, "key"), id, actionInt(body, "max_bytes"))
+		return map[string]any{"run_id": id, "text": text, "truncated": truncated}, err
 	default:
 		return nil, domainError(http.StatusBadRequest, "invalid_action",
 			fmt.Sprintf("unknown task action %q", action))
 	}
+}
+
+// actionID is the positive numeric "id" of a request or run.
+func actionID(body map[string]any) (int64, error) {
+	id := int64(actionInt(body, "id"))
+	if id <= 0 {
+		return 0, domainError(http.StatusBadRequest, "invalid_id", "a positive numeric id is required")
+	}
+	return id, nil
 }
 
 func (s *Service) actionRevision(ctx context.Context, actor Actor, key string, body map[string]any) (int64, error) {

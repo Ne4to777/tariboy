@@ -34,6 +34,10 @@ type TransitionRequest struct {
 	ResultMessage string `json:"result_message,omitempty"`
 	CreatedAt     string `json:"created_at"`
 	FinishedAt    string `json:"finished_at,omitempty"`
+	// WaitSeconds is how long a caller may wait for a pending request: the
+	// timeouts of the transition's checks plus a margin. It is computed from
+	// the pinned manifest, never stored, and set only while pending.
+	WaitSeconds int `json:"wait_seconds,omitempty"`
 }
 
 // Artifact is one stored version of a named task artifact.

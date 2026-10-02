@@ -49,6 +49,22 @@ func (s *workflowStub) GetWorkflow(_ context.Context, a tasks.Actor, key string)
 	s.record(a, "workflow_get %s", key)
 	return tasks.WorkflowView{Name: "flow", Version: "1.0.0", Status: "develop", Outcomes: []tasks.OutcomeView{}}, s.err
 }
+func (s *workflowStub) GetTransitionRequest(_ context.Context, a tasks.Actor, key string, id int64) (tasks.TransitionRequest, error) {
+	s.record(a, "request_get %s %d", key, id)
+	return tasks.TransitionRequest{ID: id, TaskKey: key, State: "pending", WaitSeconds: 90}, s.err
+}
+func (s *workflowStub) ListScriptRuns(_ context.Context, a tasks.Actor, key string) ([]tasks.ScriptRun, error) {
+	s.record(a, "runs %s", key)
+	return []tasks.ScriptRun{{ID: 4, TaskKey: key, Kind: "check", State: "finished"}}, s.err
+}
+func (s *workflowStub) GetScriptRun(_ context.Context, a tasks.Actor, key string, id int64) (tasks.ScriptRun, error) {
+	s.record(a, "run_get %s %d", key, id)
+	return tasks.ScriptRun{ID: id, TaskKey: key, Kind: "check", State: "finished"}, s.err
+}
+func (s *workflowStub) ScriptRunLog(_ context.Context, a tasks.Actor, key string, id int64, maxBytes int) (string, bool, error) {
+	s.record(a, "run_log %s %d max=%d", key, id, maxBytes)
+	return "log text\n", true, s.err
+}
 func (s *workflowStub) MoveWorkflow(_ context.Context, a tasks.Actor, key, to, reason string) (tasks.Task, error) {
 	s.record(a, "workflow_move %s %s %q", key, to, reason)
 	return tasks.Task{Key: key, Status: tasks.StatusInProgress, WorkflowDigest: "d", WorkflowStatus: to}, s.err
@@ -109,6 +125,12 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 		{"artifact ls", "GET", "/api/tasks/DEV-1/artifacts", nil, `artifact_ls DEV-1`, `"count":1`},
 		{"artifact show", "GET", "/api/tasks/DEV-1/artifacts/plan", nil, `artifact_show DEV-1 plan`, `"history":[`},
 		{"workflow get", "GET", "/api/tasks/DEV-1/workflow", nil, `workflow_get DEV-1`, `"status":"develop"`},
+		{"request get", "GET", "/api/tasks/DEV-1/workflow/requests/7", nil, `request_get DEV-1 7`, `"wait_seconds":90`},
+		{"runs list", "GET", "/api/tasks/DEV-1/workflow/runs", nil, `runs DEV-1`, `"runs":[{"id":4`},
+		{"run get", "GET", "/api/tasks/DEV-1/workflow/runs/4", nil, `run_get DEV-1 4`, `"kind":"check"`},
+		{"run log", "GET", "/api/tasks/DEV-1/workflow/runs/4/log", nil, `run_log DEV-1 4 max=0`,
+			`"run_id":4,"text":"log text\n","truncated":true`},
+		{"run log max_bytes", "GET", "/api/tasks/DEV-1/workflow/runs/4/log?max_bytes=100", nil, `run_log DEV-1 4 max=100`, `"truncated":true`},
 		{"workflow move", "POST", "/api/tasks/DEV-1/workflow/move", map[string]any{"to": "review", "reason": "unstick"},
 			`workflow_move DEV-1 review "unstick"`, `"key":"DEV-1"`},
 		{"cancel", "POST", "/api/tasks/DEV-1/cancel", nil, `cancel DEV-1`, `"category":"cancelled"`},
@@ -176,8 +198,13 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 		"/api/tasks/{key}/artifacts":        "get",
 		"/api/tasks/{key}/workflow":         "get",
 		"/api/tasks/{key}/workflow/move":    "post",
-		"/api/tasks/{key}/cancel":           "post",
-		"/api/task-queues/{queue}/workflow": "delete",
+		"/api/tasks/{key}/workflow/runs":    "get",
+
+		"/api/tasks/{key}/workflow/runs/{id}":     "get",
+		"/api/tasks/{key}/workflow/runs/{id}/log": "get",
+		"/api/tasks/{key}/workflow/requests/{id}": "get",
+		"/api/tasks/{key}/cancel":                 "post",
+		"/api/task-queues/{queue}/workflow":       "delete",
 	} {
 		if _, ok := doc.Paths[path][method]; !ok {
 			t.Errorf("openapi lacks %s %s", method, path)

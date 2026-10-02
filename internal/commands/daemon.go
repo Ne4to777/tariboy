@@ -253,6 +253,8 @@ func BuildRegistry() *registry.Registry {
 	mustGroup(r, "tasks.queue.secret", "Manage the secrets workflow scripts of a task queue receive")
 	mustGroup(r, "tasks.artifacts", "Manage workflow task artifacts")
 	mustGroup(r, "tasks.workflow", "Inspect and move workflow tasks")
+	mustGroup(r, "tasks.workflow.requests", "Read transition requests of workflow tasks")
+	mustGroup(r, "tasks.workflow.runs", "Read script runs of workflow tasks")
 	mustGroup(r, "tasks.comments", "Manage native task comments")
 	mustGroup(r, "tasks.relations", "Manage native task relations")
 	mustGroup(r, "tasks.notifications", "Manage customer task notifications")

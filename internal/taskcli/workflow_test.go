@@ -369,18 +369,20 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		path  []string
 		wants []string
 	}{
-		{[]string{"advance"}, []string{"--outcome", "--from", "--message", "KEY", "status_changed"}},
+		{[]string{"advance"}, []string{"--outcome", "--from", "--message", "--no-wait", "KEY", "status_changed"}},
 		{[]string{"artifacts", "set"}, []string{"--file", "stdin", "NAME"}},
 		{[]string{"artifacts", "ls"}, []string{"KEY"}},
 		{[]string{"artifacts", "show"}, []string{"NAME"}},
 		{[]string{"workflow", "get"}, []string{"KEY"}},
+		{[]string{"workflow", "runs"}, []string{"KEY", "newest first"}},
+		{[]string{"workflow", "log"}, []string{"KEY", "RUN", "--max-bytes", "[redacted]"}},
 		{[]string{"workflow", "move"}, []string{"--to", "--reason", "operator-only"}},
 		{[]string{"cancel"}, []string{"operator-only"}},
 		{[]string{"queue", "workflow", "set"}, []string{"operator-only", "--ref", "--revision"}},
 		{[]string{"queue", "workflow", "get"}, []string{"operator-only"}},
 		{[]string{"queue", "workflow", "clear"}, []string{"operator-only", "--revision"}},
 		{[]string{"artifacts"}, []string{"set", "ls", "show"}},
-		{[]string{"workflow"}, []string{"get", "move"}},
+		{[]string{"workflow"}, []string{"get", "runs", "log", "move"}},
 	} {
 		var out strings.Builder
 		if code := Run(context.Background(), append(append([]string{}, tt.path...), "--help"), mapEnv(), &out, io.Discard); code != 0 {
@@ -400,7 +402,7 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range [][]string{
-		{"advance"}, {"artifacts", "set"}, {"artifacts", "ls"}, {"artifacts", "show"}, {"workflow", "get"}, {"workflow", "move"}, {"cancel"},
+		{"advance"}, {"artifacts", "set"}, {"artifacts", "ls"}, {"artifacts", "show"}, {"workflow", "get"}, {"workflow", "runs"}, {"workflow", "log"}, {"workflow", "move"}, {"cancel"},
 		{"queue", "workflow", "set"}, {"queue", "workflow", "get"}, {"queue", "workflow", "clear"},
 	} {
 		node := tree

@@ -3,9 +3,11 @@ package tasks
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 	"github.com/alekzonder/tariboy/internal/workflowimage"
@@ -134,6 +136,7 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 		Actor: actor.Principal, State: "applied", CreatedAt: now, FinishedAt: now}
 	if len(transition.Checks) > 0 {
 		request.State, request.FinishedAt = "pending", ""
+		request.WaitSeconds = checkWaitSeconds(transition)
 	}
 	if _, err := appendEventTx(ctx, tx, task, "workflow.transition_requested", actor, map[string]any{
 		"request_id": id, "status": status.ID, "outcome": in.Outcome, "actor": actor.Principal, "state": request.State,
@@ -179,6 +182,59 @@ func (s *Service) applyTransitionTx(ctx context.Context, tx *sql.Tx, task *Task,
 		return err
 	}
 	return s.enterStatusTx(ctx, tx, task, manifest, transition.To, actor, transition.On, message)
+}
+
+// checkWaitMargin is added to the check timeouts of a transition to bound how
+// long a caller waits for its request: time to schedule the runs and apply.
+const checkWaitMargin = 30 * time.Second
+
+// checkWaitSeconds is the sum of the timeouts of the transition's checks, each
+// defaulting to workflowfile.DefaultCheckTimeout, plus checkWaitMargin.
+func checkWaitSeconds(transition workflowfile.Transition) int {
+	total := checkWaitMargin
+	for _, check := range transition.Checks {
+		total += scriptTimeout(check.Timeout, workflowfile.DefaultCheckTimeout)
+	}
+	return int(total / time.Second)
+}
+
+// GetTransitionRequest returns one transition request of a task the actor may
+// read. A pending request carries WaitSeconds.
+func (s *Service) GetTransitionRequest(ctx context.Context, actor Actor, key string, id int64) (TransitionRequest, error) {
+	if err := validateActor(actor); err != nil {
+		return TransitionRequest{}, err
+	}
+	task, manifest, err := artifactTaskTx(ctx, s.db, actor, key)
+	if err != nil {
+		return TransitionRequest{}, err
+	}
+	request := TransitionRequest{TaskKey: task.Key}
+	var visitID int64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id, outcome, message, actor, state, result_message, created_at, finished_at, visit_id
+		FROM task_transition_requests WHERE task_id = ? AND id = ?`, task.ID, id).Scan(
+		&request.ID, &request.Outcome, &request.Message, &request.Actor, &request.State,
+		&request.ResultMessage, &request.CreatedAt, &request.FinishedAt, &visitID)
+	if err == sql.ErrNoRows {
+		return TransitionRequest{}, domainError(http.StatusNotFound, "not_found",
+			fmt.Sprintf("transition request %d of %s not found", id, task.Key))
+	}
+	if err != nil {
+		return TransitionRequest{}, err
+	}
+	if request.State == "pending" {
+		var statusID string
+		if err := s.db.QueryRowContext(ctx, `SELECT status_id FROM task_status_visits WHERE id = ?`, visitID).
+			Scan(&statusID); err != nil {
+			return TransitionRequest{}, err
+		}
+		if status, ok := currentStatus(manifest, statusID); ok {
+			if transition, ok := statusTransition(status, request.Outcome); ok {
+				request.WaitSeconds = checkWaitSeconds(transition)
+			}
+		}
+	}
+	return request, nil
 }
 
 // MoveWorkflow moves a task to any status without checks. Customer only.
