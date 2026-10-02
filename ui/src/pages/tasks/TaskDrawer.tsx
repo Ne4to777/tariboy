@@ -196,6 +196,7 @@ export default function TaskDrawer({
       width={detailWidth}
       resizeHandle={resizeHandle}
       onClose={onClose}
+      onTaskChanged={() => { void load() }}
       assigneeOptions={assignees}
       onTransfer={async (hostID: string) => {
         const host = await resolveDaemon(hostID)

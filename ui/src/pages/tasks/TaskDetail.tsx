@@ -9,13 +9,14 @@ import type {
   TaskRelationType,
   TaskStatus,
 } from "@/lib/tasks"
-import { taskStatusLabel } from "@/lib/tasks"
+import { isWorkflowTask, taskStatusLabel } from "@/lib/tasks"
 import TaskComments from "./TaskComments"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import TaskTransferDialog from "./TaskTransferDialog"
+import { WorkflowPanel } from "./WorkflowPanel"
 import { MarkdownEditor, MarkdownContent, MarkdownModeSegment, type MarkdownMode } from "./TaskMarkdown"
 import { SendFilesButton } from "@/components/SendFilesButton"
 import { StatusPill } from "@/components/ui/status"
@@ -47,6 +48,7 @@ export default function TaskDetail({
   onAddRelation,
   onDeleteRelation,
   onTransfer,
+  onTaskChanged,
   assigneeOptions,
 }: {
   detail: Detail
@@ -70,11 +72,14 @@ export default function TaskDetail({
   onAddRelation: (targetKey: string, type: TaskRelationType) => Promise<void>
   onDeleteRelation: (relationID: number) => Promise<void>
   onTransfer: (hostID: string) => Promise<void>
+  /** A workflow action changed the task on the daemon; the owner reloads it. */
+  onTaskChanged: () => void
   /** A closed list of assignees instead of the free-text field; the owner of
    *  `onSave` gives each value its meaning. */
   assigneeOptions?: ReadonlyArray<{ value: string; label: string }>
 }) {
   const task = detail.task
+  const workflow = isWorkflowTask(task)
   const [baseline, setBaseline] = useState(task)
   const [returnFocus] = useState(() => document.activeElement as HTMLElement | null)
   const initialFocusRef = useRef<HTMLButtonElement>(null)
@@ -161,7 +166,8 @@ export default function TaskDetail({
         description,
         pull_request: pullRequest.trim(),
         priority,
-        status,
+        // A workflow owns its status: the panel changes it, Save never does.
+        status: workflow ? undefined : status,
         assignee: assignee.trim(),
         manual_block_reason: blockReason,
       })
@@ -206,7 +212,6 @@ export default function TaskDetail({
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px]">
             <StatusPill tone={taskTone(task.category)}>{taskStatusLabel(task)}</StatusPill>
-            <span className="text-[11.5px] text-muted-foreground">unmanaged · status set by hand</span>
             <MetaInline label="agent" value={task.assignee || "unassigned"} />
             <MetaInline label="updated" value={formatTaskTime(task.updated_at)} />
           </div>
@@ -295,13 +300,13 @@ export default function TaskDetail({
                 disabled={saving} mode={descriptionMode} />
             </div>
             <div className="task-properties grid min-w-0 grid-cols-2 gap-x-4 gap-y-2.5">
-              <SelectField label="Status" value={status} onChange={(value) => setStatus(value as TaskStatus)}>
+              {!workflow && <SelectField label="Status" value={status} onChange={(value) => setStatus(value as TaskStatus)}>
                 <option value="open">Open</option>
                 <option value="in_progress">In progress</option>
                 <option value="wait_customer">Wait customer</option>
                 <option value="done">Done</option>
                 <option value="cancelled">Cancelled</option>
-              </SelectField>
+              </SelectField>}
               <SelectField label="Priority" value={priority} onChange={(value) => setPriority(value as TaskPriority)} mono>
                 <option value="P0">P0 Critical</option>
                 <option value="P1">P1 High</option>
@@ -334,6 +339,8 @@ export default function TaskDetail({
               </label>
             </div>
           </fieldset>
+          {/* In place of the status select: the workflow changes the status. */}
+          {workflow && <WorkflowPanel task={task} target={target} onTaskChanged={onTaskChanged} />}
           <section className="flex min-w-0 flex-col gap-1.5">
             <SectionHeading label="Dependencies" count={detail.relations.length} />
             {detail.relations.length === 0 && <span className={EMPTY}>Nothing blocks this task.</span>}

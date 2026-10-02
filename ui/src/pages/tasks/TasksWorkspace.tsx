@@ -618,6 +618,7 @@ function TasksWorkspaceContent({
             await loadDetail(detail.task.key)
           }}
           onTransfer={transferDetail}
+          onTaskChanged={() => { void loadDetail(detail.task.key) }}
           onDeleteRelation={async (relationID: number) => {
             await deleteTaskRelation(
               detail.task.key, relationID, detail.task.revision, target, idempotencyKey(),
