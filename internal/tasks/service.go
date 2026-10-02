@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -26,6 +27,8 @@ type Service struct {
 	workflowResolver                         WorkflowResolver
 	runBaseDir                               string
 	log                                      *slog.Logger
+	holderFailuresMu                         sync.Mutex
+	holderFailures                           map[int64]string // task id -> logged manifest failure of CheckHolders
 	workflowIngressEnabled                   atomic.Bool
 	workflowIngressAfterTargetCount          func()
 	workflowActivationAfterWriterReservation func()

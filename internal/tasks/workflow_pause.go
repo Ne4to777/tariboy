@@ -204,9 +204,11 @@ func (s *Service) ResumeWorkflow(ctx context.Context, actor Actor, key, decision
 	if err := resolveWorkflowWaitsTx(ctx, tx, task, "", now); err != nil {
 		return Task{}, err
 	}
+	// resumed_at keeps an iteration that started while the task was paused
+	// from counting as idle in the resumed visit.
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE task_status_visits SET idle_iterations = 0, rejected_requests = 0, script_failures = 0
-		WHERE task_id = ? AND left_at = ''`, task.ID); err != nil {
+		UPDATE task_status_visits SET idle_iterations = 0, rejected_requests = 0, script_failures = 0, resumed_at = ?
+		WHERE task_id = ? AND left_at = ''`, now, task.ID); err != nil {
 		return Task{}, err
 	}
 	reason := task.WorkflowPausedReason

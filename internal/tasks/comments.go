@@ -77,6 +77,14 @@ func (s *Service) AddComment(ctx context.Context, actor Actor, key string, in Ad
 			resolved[i].ResolvingCommentID = commentID
 			resolved[i].ResolvedAt = now
 		}
+		// The customer's answer lets the asker work again: iterations that
+		// counted as idle before the question no longer count.
+		if task.WorkflowDigest != "" && containsPrincipal(resolved, task.Customer) {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE task_status_visits SET idle_iterations = 0 WHERE task_id = ? AND left_at = ''`, task.ID); err != nil {
+				return CommentResult{}, err
+			}
+		}
 	}
 
 	mentions := s.parseMentions(body)

@@ -191,6 +191,36 @@ func TestHolderUnavailableSinceMigrationDefaultsToEmpty(t *testing.T) {
 	}
 }
 
+func TestVisitResumedAtMigration(t *testing.T) {
+	db := open(t).DB
+	requireColumn(t, db, "task_status_visits", "resumed_at")
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_task_transition_requests_visit'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("index count = %d, %v", n, err)
+	}
+	path := filepath.Join(t.TempDir(), "resumed-at.db")
+	legacy := openBeforeMigration(t, path, "0062_task_status_visit_resumed_at.sql")
+	if _, err := legacy.DB.Exec(`
+		INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('DEV', 'Dev', 'now', 'now');
+		INSERT INTO tasks(task_key, queue_prefix, title, author, customer, created_at, updated_at)
+		VALUES ('DEV-1', 'DEV', 'one', 'user:c', 'user:c', 'now', 'now');
+		INSERT INTO task_status_visits(task_id, sequence, status_id, entered_at, entered_by) VALUES (1, 1, 'develop', 'now', 'user:c');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var resumed string
+	if err := s.DB.QueryRow(`SELECT resumed_at FROM task_status_visits WHERE task_id = 1`).Scan(&resumed); err != nil || resumed != "" {
+		t.Fatalf("resumed_at = %q, %v; want empty", resumed, err)
+	}
+}
+
 func TestOpenRemovesJudgeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remove-judge.db")
 	db := createDatabaseBeforeMigration(t, path, "0043_remove_judge.sql")

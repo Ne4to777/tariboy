@@ -298,11 +298,29 @@ func (m *Manager) recordIterationEnd(agentName, iterationID string) {
 	if m.cfg.RecordIterationEnd == nil {
 		return
 	}
+	// A harness that could not be launched or died before producing output
+	// did no work and left none undone: it is not an idle iteration.
+	if goal.key != "" && m.iterationStatus(agentName, iterationID) == "harness_error" {
+		return
+	}
 	end := tasks.IterationEnd{Agent: agentName, IterationID: iterationID, GoalTaskKey: goal.key,
 		StartedAt: goal.readAt, FinishedAt: m.cfg.Clock().UTC()}
 	if err := m.cfg.RecordIterationEnd(context.Background(), end); err != nil && m.cfg.Log != nil {
 		m.cfg.Log.Warn("record iteration end", "agent", agentName, "id", iterationID, "goal", goal.key, "err", err)
 	}
+}
+
+// iterationStatus returns the recorded status of an iteration, or "" when it
+// cannot be read.
+func (m *Manager) iterationStatus(agentName, iterationID string) string {
+	if m.cfg.iterationStore == nil && m.cfg.Store == nil {
+		return ""
+	}
+	it, err := m.iterations().GetIteration(agentName, iterationID)
+	if err != nil {
+		return ""
+	}
+	return it.Status
 }
 
 // iterationCompleted is the single report of a terminal iteration: the

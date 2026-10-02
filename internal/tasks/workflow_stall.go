@@ -72,8 +72,10 @@ func (s *Service) RecordIterationEnd(ctx context.Context, end IterationEnd) erro
 	if err != nil {
 		return err
 	}
+	// In a pool status an unpaused task waits on its customer only while the
+	// holder's own question is open: waiting for the answer is not idleness.
 	if task.WorkflowDigest == "" || task.Status == StatusDone || task.Status == StatusCancelled ||
-		task.WorkflowPausedReason != "" || task.Assignee != agentPrincipal(end.Agent) {
+		task.Status == StatusWaitCustomer || task.WorkflowPausedReason != "" || task.Assignee != agentPrincipal(end.Agent) {
 		return nil
 	}
 	manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
@@ -94,11 +96,11 @@ func (s *Service) RecordIterationEnd(ctx context.Context, end IterationEnd) erro
 		return nil
 	}
 	var visitID int64
-	var enteredAt string
+	var enteredAt, resumedAt string
 	var idle int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT id, entered_at, idle_iterations FROM task_status_visits WHERE task_id = ? AND left_at = ''`,
-		task.ID).Scan(&visitID, &enteredAt, &idle); err != nil {
+		SELECT id, entered_at, resumed_at, idle_iterations FROM task_status_visits WHERE task_id = ? AND left_at = ''`,
+		task.ID).Scan(&visitID, &enteredAt, &resumedAt, &idle); err != nil {
 		return err
 	}
 	entered, err := time.Parse(time.RFC3339Nano, enteredAt)
@@ -108,8 +110,23 @@ func (s *Service) RecordIterationEnd(ctx context.Context, end IterationEnd) erro
 	if entered.After(end.StartedAt) {
 		return nil
 	}
+	// An iteration that started while the task was paused belongs to the
+	// pause, not to the resumed visit.
+	if resumedAt != "" {
+		resumed, err := time.Parse(time.RFC3339Nano, resumedAt)
+		if err != nil {
+			return fmt.Errorf("visit %d resumed_at: %w", visitID, err)
+		}
+		if end.StartedAt.Before(resumed) {
+			return nil
+		}
+	}
 	requested, err := requestedDuringTx(ctx, tx, visitID, end.StartedAt, end.FinishedAt)
 	if err != nil || requested {
+		return err
+	}
+	asked, err := askedCustomerDuringTx(ctx, tx, task, end.StartedAt, end.FinishedAt)
+	if err != nil || asked {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -130,25 +147,77 @@ func (s *Service) RecordIterationEnd(ctx context.Context, end IterationEnd) erro
 	return nil
 }
 
-// requestedDuringTx reports whether anyone made a transition request of the
-// visit from start to finish, both included. created_at is RFC3339Nano, which
-// does not order as a string, so the times are compared parsed.
+// The service stores times as RFC3339Nano in UTC, which does not order as a
+// string within one second. secondOf and secondAfter are the whole-second
+// prefixes SQL narrows rows with: every time in t's second or later sorts at
+// or after secondOf(t), and every time up to t's second sorts before
+// secondAfter(t). The exact comparison is then made on parsed times.
+func secondOf(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05") }
+
+func secondAfter(t time.Time) string {
+	return t.UTC().Truncate(time.Second).Add(time.Second).Format("2006-01-02T15:04:05")
+}
+
+// requestedDuringTx reports whether a transition request of the visit kept
+// the iteration from start to finish (both included) busy: a request was made
+// during it, was still pending at its finish, or was cancelled or applied
+// during it.
 func requestedDuringTx(ctx context.Context, tx *sql.Tx, visitID int64, start, finish time.Time) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT created_at FROM task_transition_requests WHERE visit_id = ?`, visitID)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT created_at, state, finished_at FROM task_transition_requests
+		WHERE visit_id = ? AND created_at < ? AND (created_at >= ? OR state = 'pending' OR finished_at >= ?)`,
+		visitID, secondAfter(finish), secondOf(start), secondOf(start))
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var createdAt string
-		if err := rows.Scan(&createdAt); err != nil {
+		var createdAt, state, finishedAt string
+		if err := rows.Scan(&createdAt, &state, &finishedAt); err != nil {
 			return false, err
 		}
 		created, err := time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return false, fmt.Errorf("transition request of visit %d created_at: %w", visitID, err)
 		}
-		if !created.Before(start) && !created.After(finish) {
+		if created.After(finish) {
+			continue
+		}
+		if !created.Before(start) || state == "pending" {
+			return true, nil
+		}
+		finished, err := time.Parse(time.RFC3339Nano, finishedAt)
+		if err != nil {
+			return false, fmt.Errorf("transition request of visit %d finished_at: %w", visitID, err)
+		}
+		if finished.After(finish) || ((state == "cancelled" || state == "applied") && !finished.Before(start)) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// askedCustomerDuringTx reports whether the task's assignee asked the
+// customer a question from start to finish, both included.
+func askedCustomerDuringTx(ctx context.Context, tx *sql.Tx, task Task, start, finish time.Time) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT requested_at FROM task_waiting_for
+		WHERE expected_principal = ? AND task_id = ? AND requesting_principal = ? AND requested_at >= ? AND requested_at < ?`,
+		task.Customer, task.ID, task.Assignee, secondOf(start), secondAfter(finish))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var requestedAt string
+		if err := rows.Scan(&requestedAt); err != nil {
+			return false, err
+		}
+		requested, err := time.Parse(time.RFC3339Nano, requestedAt)
+		if err != nil {
+			return false, fmt.Errorf("wait of task %s requested_at: %w", task.Key, err)
+		}
+		if !requested.Before(start) && !requested.After(finish) {
 			return true, nil
 		}
 	}
@@ -176,25 +245,10 @@ func holderUnavailableText(name, pool, cause string) string {
 
 // CheckHolders records since when each holder of an active pool status cannot
 // work and pauses tasks whose holder has been unavailable for the grace.
+// Only the tasks unavailableHolderTasks selects get a transaction of their own.
 func (s *Service) CheckHolders(ctx context.Context, now time.Time) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id FROM tasks
-		WHERE workflow_digest IS NOT NULL AND status NOT IN ('done', 'cancelled')
-		  AND workflow_paused_reason = '' AND assignee LIKE 'agent:%'
-		ORDER BY id`)
+	ids, err := s.unavailableHolderTasks(ctx)
 	if err != nil {
-		return 0, err
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
 		return 0, err
 	}
 	paused := 0
@@ -204,11 +258,12 @@ func (s *Service) CheckHolders(ctx context.Context, now time.Time) (int, error) 
 		}
 		ok, err := s.checkHolder(ctx, id, now)
 		if err != nil {
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && s.firstHolderFailure(id, err) {
 				s.logger().Warn("check workflow holder", "task_id", id, "err", err)
 			}
 			continue
 		}
+		s.forgetHolderFailure(id)
 		if ok {
 			paused++
 		}
@@ -217,6 +272,72 @@ func (s *Service) CheckHolders(ctx context.Context, now time.Time) (int, error) 
 		s.signal()
 	}
 	return paused, ctx.Err()
+}
+
+// unavailableHolderTasks selects, in one query, the open unpaused workflow
+// tasks whose agent assignee has an unreleased holder row that either cannot
+// work by holderUnavailableCauseSQL or is marked unavailable_since: the only
+// tasks checkHolder may change. A task whose holder can work and carries no
+// mark is left alone.
+func (s *Service) unavailableHolderTasks(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT t.id FROM tasks t
+		JOIN task_workflow_holders h ON h.task_id = t.id AND t.assignee = 'agent:' || h.agent AND h.released = 0
+		LEFT JOIN agents a ON a.name = h.agent
+		LEFT JOIN task_agent_pools p ON p.queue_prefix = t.queue_prefix AND p.name = h.pool
+		LEFT JOIN task_agent_pool_members m ON m.pool_id = p.id AND m.agent = h.agent
+		WHERE t.workflow_digest IS NOT NULL AND t.status NOT IN ('done', 'cancelled')
+		  AND t.workflow_paused_reason = '' AND t.assignee LIKE 'agent:%'
+		  AND (h.unavailable_since <> '' OR (`+holderUnavailableCauseSQL+`) <> '')
+		ORDER BY t.id`, agent.IdleStopPrefix, agent.IdleStopPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// manifestLoadError is a holder check that could not load the task's
+// workflow manifest; it repeats on every pass until the image is fixed.
+type manifestLoadError struct{ err error }
+
+func (e manifestLoadError) Error() string { return "load workflow manifest: " + e.err.Error() }
+func (e manifestLoadError) Unwrap() error { return e.err }
+
+// firstHolderFailure reports whether err of the holder check of task id
+// should be logged: a manifest that cannot be loaded is logged once per task
+// and error text, every other error every time.
+func (s *Service) firstHolderFailure(id int64, err error) bool {
+	var load manifestLoadError
+	if !errors.As(err, &load) {
+		return true
+	}
+	s.holderFailuresMu.Lock()
+	defer s.holderFailuresMu.Unlock()
+	if s.holderFailures == nil {
+		s.holderFailures = map[int64]string{}
+	}
+	if s.holderFailures[id] == err.Error() {
+		return false
+	}
+	s.holderFailures[id] = err.Error()
+	return true
+}
+
+// forgetHolderFailure clears the logged manifest failure of task id after a
+// check that loaded its manifest.
+func (s *Service) forgetHolderFailure(id int64) {
+	s.holderFailuresMu.Lock()
+	defer s.holderFailuresMu.Unlock()
+	delete(s.holderFailures, id)
 }
 
 // checkHolder checks the holder of one task in its own transaction and
@@ -238,7 +359,10 @@ func (s *Service) checkHolder(ctx context.Context, id int64, now time.Time) (boo
 	}
 	manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
 	if err != nil {
-		return false, err
+		if ctx.Err() != nil {
+			return false, err
+		}
+		return false, manifestLoadError{err}
 	}
 	status, ok := currentStatus(manifest, task.WorkflowStatus)
 	if !ok || status.Terminal || status.Owner.Kind != workflowfile.OwnerPool {

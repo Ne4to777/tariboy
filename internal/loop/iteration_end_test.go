@@ -46,6 +46,33 @@ func TestManagerReportsTheIterationEndBeforeTheGoalWake(t *testing.T) {
 	}
 }
 
+func TestManagerDoesNotReportAHarnessErrorAsAnIterationEnd(t *testing.T) {
+	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	var ends []tasks.IterationEnd
+	completed := 0
+	m := NewManager(ManagerConfig{
+		Clock: func() time.Time { return start.Add(time.Minute) },
+		RecordIterationEnd: func(_ context.Context, end tasks.IterationEnd) error {
+			ends = append(ends, end)
+			return nil
+		},
+		IterationCompleted: func(string, string) { completed++ },
+	})
+	st := &stubIterationStore{it: agent.Iteration{ID: "alice-1", Agent: "alice", Status: "harness_error"}}
+	m.cfg.iterationStore = st
+	m.noteIterationGoal("alice", "alice-1", "DEV-1", start)
+	m.iterationCompleted("alice", "alice-1")
+	if len(ends) != 0 || completed != 1 {
+		t.Fatalf("ends = %#v completed %d; a harness that never ran is not an idle iteration", ends, completed)
+	}
+	st.it = agent.Iteration{ID: "alice-2", Agent: "alice", Status: "done"}
+	m.noteIterationGoal("alice", "alice-2", "DEV-1", start)
+	m.iterationCompleted("alice", "alice-2")
+	if len(ends) != 1 || ends[0].IterationID != "alice-2" {
+		t.Fatalf("ends = %#v", ends)
+	}
+}
+
 func TestManagerReportsAGoalSelectedDuringTheIteration(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	var ends []tasks.IterationEnd

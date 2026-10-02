@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -189,8 +190,12 @@ func TestRejectedRequestsPauseAtTheLimit(t *testing.T) {
 	_, run := advanceApprove(t, svc, actor, task)
 	complete(t, svc, run.ID, RunCompletion{Verdict: "reject", Message: "CI is red", ExitCode: exitCode(112)})
 	stored := storedTask(t, svc, task.Key)
-	if stored.WorkflowPausedReason != PauseRejectedRequests || stored.WorkflowStatus != "review" || stored.Assignee != "agent:reviewer-1" {
+	if stored.WorkflowPausedReason != PauseRejectedRequests || stored.WorkflowStatus != "review" || stored.Assignee != "agent:reviewer-1" ||
+		stored.Status != StatusWaitCustomer {
 		t.Fatalf("stored = %#v", stored)
+	}
+	if n := countEvents(t, svc, task, "workflow.paused"); n != 1 {
+		t.Fatalf("pause events = %d", n)
 	}
 	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, "> CI is red") {
 		t.Fatalf("pause comment = %q", body)
@@ -226,16 +231,25 @@ func TestScriptFailuresPauseAtTheLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// requirePaused checks the pause every limit leaves: the customer's
+	// category and exactly one pause event.
+	requirePaused := func(t *testing.T, svc *Service, task Task, status string) {
+		t.Helper()
+		stored := storedTask(t, svc, task.Key)
+		if stored.WorkflowPausedReason != PauseScriptFailures || stored.WorkflowStatus != status || stored.Status != StatusWaitCustomer {
+			t.Fatalf("stored = %#v", stored)
+		}
+		if n := countEvents(t, svc, task, "workflow.paused"); n != 1 {
+			t.Fatalf("pause events = %d", n)
+		}
+	}
 	t.Run("a check failure", func(t *testing.T) {
 		svc, actor, task, _ := runFixture(t)
 		setFailures(t, svc, task, 2)
 		_, run := advanceApprove(t, svc, actor, task)
 		complete(t, svc, run.ID, RunCompletion{Verdict: "failure", Message: "exit status 3", ExitCode: exitCode(3),
 			LogPath: "/base/tasks/DEV/runs/1/run.log"})
-		stored := storedTask(t, svc, task.Key)
-		if stored.WorkflowPausedReason != PauseScriptFailures || stored.WorkflowStatus != "review" {
-			t.Fatalf("stored = %#v", stored)
-		}
+		requirePaused(t, svc, task, "review")
 		body := pauseCommentBody(t, svc, task)
 		if !strings.Contains(body, "exit status 3") || !strings.Contains(body, "/base/tasks/DEV/runs/1/run.log") {
 			t.Fatalf("pause comment = %q", body)
@@ -251,19 +265,14 @@ func TestScriptFailuresPauseAtTheLimit(t *testing.T) {
 		if err := svc.RecoverScriptRuns(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if stored := storedTask(t, svc, task.Key); stored.WorkflowPausedReason != PauseScriptFailures {
-			t.Fatalf("stored = %#v", stored)
-		}
+		requirePaused(t, svc, task, "review")
 	})
 	t.Run("a watch failure stops the watch", func(t *testing.T) {
 		svc, actor, task := watchFixture(t)
 		setFailures(t, svc, task, 2)
 		run := scheduleWatch(t, svc, actor, task)
 		complete(t, svc, run.ID, RunCompletion{Verdict: "failure", Message: "boom", ExitCode: exitCode(1), LogPath: "/log"})
-		stored := storedTask(t, svc, task.Key)
-		if stored.WorkflowPausedReason != PauseScriptFailures || stored.WorkflowStatus != "merge" {
-			t.Fatalf("stored = %#v", stored)
-		}
+		requirePaused(t, svc, task, "merge")
 		if _, _, failures, next := openVisit(t, svc, task); failures != 3 || next != "" {
 			t.Fatalf("failures %d next %q; a paused watch is not rescheduled", failures, next)
 		}
@@ -495,5 +504,232 @@ func TestANewDispatchClearsUnavailableSince(t *testing.T) {
 	task = enter(t, svc, task.Key, "develop", "again")
 	if since := unavailableSince(t, svc, task, "developers"); since != "" {
 		t.Fatalf("unavailable_since carried over: %q", since)
+	}
+}
+
+// at returns the stall test time minutes after 12:00.
+func at(minutes int) time.Time { return stallStart.Add(time.Duration(minutes) * time.Minute) }
+
+func iterationBetween(agent, key string, from, to int) IterationEnd {
+	end := iterationEnd(agent, key)
+	end.StartedAt, end.FinishedAt = at(from), at(to)
+	return end
+}
+
+func TestAPendingCheckKeepsIterationsFromCountingIdle(t *testing.T) {
+	svc, actor, task, _ := runFixture(t)
+	request, _ := advanceApprove(t, svc, actor, task)
+	// The check stays pending across several iterations.
+	for i := 0; i < 4; i++ {
+		recordEnd(t, svc, iterationBetween("reviewer-1", task.Key, 1+2*i, 2+2*i))
+	}
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; a pending check is not idleness", got)
+	}
+	// The request is cancelled during the next iteration: still not idle.
+	if _, err := svc.db.Exec(`UPDATE task_transition_requests SET state = 'cancelled', finished_at = ? WHERE id = ?`,
+		at(11).Format(time.RFC3339Nano), request.ID); err != nil {
+		t.Fatal(err)
+	}
+	recordEnd(t, svc, iterationBetween("reviewer-1", task.Key, 10, 12))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; a request cancelled during the iteration is not idleness", got)
+	}
+	// An iteration reported after the request finished, which ended while it
+	// was still pending, does not count either.
+	if _, err := svc.db.Exec(`UPDATE task_transition_requests SET state = 'rejected', finished_at = ? WHERE id = ?`,
+		at(30).Format(time.RFC3339Nano), request.ID); err != nil {
+		t.Fatal(err)
+	}
+	recordEnd(t, svc, iterationBetween("reviewer-1", task.Key, 20, 25))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; the request was pending when the iteration ended", got)
+	}
+	recordEnd(t, svc, iterationBetween("reviewer-1", task.Key, 31, 35))
+	if got := visitCounters(t, svc, task); got[0] != 1 {
+		t.Fatalf("counters = %v; the next plain iteration counts", got)
+	}
+}
+
+func TestTheHoldersQuestionKeepsIterationsFromCountingIdle(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	ctx := context.Background()
+	setClock := func(minutes int) { svc.clock = func() time.Time { return at(minutes) } }
+	// The holder asks during the first iteration; the iteration ends while
+	// the question is open.
+	setClock(2)
+	if _, err := svc.AddComment(ctx, AgentActor("dev-1"), task.Key, AddCommentInput{Body: "@" + task.Customer + " which database?"}); err != nil {
+		t.Fatal(err)
+	}
+	if stored := storedTask(t, svc, task.Key); stored.Status != StatusWaitCustomer {
+		t.Fatalf("stored = %#v", stored)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 0, 5))
+	// An iteration that only waits for the answer counts nothing.
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 6, 10))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; a question is not idleness", got)
+	}
+	// The answer clears what counted before the question.
+	if _, err := svc.db.Exec(`UPDATE task_status_visits SET idle_iterations = 2 WHERE task_id = ? AND left_at = ''`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	setClock(12)
+	if _, err := svc.AddComment(ctx, CustomerActor("customer"), task.Key, AddCommentInput{Body: "Postgres."}); err != nil {
+		t.Fatal(err)
+	}
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters after the answer = %v", got)
+	}
+	if stored := storedTask(t, svc, task.Key); stored.Status != StatusInProgress {
+		t.Fatalf("stored = %#v", stored)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 13, 18))
+	if got := visitCounters(t, svc, task); got[0] != 1 {
+		t.Fatalf("counters = %v; the next plain iteration counts", got)
+	}
+}
+
+func TestAQuestionAnsweredWithinTheIterationIsNotIdle(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	ctx := context.Background()
+	svc.clock = func() time.Time { return at(2) }
+	if _, err := svc.AddComment(ctx, AgentActor("dev-1"), task.Key, AddCommentInput{Body: "@" + task.Customer + " which database?"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.clock = func() time.Time { return at(3) }
+	if _, err := svc.AddComment(ctx, CustomerActor("customer"), task.Key, AddCommentInput{Body: "Postgres."}); err != nil {
+		t.Fatal(err)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 1, 5))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; the holder asked during the iteration", got)
+	}
+}
+
+// resumedAt returns the open visit's resumed_at.
+func resumedAt(t *testing.T, svc *Service, task Task) string {
+	t.Helper()
+	var resumed string
+	if err := svc.db.QueryRow(`SELECT resumed_at FROM task_status_visits WHERE task_id = ? AND left_at = ''`, task.ID).Scan(&resumed); err != nil {
+		t.Fatal(err)
+	}
+	return resumed
+}
+
+func TestAnIterationThatStartedBeforeAResumeIsNotIdle(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	svc.clock = func() time.Time { return at(10) }
+	if _, err := svc.ResumeWorkflow(context.Background(), actor, task.Key, ResumeContinue); err != nil {
+		t.Fatal(err)
+	}
+	if got := resumedAt(t, svc, task); got != at(10).Format(time.RFC3339Nano) {
+		t.Fatalf("resumed_at = %q", got)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 5, 15))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; the iteration started before the resume", got)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 16, 20))
+	if got := visitCounters(t, svc, task); got[0] != 1 {
+		t.Fatalf("counters = %v", got)
+	}
+}
+
+func TestResumeReleaseRecordsResumedAt(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	svc.clock = func() time.Time { return at(10) }
+	if _, err := svc.ResumeWorkflow(context.Background(), actor, task.Key, ResumeRelease); err != nil {
+		t.Fatal(err)
+	}
+	if got := resumedAt(t, svc, task); got != at(10).Format(time.RFC3339Nano) {
+		t.Fatalf("resumed_at = %q", got)
+	}
+}
+
+func TestUnavailableHolderTasksSelectsOnlyCandidates(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	other := mustCreateDev(t, svc, actor, "other")
+	ctx := context.Background()
+	if ids, err := svc.unavailableHolderTasks(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("ids = %v, %v; every holder can work", ids, err)
+	}
+	// The other task is held by dev-2, who can work.
+	if _, err := svc.db.Exec(`UPDATE tasks SET assignee = 'agent:dev-2' WHERE task_key = ?`, other.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.db.Exec(`UPDATE task_workflow_holders SET agent = 'dev-2' WHERE task_id = (SELECT id FROM tasks WHERE task_key = ?)`, other.Key); err != nil {
+		t.Fatal(err)
+	}
+	setAgent(t, svc, "dev-1", `enabled = 0`)
+	if ids, err := svc.unavailableHolderTasks(ctx); err != nil || len(ids) != 1 || ids[0] != task.ID {
+		t.Fatalf("ids = %v, %v; want only %d", ids, err, task.ID)
+	}
+	// A marked row stays a candidate after its agent can work again, so the
+	// check clears the mark.
+	checkHolders(t, svc, stallStart)
+	setAgent(t, svc, "dev-1", `enabled = 1`)
+	if ids, err := svc.unavailableHolderTasks(ctx); err != nil || len(ids) != 1 || ids[0] != task.ID {
+		t.Fatalf("ids = %v, %v; want the marked %d", ids, err, task.ID)
+	}
+	checkHolders(t, svc, stallStart.Add(time.Minute))
+	if ids, err := svc.unavailableHolderTasks(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("ids = %v, %v; the mark was cleared", ids, err)
+	}
+}
+
+func TestCheckHoldersLogsAnUnloadableManifestOnce(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	setAgent(t, svc, "dev-1", `enabled = 0`)
+	var logged strings.Builder
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logged, nil)))
+	setDigest := func(digest string) {
+		t.Helper()
+		if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = ? WHERE id = ?`, digest, task.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDigest("missing")
+	for i := 0; i < 3; i++ {
+		checkHolders(t, svc, stallStart)
+	}
+	if n := strings.Count(logged.String(), "check workflow holder"); n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, logged.String())
+	}
+	// A load that succeeds again clears the record, so a new failure is logged.
+	setDigest(task.WorkflowDigest)
+	checkHolders(t, svc, stallStart)
+	setDigest("missing")
+	checkHolders(t, svc, stallStart)
+	if n := strings.Count(logged.String(), "check workflow holder"); n != 2 {
+		t.Fatalf("logged %d times:\n%s", n, logged.String())
+	}
+}
+
+func TestAReleasedHolderCannotSetArtifacts(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	if _, err := svc.db.Exec(`UPDATE task_workflow_holders SET released = 1 WHERE task_id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetArtifact(context.Background(), AgentActor("dev-1"), task.Key, "plan", "p"); ErrorCode(err) != "not_holder" {
+		t.Fatalf("err = %v; a released holder does not hold the status", err)
+	}
+}
+
+func TestAWatchOutcomeResetsScriptFailures(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	if _, err := svc.db.Exec(`UPDATE task_status_visits SET script_failures = 2 WHERE task_id = ? AND left_at = ''`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	run := scheduleWatch(t, svc, actor, task)
+	complete(t, svc, run.ID, RunCompletion{Verdict: "outcome", Outcome: "merged", ExitCode: exitCode(0)})
+	stored := storedTask(t, svc, task.Key)
+	if stored.WorkflowStatus != "done" {
+		t.Fatalf("stored = %#v", stored)
+	}
+	if got := visitCounters(t, svc, stored); got[2] != 0 {
+		t.Fatalf("counters = %v", got)
 	}
 }

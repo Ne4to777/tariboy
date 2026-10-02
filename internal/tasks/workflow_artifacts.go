@@ -178,14 +178,14 @@ func workflowTaskTx(ctx context.Context, q taskQueryer, actor Actor, key string,
 }
 
 // holdsPoolStatusTx reports whether the actor is the task's assignee and the
-// recorded holder for the pool that owns the task's current status.
+// recorded, unreleased holder for the pool that owns the task's current status.
 func holdsPoolStatusTx(ctx context.Context, q queryer, task Task, manifest workflowimage.Manifest, actor Actor) (bool, error) {
 	status, ok := currentStatus(manifest, task.WorkflowStatus)
 	if !ok || status.Owner.Kind != workflowfile.OwnerPool || task.Assignee != actor.Principal {
 		return false, nil
 	}
 	var recorded string
-	err := q.QueryRowContext(ctx, `SELECT agent FROM task_workflow_holders WHERE task_id = ? AND pool = ?`,
+	err := q.QueryRowContext(ctx, `SELECT agent FROM task_workflow_holders WHERE task_id = ? AND pool = ? AND released = 0`,
 		task.ID, status.Owner.Pool).Scan(&recorded)
 	if err == sql.ErrNoRows {
 		return false, nil
