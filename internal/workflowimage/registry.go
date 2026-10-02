@@ -22,14 +22,16 @@ type Registry struct {
 	DB    *sql.DB
 }
 
-// insert records m. An existing row for the digest is left as it is.
+// insert records m. An existing row for the digest is left as it is; a row
+// holding the same name and version under another digest is an error.
 func (r *Registry) insert(m Manifest) error {
 	data, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
 	_, err = r.DB.Exec(
-		`INSERT OR IGNORE INTO task_workflow_images (digest, name, version, manifest, built_at) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO task_workflow_images (digest, name, version, manifest, built_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(digest) DO NOTHING`,
 		m.Digest, m.Name, m.Version, string(data), m.BuiltAt)
 	return err
 }

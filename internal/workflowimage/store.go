@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -207,10 +208,48 @@ func scan(root string) ([]sourceFile, error) {
 	return files, nil
 }
 
+// checkScanned verifies against the scanned entries, not the file system,
+// that the manifest file and every file the manifest names were captured, and
+// that every script is executable. Validate looked at the file system earlier;
+// this closes the gap between the two looks.
+func checkScanned(src *workflowfile.File, entries []FileEntry) error {
+	byPath := make(map[string]FileEntry, len(entries))
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+	if _, ok := byPath[workflowfile.DefaultFilename]; !ok {
+		return invalidf("%q was not captured from the source", workflowfile.DefaultFilename)
+	}
+	for _, p := range src.Files() {
+		if _, ok := byPath[p]; !ok {
+			return invalidf("file %q named by the manifest was not captured from the source", "./"+p)
+		}
+	}
+	var scripts []string
+	for _, s := range src.Statuses {
+		if s.Watch != nil {
+			scripts = append(scripts, s.Watch.Script)
+		}
+		for _, t := range s.Transitions {
+			for _, c := range t.Checks {
+				scripts = append(scripts, c.Script)
+			}
+		}
+	}
+	for _, script := range scripts {
+		p := path.Clean(script)
+		if e, ok := byPath[p]; !ok || !e.Executable {
+			return invalidf("script %q is not an executable file in the captured source", "./"+p)
+		}
+	}
+	return nil
+}
+
 // Publish validates src, copies the whole source directory, and points the
-// version tag and "latest" at it. The digest covers the normalized definition
-// and every file's path, executable bit, and content, and nothing else. The
-// bool reports whether the content was new.
+// version tag and "latest" at it. The digest covers every file's path,
+// executable bit, and content, Workflowfile.yaml included, and nothing else.
+// A version whose stored content differs is refused, whether or not its tag
+// still exists. The bool reports whether the content was new.
 func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -236,10 +275,10 @@ func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, 
 	for i, f := range files {
 		entries[i] = f.FileEntry
 	}
-	digest, err := computeDigest(src, entries)
-	if err != nil {
+	if err := checkScanned(src, entries); err != nil {
 		return Manifest{}, false, err
 	}
+	digest := computeDigest(entries)
 
 	name, version := src.Name, src.WorkflowVersion
 	prev, err := s.readTag(name, version)
@@ -251,6 +290,13 @@ func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, 
 		return Manifest{}, false, fmt.Errorf("%w: %s %s is %s", ErrVersionPublished, name, version, prev)
 	case !errors.Is(err, ErrNotFound):
 		return Manifest{}, false, err
+	}
+	// The version tag can be gone while another tag still holds content of
+	// that version; the version stays taken until that content is deleted.
+	if other, err := s.storedVersionDigest(name, version, digest); err != nil {
+		return Manifest{}, false, err
+	} else if other != "" {
+		return Manifest{}, false, fmt.Errorf("%w: %s %s is %s", ErrVersionPublished, name, version, other)
 	}
 
 	var m Manifest
@@ -286,6 +332,32 @@ func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, 
 		return Manifest{}, false, err
 	}
 	return m, created, nil
+}
+
+// storedVersionDigest returns the digest of stored content of name that has
+// version but is not digest, or "" when there is none. It reads every
+// refs/<digest>/manifest.json, whether or not a tag names it.
+func (s *Store) storedVersionDigest(name, version, digest string) (string, error) {
+	refs, err := os.ReadDir(s.refsDir(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, ref := range refs {
+		if !ref.IsDir() || !digestPattern.MatchString(ref.Name()) || ref.Name() == digest {
+			continue
+		}
+		m, err := s.readManifest(name, ref.Name())
+		if err != nil {
+			return "", err
+		}
+		if m.Version == version {
+			return ref.Name(), nil
+		}
+	}
+	return "", nil
 }
 
 // install writes the tree into a temporary sibling directory, makes it

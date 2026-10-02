@@ -76,9 +76,8 @@ func TestRegistryConcurrentPublish(t *testing.T) {
 	const rounds = 20
 	for i := 0; i < rounds; i++ {
 		name := fmt.Sprintf("demo%d", i)
-		a, b := writeSource(t, "1.0.0"), writeSource(t, "1.1.0")
+		a, b := renamedSource(t, "1.0.0", name), renamedSource(t, "1.1.0", name)
 		put(t, b.Dir, "statuses/work.md", "other\n", 0o644)
-		a.Name, b.Name = name, name
 		srcs := []*workflowfile.File{a, b}
 		versions := []string{"1.0.0", "1.1.0"}
 		digests := make([]string, 2)
@@ -114,6 +113,20 @@ func TestRegistryConcurrentPublish(t *testing.T) {
 	if n := rowCount(t, db); n != 2*rounds {
 		t.Fatalf("rows = %d, want %d", n, 2*rounds)
 	}
+}
+
+// renamedSource is writeSource with the workflow name rewritten in
+// Workflowfile.yaml, so the name is part of the stored bytes and the digest.
+func renamedSource(t *testing.T, version, name string) *workflowfile.File {
+	t.Helper()
+	src := writeSource(t, version)
+	body := strings.Replace(strings.ReplaceAll(testManifest, "%VERSION%", version), "name: demo", "name: "+name, 1)
+	put(t, src.Dir, "Workflowfile.yaml", body, 0o644)
+	f, err := workflowfile.Parse(src.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 func newRegistry(t *testing.T) (*Registry, *sql.DB) {
@@ -246,6 +259,69 @@ func TestRegistryRemoveDeletesRowOnlyWithContent(t *testing.T) {
 	}
 	if err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("remove unknown tag: %v", err)
+	}
+}
+
+func TestRegistryVersionImmutableAfterTagRemoval(t *testing.T) {
+	r, db := newRegistry(t)
+	first, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Remove("demo", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	changed := writeSource(t, "1.0.0")
+	put(t, changed.Dir, "scripts/check.sh", "#!/bin/sh\nexit 1\n", 0o755)
+	if _, _, err := r.Publish(changed, t0); !errors.Is(err, ErrVersionPublished) {
+		t.Fatalf("publish changed 1.0.0 = %v, want ErrVersionPublished", err)
+	}
+	if d, err := r.Store.Resolve("demo", "latest"); err != nil || d != first.Digest {
+		t.Fatalf("latest = %q, %v; want %s", d, err, first.Digest)
+	}
+	if _, err := r.Store.Resolve("demo", "1.0.0"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("1.0.0 tag = %v, want ErrNotFound", err)
+	}
+	b, err := os.ReadFile(filepath.Join(r.Store.ContentDir("demo", first.Digest), "scripts", "check.sh"))
+	if err != nil || string(b) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("stored check.sh = %q, %v", b, err)
+	}
+	if entries, _ := os.ReadDir(r.Store.refsDir("demo")); len(entries) != 1 {
+		t.Fatalf("refs = %v, want only %s", entries, first.Digest)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+	if _, err := r.Get(first.Digest); err != nil {
+		t.Fatalf("first row: %v", err)
+	}
+
+	// Once the last tag is gone, the content and its row are gone, and the
+	// version may be published again with other content.
+	if err := r.Remove("demo", "latest"); err != nil {
+		t.Fatal(err)
+	}
+	if n := rowCount(t, db); n != 0 {
+		t.Fatalf("rows after removing latest = %d, want 0", n)
+	}
+	m, created, err := r.Publish(changed, t0)
+	if err != nil || !created || m.Digest == first.Digest || m.Version != "1.0.0" {
+		t.Fatalf("republish = %+v, %v, %v", m, created, err)
+	}
+}
+
+func TestRegistryUniqueVersionIsNotIgnored(t *testing.T) {
+	r, db := newRegistry(t)
+	other := strings.Repeat("0", 64)
+	if _, err := db.Exec(`INSERT INTO task_workflow_images (digest, name, version, manifest, built_at) VALUES (?, 'demo', '1.0.0', '{}', 'x')`, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Publish(writeSource(t, "1.0.0"), t0); err == nil {
+		t.Fatal("publish succeeded although a row already holds demo 1.0.0")
+	}
+	noRefs(t, r.Store)
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
 	}
 }
 

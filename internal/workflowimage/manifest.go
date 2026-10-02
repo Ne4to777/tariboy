@@ -6,7 +6,6 @@ package workflowimage
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -54,16 +53,13 @@ type Manifest struct {
 	Files         []FileEntry       `json:"files"`
 }
 
-// computeDigest hashes the normalized definition and then one line per file,
-// sorted by path: path, executable flag, and content hash. Timestamps,
-// ownership, and other permission bits do not take part. files must be sorted.
-func computeDigest(def *workflowfile.File, files []FileEntry) (string, error) {
-	definition, err := json.Marshal(def)
-	if err != nil {
-		return "", fmt.Errorf("encode definition: %w", err)
-	}
+// computeDigest hashes one line per file, sorted by path:
+// "<path>\x00<executable 0|1>\x00<sha256 of content>\n". Workflowfile.yaml is
+// one of the files, so the definition is covered through its raw bytes and
+// the digest does not depend on Go types. Timestamps, ownership, and other
+// permission bits do not take part.
+func computeDigest(files []FileEntry) string {
 	h := sha256.New()
-	h.Write(definition)
 	sorted := append([]FileEntry(nil), files...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
 	for _, f := range sorted {
@@ -73,5 +69,5 @@ func computeDigest(def *workflowfile.File, files []FileEntry) (string, error) {
 		}
 		fmt.Fprintf(h, "%s\x00%s\x00%s\n", f.Path, exec, f.SHA256)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(h.Sum(nil))
 }

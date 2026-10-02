@@ -6,4 +6,4 @@ CREATE TABLE task_workflow_images (
     built_at TEXT NOT NULL
 );
 
-CREATE INDEX idx_task_workflow_images_name ON task_workflow_images(name, version);
+CREATE UNIQUE INDEX idx_task_workflow_images_name_version ON task_workflow_images(name, version);

@@ -232,9 +232,12 @@ reported as `workflow_invalid` without a per-field list.
 ## Build, storage, and versions
 
 `tariboy workflow build` validates the source and publishes it. The built
-artifact is stored once, addressed by a SHA-256 digest of the normalized
-definition plus each file's path, executable flag, and content hash.
-Timestamps, ownership, and other permission bits do not change the digest.
+artifact is stored once, addressed by a SHA-256 digest over one line per
+stored file, sorted by path: `<path>\0<executable 0|1>\0<SHA-256 of the
+content>\n`. `Workflowfile.yaml` is one of those files, so the definition is
+covered through its exact bytes, and the digest of an unchanged source does not
+change between releases. Timestamps, ownership, and other permission bits do
+not change the digest.
 
 ```text
 <base-dir>/workflows/<name>/
@@ -258,6 +261,12 @@ than agent images, where a rebuild moves the ref, because a workflow must stay
 reproducible. To change a workflow, bump the version with
 `tariboy workflow version update` and build again; `latest` then moves to the
 new digest.
+
+Removing the version tag does not free the version. While any tag, such as
+`latest`, still names content of that version, a build of the same version with
+different content fails with `workflow_version_published`. A version may be
+reused only after its content is gone: every tag that named it is removed,
+which deletes the content and its database row.
 
 The manifest of every published digest is also recorded in the
 `task_workflow_images` table of the daemon's SQLite database. The daemon

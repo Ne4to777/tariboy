@@ -1,6 +1,8 @@
 package workflowimage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -252,6 +254,88 @@ func TestExecutableBitChangesDigest(t *testing.T) {
 	b := publish(t, s2, src)
 	if a.Digest == b.Digest {
 		t.Fatal("executable bit did not change the digest")
+	}
+}
+
+const goldenManifest = `schema_version: 1
+name: golden
+workflow_version: 1.0.0
+initial_status: work
+statuses:
+  - id: work
+    owner: customer
+    transitions:
+      - { on: done, to: finished }
+  - id: finished
+    terminal: true
+`
+
+const goldenScript = "#!/bin/sh\nexit 0\n"
+
+// goldenDigest is the digest of the two-file source below, computed outside
+// Go with sha256sum over the documented byte stream. It must not change when
+// Go types change.
+const goldenDigest = "aa1d44e5beebbefd7f87507641fe2bf2835a6b4c1c8b7d2de6f820f39e57eef9"
+
+func TestDigestGolden(t *testing.T) {
+	line := func(path, exec, content string) string {
+		sum := sha256.Sum256([]byte(content))
+		return path + "\x00" + exec + "\x00" + hex.EncodeToString(sum[:]) + "\n"
+	}
+	stream := line("Workflowfile.yaml", "0", goldenManifest) + line("scripts/run.sh", "1", goldenScript)
+	if sum := sha256.Sum256([]byte(stream)); hex.EncodeToString(sum[:]) != goldenDigest {
+		t.Fatalf("documented stream hashes to %x, want %s", sum, goldenDigest)
+	}
+
+	dir := t.TempDir()
+	put(t, dir, "Workflowfile.yaml", goldenManifest, 0o644)
+	put(t, dir, "scripts/run.sh", goldenScript, 0o755)
+	src, err := workflowfile.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := publish(t, newStore(t), src)
+	if m.Digest != goldenDigest {
+		t.Fatalf("digest = %s, want %s", m.Digest, goldenDigest)
+	}
+}
+
+func TestCheckScannedFiles(t *testing.T) {
+	src := &workflowfile.File{Statuses: []workflowfile.Status{
+		{ID: "work", Owner: workflowfile.Owner{Kind: workflowfile.OwnerPool, Pool: "devs"}, Instructions: "./statuses/work.md",
+			Transitions: []workflowfile.Transition{{On: "done", To: "watch", Checks: []workflowfile.Check{{Script: "./scripts/check.sh"}}}}},
+		{ID: "watch", Owner: workflowfile.Owner{Kind: workflowfile.OwnerScript},
+			Watch:       &workflowfile.Watch{Script: "./scripts/watch.sh", Every: "1m"},
+			Transitions: []workflowfile.Transition{{On: "done", To: "finished"}}},
+		{ID: "finished", Terminal: true},
+	}}
+	full := func() []FileEntry {
+		return []FileEntry{
+			{Path: "Workflowfile.yaml"},
+			{Path: "scripts/check.sh", Executable: true},
+			{Path: "scripts/watch.sh", Executable: true},
+			{Path: "statuses/work.md"},
+		}
+	}
+	if err := checkScanned(src, full()); err != nil {
+		t.Fatalf("complete entries: %v", err)
+	}
+	cases := map[string]struct {
+		mutate func([]FileEntry) []FileEntry
+		path   string
+	}{
+		"missing instructions": {func(e []FileEntry) []FileEntry { return e[:3] }, "statuses/work.md"},
+		"missing check script": {func(e []FileEntry) []FileEntry { return append(e[:1], e[2:]...) }, "scripts/check.sh"},
+		"check not executable": {func(e []FileEntry) []FileEntry { e[1].Executable = false; return e }, "scripts/check.sh"},
+		"watch not executable": {func(e []FileEntry) []FileEntry { e[2].Executable = false; return e }, "scripts/watch.sh"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := checkScanned(src, tc.mutate(full()))
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("err = %v, want ErrInvalid naming %s", err, tc.path)
+			}
+		})
 	}
 }
 

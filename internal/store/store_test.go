@@ -34,10 +34,36 @@ func TestOpenMigrates(t *testing.T) {
 func TestOpenCreatesWorkflowImages(t *testing.T) {
 	s := open(t)
 	requireTable(t, s.DB, "task_workflow_images")
-	var name string
-	err := s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_task_workflow_images_name'`).Scan(&name)
+	var unique int
+	err := s.DB.QueryRow(`SELECT "unique" FROM pragma_index_list('task_workflow_images') WHERE name = 'idx_task_workflow_images_name_version'`).Scan(&unique)
 	if err != nil {
-		t.Fatalf("index idx_task_workflow_images_name is missing: %v", err)
+		t.Fatalf("index idx_task_workflow_images_name_version is missing: %v", err)
+	}
+	if unique != 1 {
+		t.Fatal("index idx_task_workflow_images_name_version is not unique")
+	}
+	rows, err := s.DB.Query(`SELECT name FROM pragma_index_info('idx_task_workflow_images_name_version') ORDER BY seqno`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		cols = append(cols, c)
+	}
+	if strings.Join(cols, ",") != "name,version" {
+		t.Fatalf("index columns = %v, want name,version", cols)
+	}
+	insert := `INSERT INTO task_workflow_images (digest, name, version, manifest, built_at) VALUES (?, 'demo', '1.0.0', '{}', 'now')`
+	if _, err := s.DB.Exec(insert, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(insert, "b"); err == nil {
+		t.Fatal("a second digest for the same name and version was accepted")
 	}
 }
 
