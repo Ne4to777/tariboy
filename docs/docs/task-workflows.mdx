@@ -1,6 +1,6 @@
 ---
 title: Task workflows
-description: Bind a workflow image to a queue so its tasks move through statuses with one owner each; agent pools, dispatch, artifacts, outcomes, operator moves, and queue triggers.
+description: Bind a workflow image to a queue so its tasks move through statuses with one owner each, gated by check scripts and driven by watch scripts; queue secrets, run modes, commands, routes, and troubleshooting.
 sidebar:
   label: Task workflows
   icon: git-branch
@@ -10,64 +10,238 @@ A queue can follow a [workflow image](/docs/workflow-images). Tasks created in
 that queue then move through the image's statuses instead of the free-form
 `open`, `in_progress`, `wait_customer`, `done`, and `cancelled` lifecycle. Each
 status has exactly one owner: a pool of agents, the customer, or a script. The
-daemon assigns pool work, stores artifacts, and applies the transition an owner
-asks for.
+daemon assigns pool work, stores artifacts, runs the image's scripts, and
+applies a transition only when the owner asks for it and every check passes.
+
+This page is the guide for operators who bind workflows and for authors who
+write workflow scripts. The manifest format, build, and storage are described
+in [Workflow images](/docs/workflow-images).
 
 :::note
-This page documents what works today. Scripts are not executed yet, so a
-transition that declares `checks` is refused and a status owned by a script
-waits for an operator. There are no queue secrets, no pause and resume, and no
-Desktop workflow UI. See [Not yet available](#not-yet-available).
+Not built yet: the workflow block of the agent's Goal prompt, pausing a stalled
+task and the customer's continue or release decision, idle-iteration counting,
+handling of a holder that cannot work, and the Desktop UI for workflows. The
+`rejected_requests` and `script_failures` counters are counted but nothing acts
+on them, and the image's `limits` are not enforced. Drive workflow tasks with
+`ttasks` and the REST API. See [Not built yet](#not-built-yet).
 :::
 
-## How it fits together
+## Mental model
 
 1. A **workflow image** is built and published with `tariboy workflow build`.
-   See [Workflow images](/docs/workflow-images).
-2. An operator **binds** the image to a queue and gives every pool the image
-   names at least one agent.
-3. A task created in the bound queue **pins** the image version (its digest) in
-   the transaction that creates it and enters the image's `initial_status`.
-   Moving a tag later changes nothing for existing tasks, and a task is never
-   migrated to another version.
-4. Every non-terminal **status** has one owner. The owner leaves the status by
-   naming an **outcome**, which the status declares as a **transition** to the
-   next status.
+   It holds the status graph, status instructions, and scripts.
+2. An operator **binds** the image to a queue, gives every pool the image names
+   at least one agent, and stores the **queue secrets** the image requires.
+3. A task created in the bound queue **pins** the image version (its digest)
+   and enters the image's `initial_status`. Moving a tag later changes nothing
+   for existing tasks, and a task is never migrated to another version.
+4. Every non-terminal **status** has one owner, who leaves it by naming an
+   **outcome**; the status declares a **transition** per outcome.
+   - A **pool** status is worked by one agent, the **holder**, which the daemon
+     assigns. The holder sets **artifacts** and runs `ttasks advance`.
+   - A **customer** status waits for the customer's `ttasks advance`.
+   - A **script** status is owned by a **watch script** that the daemon runs
+     repeatedly until it reports an outcome.
+5. A transition out of a pool status may require artifacts and may declare
+   **checks**: scripts the daemon runs, in order, when the holder asks for the
+   transition. The transition applies only when every check passes.
 
-A task in a queue with no binding is a flexible task and behaves as described in
-[Native Tasks](/docs/tasks). Binding a queue never changes tasks that already
+A task in a queue with no binding is a flexible task and behaves as described
+in [Native Tasks](/docs/tasks). Binding a queue never changes tasks that already
 exist; unbinding it never changes the tasks that follow the workflow.
 
-### Example
+Workflow scripts and agents run as the same OS user. A gate protects against a
+skipped step, not against an agent that deliberately works around the process.
+See [Security and controls](/docs/security-controls#workflow-scripts-and-queue-secrets).
 
-The examples on this page use the `development` image from
-[Workflow images](/docs/workflow-images), bound to a queue `DEV` whose pool
-`developers` holds the agents `worker` and `reviewer`:
+## A complete example
+
+This example builds a small workflow for release notes, binds it to a queue,
+and drives one task to the end. It needs only `sh` and `python3` on the daemon
+host.
 
 | Status | Owner | Outcome | Next status | Needs |
 | --- | --- | --- | --- | --- |
-| `plan` | pool `developers` | `planned` | `approval` | artifact `plan` |
-| `approval` | customer | `approved` | `implement` | |
-| | | `changes_requested` | `plan` | |
-| `implement` | pool `developers` | `ready` | `review` | artifact `pull_request` and a check |
-| `review` | script | `merged` | `complete` | |
-| | | `changes_requested` | `implement` | |
-| `complete` | pool `developers` | `cleaned` | `done` | a check |
+| `draft` | pool `writers` | `drafted` | `review` | artifact `notes` and the check `notes-check.sh` |
+| `review` | customer | `approved` | `publish` | |
+| | | `changes_requested` | `draft` | |
+| | | `rejected` | `abandoned` | |
+| `publish` | script | `published` | `done` | |
 | `done` | terminal | | | |
+| `abandoned` | terminal, cancelled | | | |
 
-Two things in this table cannot happen yet. The transitions `ready` and
-`cleaned` declare `checks`, and checks run scripts, so `ttasks advance` refuses
-them with `checks_unavailable` before it writes anything. And `review` is owned
-by a script whose watch script never runs, so a task entering `review` stays
-there until an operator moves it with
-[`ttasks workflow move`](#operator-move-and-cancel), for example to `complete`
-(the `merged` outcome) or back to `implement`. The `plan`, `approval`, and
-`changes_requested` transitions work fully.
+### The source
+
+```text
+notes/
+  Workflowfile.yaml
+  statuses/draft.md
+  scripts/notes-check.sh
+  scripts/publish.sh
+```
+
+`Workflowfile.yaml`:
+
+```yaml
+schema_version: 1
+name: notes
+workflow_version: 0.1.0
+initial_status: draft
+
+requires_secrets: [NOTES_TOKEN]
+env:
+  PUBLISH_DELAY_SECONDS: "30"
+
+artifacts:
+  - name: notes
+    description: The release notes, as Markdown.
+  - name: published_at
+    description: When the publish script published the notes.
+
+statuses:
+  - id: draft
+    owner: { pool: writers }
+    instructions: ./statuses/draft.md
+    transitions:
+      - on: drafted
+        to: review
+        requires: [notes]
+        checks:
+          - script: ./scripts/notes-check.sh
+            timeout: 30s
+
+  - id: review
+    owner: customer
+    transitions:
+      - { on: approved, to: publish }
+      - { on: changes_requested, to: draft }
+      - { on: rejected, to: abandoned }
+
+  - id: publish
+    owner: script
+    watch:
+      script: ./scripts/publish.sh
+      every: 10s
+      timeout: 30s
+    transitions:
+      - { on: published, to: done }
+
+  - id: done
+    terminal: true
+
+  - id: abandoned
+    terminal: true
+    cancelled: true
+```
+
+`statuses/draft.md`:
+
+```markdown
+Write the release notes into the `notes` artifact, then advance with `drafted`.
+```
+
+`scripts/notes-check.sh`, a check: it passes when the notes have a heading and
+rejects otherwise, with a message the agent can act on.
+
+```sh
+#!/bin/sh
+notes="$(python3 -c 'import json,os
+task = json.load(open(os.environ["TARIBOY_TASK_FILE"]))
+print(next((a["value"] for a in task["artifacts"] if a["name"] == "notes"), ""))')"
+case "$notes" in
+  "# "*) exit 0 ;;
+esac
+printf '{"message":"the notes must start with a Markdown heading (# ...)"}\n' >"$TARIBOY_RESULT_FILE"
+exit "$TARIBOY_REJECT_EXIT"
+```
+
+`scripts/publish.sh`, a watch script: it stays quiet until
+`PUBLISH_DELAY_SECONDS` have passed since its first run in this visit of
+`publish`, then "publishes" the notes into the task directory and reports the
+outcome. It keys its state by the visit id, so a later visit of `publish`
+starts fresh.
+
+```sh
+#!/bin/sh
+set -eu
+[ -n "${NOTES_TOKEN:-}" ] || { echo "NOTES_TOKEN is missing" >&2; exit 1; }
+field() {
+  python3 -c 'import json,os,sys
+task = json.load(open(os.environ["TARIBOY_TASK_FILE"]))
+if sys.argv[1] == "visit":
+    print(task["visit"]["id"])
+else:
+    print(next(a["value"] for a in task["artifacts"] if a["name"] == sys.argv[1]))' "$1"
+}
+visit="$(field visit)"
+started="$TARIBOY_TASK_DIR/publish-$visit.started"
+[ -f "$started" ] || date +%s >"$started"
+if [ $(( $(date +%s) - $(cat "$started") )) -lt "$PUBLISH_DELAY_SECONDS" ]; then
+  echo "waiting for the publish delay"
+  exit "$TARIBOY_QUIET_EXIT"
+fi
+target="$TARIBOY_TASK_DIR/published-$visit.md"
+field notes >"$target"
+python3 -c 'import json,sys
+json.dump({"outcome": "published", "message": "published to " + sys.argv[1],
+           "artifacts": {"published_at": sys.argv[2]}}, open(sys.argv[3], "w"))' \
+  "$target" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TARIBOY_RESULT_FILE"
+```
+
+Both scripts must be executable: `chmod +x notes/scripts/*.sh`.
+
+### Bind and run it
+
+```bash
+tariboy workflow validate --path notes
+tariboy workflow build --path notes
+
+ttasks queue create --prefix REL --name "Release notes"
+ttasks queue pool set REL writers --agents writer --revision 0 --idempotency-key rel-pool
+printf '%s' "$NOTES_TOKEN" | ttasks queue secret set REL NOTES_TOKEN
+ttasks queue workflow set REL notes:0.1.0 --revision 0
+
+ttasks create --queue REL --title "Notes for 1.4"
+```
+
+`writer` is an existing agent with its loop and Goal enabled. The daemon
+assigns the new task, for example `REL-k3m9`, to it. From its iteration the
+agent runs:
+
+```bash
+ttasks workflow get REL-k3m9
+ttasks artifacts set REL-k3m9 notes 'Fixed the export button.'
+ttasks advance REL-k3m9 --outcome drafted --from draft
+# rejected: REL-k3m9 did not advance by "drafted"; a check says the condition does not hold
+# the notes must start with a Markdown heading (# ...)
+# hint: repeat with ttasks advance REL-k3m9 --outcome drafted --from draft
+ttasks artifacts set REL-k3m9 notes '# 1.4
+
+Fixed the export button.'
+ttasks advance REL-k3m9 --outcome drafted --from draft
+```
+
+The second advance waits for the check, which passes, and the task moves to
+`review`. The customer approves:
+
+```bash
+ttasks advance REL-k3m9 --outcome approved --from review
+```
+
+The task enters `publish`. The watch runs at once and every 10 seconds after
+each run, exits `111` while the delay lasts, and then reports `published`; the
+task ends in `done`. Inspect what ran:
+
+```bash
+ttasks workflow runs REL-k3m9
+ttasks workflow log REL-k3m9 3
+ttasks artifacts show REL-k3m9 published_at
+```
 
 ## Status and category
 
 A workflow task has two state fields. `status` is the workflow status
-(`plan`, `approval`, ...). `category` is one of the five familiar values, and it
+(`draft`, `review`, ...). `category` is one of the five familiar values, and it
 is what filters, blocking relations, and the active-descendants check use.
 Nobody sets a category; the daemon derives it from the status owner:
 
@@ -79,19 +253,16 @@ Nobody sets a category; the daemon derives it from the status owner:
 | Customer status | `wait_customer`, with an open customer wait | unchanged | `customer` |
 | Script status | `wait_customer`, with no customer wait | empty | `script` |
 | Terminal status | `done`, or `cancelled` when the status declares `cancelled: true` | unchanged | |
+| Cancelled with `ttasks cancel` | `cancelled`; the status stays where the task stopped | unchanged | |
 
 `waiting_on` is non-empty only while the category is `wait_customer`. It takes
-the values `customer` and `script` today; `pause` is reserved for a later
-release and never appears. A flexible task has `category` equal to `status` and
-an empty `waiting_on`.
+the values `customer` and `script`; `pause` is reserved for pausing, which is
+not built, and never appears. A flexible task has `category` equal to `status`
+and an empty `waiting_on`.
 
 In the task JSON a workflow task also carries `workflow_digest`,
 `workflow_name`, `workflow_version`, and `workflow_paused_reason`. The last is
 always empty today.
-
-Storage keeps the category in the existing `tasks.status` column and the
-workflow status in `tasks.workflow_status`; see
-[State model](/docs/architecture/state-model).
 
 On a workflow task `ttasks done`, `ttasks update --status`, `ttasks assign`
 (and `--assignee` on update or create), and `ttasks ready --claim` are refused
@@ -101,11 +272,12 @@ daemon assigns work; there is no claim command for a workflow task.
 
 ## Binding a queue
 
-Binding, unbinding, and reading a binding are operator-only (the host daemon
-acting as the customer), as are pools and triggers.
+Binding, unbinding, reading a binding, pools, secrets, and triggers are
+operator-only: the host daemon acting as the customer.
 
 ```bash
 ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key pool-1
+printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
 ttasks queue workflow set DEV development:latest --revision 0
 ttasks queue workflow get DEV
 ttasks queue workflow clear DEV --revision 1
@@ -114,32 +286,18 @@ ttasks queue workflow clear DEV --revision 1
 The reference is `NAME`, `NAME:TAG`, or `NAME:<digest>` and is resolved to a
 digest when the binding is set; `NAME` means `latest`. To move a queue to a
 newer version, run `queue workflow set` again with the current binding
-revision: the task already created keeps its old version, and only tasks
-created afterwards pin the new one. `--revision` is `0` for a first binding and
-the revision shown by `queue workflow get` for a rebind or a `clear`. Binding
-the digest that is already bound changes nothing and keeps the revision,
-whatever revision is given, so a retried bind succeeds.
+revision: tasks already created keep their version, and only tasks created
+afterwards pin the new one. `--revision` is `0` for a first binding and the
+revision shown by `queue workflow get` for a rebind or a `clear`. Binding the
+digest that is already bound changes nothing and keeps the revision, whatever
+revision is given, so a retried bind succeeds.
 
-Secrets the image lists in `requires_secrets` live per queue. Set them before
-binding:
-
-```bash
-printf '%s' "$TOKEN" | ttasks queue secret set DEV GH_TOKEN
-ttasks queue secret ls DEV
-```
-
-The value comes from `--value` or stdin; prefer stdin, since an argument shows
-in the process list. One trailing newline of stdin is stripped, unlike
-artifacts, because a piped token almost always carries one. A key matches
-`[A-Za-z_][A-Za-z0-9_]*` and does not start with `TARIBOY_`; a value is
-non-empty UTF-8 text of at most 64 KiB. Values are never returned by a command
-or route and are not written to events. Database backups hold them in plaintext,
-as they hold agent secrets.
+A bind checks pools first, then secrets:
 
 | Error | Meaning |
 | --- | --- |
 | `workflow_pool_empty` | A pool the image names is missing or has no agents. The error lists the pools. Emptying a pool that the bound image uses, or that the pinned version of an unfinished task in the queue uses, is refused with the same code. |
-| `workflow_secret_missing` | A secret the image lists in `requires_secrets` has no value in the queue. The error lists the names. Removing a secret the bound image requires is refused with the same code. |
+| `workflow_secret_missing` | A secret the image lists in `requires_secrets` has no value in the queue. The error lists the names in `details.secrets`. |
 | `revision_conflict` | The revision is not the current one; read the binding again and retry. |
 | `not_found` | No published image matches the reference. |
 | `invalid_workflow_ref` | The reference is malformed. |
@@ -156,6 +314,36 @@ closed, is refused with `workflow_in_use`; nightly task retention removes closed
 task trees, which frees the image later. See
 [Workflow images](/docs/workflow-images).
 
+### Queue secrets
+
+Secrets the image lists in `requires_secrets` live per queue and reach the
+queue's workflow scripts as environment variables of the same name.
+
+```bash
+printf '%s' "$TOKEN" | ttasks queue secret set DEV GH_TOKEN
+ttasks queue secret set DEV GH_TOKEN --value "$TOKEN"   # shows in the process list
+ttasks queue secret ls DEV
+ttasks queue secret rm DEV GH_TOKEN
+```
+
+- The value comes from `--value` or stdin; prefer stdin, since an argument
+  shows in the process list and shell history. One trailing newline of stdin is
+  stripped, unlike artifacts, because a piped token almost always carries one.
+- A key matches `[A-Za-z_][A-Za-z0-9_]*` and does not start with `TARIBOY_`
+  (`invalid_secret_key`). A value is non-empty UTF-8 text (`invalid_secret`) of
+  at most 64 KiB (`secret_too_large`). Setting a key again replaces its value.
+- `ls` returns keys and update times. No command or route ever returns a value,
+  and the `queue.secret_set` and `queue.secret_removed` events carry only the
+  key.
+- Removing a secret that the queue's **bound** image requires is refused with
+  `workflow_secret_missing`. The check does not look at older workflow versions
+  still pinned by unfinished tasks: a script of such a task that needs the
+  removed secret fails.
+- Database backups hold queue secrets in plaintext, as they hold agent secrets.
+
+A queue secret and an agent secret of the same name are independent values. In
+a `run_as: agent` check the queue value wins.
+
 ### Creating a task in a bound queue
 
 A task created in a bound queue, as a root or as a child of a task in that
@@ -164,6 +352,13 @@ or left `open` as described under [Dispatch](#dispatch). The creation is refused
 with `workflow_managed` when it names an explicit assignee, because the workflow
 assigns. A task cannot enter a bound queue by import, and a tree that contains a
 workflow task cannot be exported; both are refused with `workflow_managed`.
+
+### Binding from Compose
+
+`tariboy compose up` can bind a queue with `task_queues.<PREFIX>.workflow`; see
+[Compose](/docs/binaries/compose#queue-workflows). Compose builds Store
+workflows first, then binds, never clears a binding, and never handles a secret
+value: set secrets with `ttasks queue secret set` before `compose up`.
 
 ## Dispatch
 
@@ -174,8 +369,8 @@ any assigned task.
 
 1. **The sticky rule.** If the task already had a holder for this pool and that
    agent is still a member, the same agent is assigned again, whatever it is
-   doing. It keeps its worktree and context across a loop such as `plan` to
-   `approval` and back to `plan`.
+   doing. It keeps its worktree and context across a loop such as `draft` to
+   `review` and back to `draft`.
 2. **Otherwise an eligible member.** A new holder must be enabled, have its
    loop and Goal enabled, not be halted, have no current Goal, and have no
    other assigned `open` or `in_progress` task that Goal could select (a task
@@ -198,9 +393,10 @@ the status instructions. The customer gets the usual question notification.
 The task is not a valid Goal while it waits in a customer status, so the
 holder's Goal is released at once and dispatch may give it other work; the
 customer-wait grace applies only to a holder's own question.
-Entering a script status sets `wait_customer`, clears the assignee, and opens no
-customer wait. Entering a terminal status sets `done` (or `cancelled`) and
-records `completed_at`.
+
+Entering a script status sets `wait_customer`, clears the assignee, opens no
+customer wait, and schedules the watch script to run at once. Entering a
+terminal status sets `done` (or `cancelled`) and records `completed_at`.
 
 ## Artifacts
 
@@ -222,6 +418,8 @@ ttasks artifacts show DEV-ab12 plan
   customer and the operator may set one on any task that is not finished.
   Anyone else is refused with `not_holder`, and a finished task with
   `workflow_closed`.
+- A script sets artifacts through its result file; the author is then
+  `script:<path>`, for example `script:./scripts/publish.sh`.
 - Every write is a new row with its author and time. The newest is current;
   `artifacts show` prints it and the earlier values, newest first.
 - An `artifact.set` event records the name, author, and size, never the value.
@@ -229,34 +427,58 @@ ttasks artifacts show DEV-ab12 plan
 
 ## Advancing a task
 
-`ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT]` leaves the
-current status by one of its outcomes. An agent may advance a task it holds in a
-pool status; the customer or operator may advance a task in a customer status.
-Nobody can advance a script or terminal status.
+`ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT] [--no-wait]`
+leaves the current status by one of its outcomes. An agent may advance a task it
+holds in a pool status; the customer or operator may advance a task in a
+customer status. Nobody can advance a script or terminal status: its watch
+script decides.
 
 `--from` (`from` in the REST body and the agent action) names the status the
 caller believes the task is in. When the task is in another status the advance
 is refused with `status_changed` and writes nothing, so a retry after a timeout,
 or a double click, cannot apply a second transition that happens to share the
-outcome name. Without `--from` the advance applies to whatever status is
-current. The `workflow_managed` hint and `ttasks workflow get` print the command
-with `--from` filled in.
+outcome name. The `workflow_managed` hint and `ttasks workflow get` print the
+command with `--from` filled in. A message is limited to 4 KiB.
 
-```bash
-ttasks artifacts set DEV-ab12 plan --file plan.md
-ttasks advance DEV-ab12 --outcome planned --from plan --message "Plan ready for review"
-# as the customer, at the approval status
-ttasks advance DEV-ab12 --outcome approved --from approval
-```
+Every advance records a **transition request**.
 
-A transition without checks applies in the request's own transaction: the
-request is stored as `applied`, the visit of the old status is closed with the
-outcome and message, the new status is entered, and `workflow.transition_requested`
-and `workflow.transitioned` events are recorded together. The command prints
-the request. A message is limited to 4 KiB.
+- **Without checks** the request applies in its own transaction: it is stored
+  as `applied`, the visit of the old status is closed with the outcome and
+  message, the new status is entered, and `workflow.transition_requested` and
+  `workflow.transitioned` are recorded together.
+- **With checks** the request is stored as `pending` and the route returns at
+  once with `state: pending` and `wait_seconds`: the sum of the checks'
+  timeouts (each `60s` when not declared) plus 30 seconds. The daemon runs the
+  checks in declared order and stops at the first that does not pass. When the
+  last one passes it applies the transition with the request's outcome and
+  message; otherwise it closes the request as `rejected` or `failed`. The
+  checks run to the end even when the caller goes away, and a transition that
+  applies later reaches the agent through its next Goal wake.
+
+`ttasks advance` waits for a pending request: it polls the request every second
+for up to `wait_seconds`, then prints the result and exits.
+
+| Request state | Meaning | `ttasks advance` |
+| --- | --- | --- |
+| `pending` | Checks are still running. At most one request per task is pending. | Waits. With `--no-wait` it prints the pending request and exits `0`. If the wait runs out it says the request is still pending, names `ttasks workflow get KEY`, and exits `1`. |
+| `applied` | The transition happened. | Prints the request and exits `0`. |
+| `rejected` | A check exited `112`. `result_message` is the script's `message`, or "the check's condition does not hold". | Prints `rejected:`, the message, and `hint: repeat with ttasks advance KEY --outcome NAME [--from STATUS]` to stderr; exits `1`. |
+| `failed` | A check failed to run, or the request could not apply. `result_message` is the reason followed by a `log: <path>` line when the run has a log. | Prints `failed:`, the reason with the log path, and `hint: ttasks workflow log KEY RUN` to stderr; exits `1`. |
+| `cancelled` | An operator moved or cancelled the task while the request was pending. | Prints `cancelled:` and the reason to stderr; exits `1`. |
+
+With `--json` the request object is printed on stdout in every case, and the
+exit code is the same. A REST or agent-socket caller polls
+`GET /api/tasks/{key}/workflow/requests/{id}` (agent action `request_get`).
+
+A rejection is something the agent can fix: the script's message says what. A
+failure is a broken script, a timeout, or a broken result, which the agent
+usually cannot fix; it should read the log and tell the customer. A rejection
+increments the visit's `rejected_requests` counter and resets
+`script_failures`; a failed check increments `script_failures`. Nothing acts on
+the counters yet.
 
 The daemon applies these refusals in this order, so the first one that fits is
-the one reported:
+the one reported. A refusal writes nothing.
 
 | Order | Code | HTTP | Meaning |
 | --- | --- | --- | --- |
@@ -265,14 +487,198 @@ the one reported:
 | 3 | `workflow_not_bound` | 409 | The task has no workflow (a flexible task). |
 | 4 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
 | 5 | `workflow_paused` | 409 | The task is paused. Reserved; it does not occur today. |
-| 6 | `status_changed` | 409 | `from` is set and the task is in another status; the error carries the current `status`. Nothing is written. |
+| 6 | `status_changed` | 409 | `from` is set and the task is in another status; the error carries the current `status`. |
 | 7 | `status_unknown` | 409 | The pinned image does not declare the task's status. |
 | 8 | `not_holder` | 403 | The caller does not own the status: an agent that is not the holder, an agent in a customer status, or anyone in a script status. |
 | 9 | `outcome_unknown` | 400 | The status does not declare the outcome; the error lists the outcomes. |
 | 10 | `artifact_missing` | 409 | A required artifact has no value; the error lists the missing names. |
 | 11 | `transition_pending` | 409 | Another request of the task is still pending. |
-| 12 | `checks_unavailable` | 409 | The transition declares `checks`, which cannot run yet. Nothing is written. |
+| 12 | `script_running` | 409 | The transition has checks and a script run of the task, cancelled when the task left its previous status, is still stopping. Retry shortly. |
 | 13 | `revision_conflict` | 409 | The task changed while the request was running. Retry. |
+
+## Watch scripts
+
+A script status is owned by its watch script. Entering the status runs it once
+at once, then again `every` after each run finishes. The worker checks for due
+watches at least every two seconds, so the actual pause can be a little longer
+than `every`. Runs of one task never overlap.
+
+- Exit `111` means nothing changed: the daemon schedules the next run and
+  resets `script_failures`.
+- Exit `0` with an `outcome` in the result file applies that transition. The
+  daemon stores the script's artifacts first, then records an applied
+  transition request authored by `script:<path>`, so the visit history and the
+  events read as for any other transition. The `message` becomes the
+  transition message.
+- A failure increments the visit's `script_failures`, records a
+  `workflow.script_failed` event with the message and log path, and schedules
+  the next run: the watch keeps trying.
+
+Leaving the status by any route, or cancelling the task, stops the watch: the
+schedule is cleared, a pending run is cancelled, and a running one is killed.
+
+## Script protocol
+
+A script is an executable file inside the unpacked workflow image. The daemon
+runs it directly, with no arguments, no shell wrapper, and stdin from
+`/dev/null`, in its own process group. Scripts may call any external tool. They
+get no daemon API and no agent tools socket: the only channel back is the
+result file.
+
+### Exit codes
+
+| Code | Check | Watch script |
+| --- | --- | --- |
+| `0` | The condition holds; the next check runs, or the transition applies. | An outcome is ready; `outcome` in the result file names it. |
+| `111` (`TARIBOY_QUIET_EXIT`) | Invalid: a failure. | Nothing changed; stay quiet. The result file is not read. |
+| `112` (`TARIBOY_REJECT_EXIT`) | The condition does not hold; `message` goes to the agent. | Invalid: a failure. |
+| any other | A failure. | A failure. |
+
+These are failures too: the timeout, a process killed by a signal, a result file
+that is not a single valid JSON object or exceeds its limits, an unknown field
+in it, an undeclared outcome, an undeclared or empty artifact, a watch that
+exits `0` without an `outcome`, and a run that cannot start (a missing or
+non-executable script, an unusable working directory, or a `run_as: agent`
+check whose task has no holder). A failure is never silent: a failed check
+closes its request as `failed` with the log path, and every failure counts
+toward the visit's `script_failures`.
+
+On a timeout the daemon sends `SIGTERM` to the process group, then `SIGKILL`
+two seconds later. Children the script leaves behind are killed when it exits.
+
+### Result file
+
+The script may write JSON to `TARIBOY_RESULT_FILE`. The file is optional.
+
+```json
+{
+  "outcome": "merged",
+  "message": "Pull request #42 merged as 9f2c1e7.",
+  "artifacts": { "merge_commit": "9f2c1e7" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `outcome` | Required from a watch script that exits `0`; must be an outcome of the current status. Ignored from a check. |
+| `message` | At most 4 KiB. A rejection's message goes to the agent; a watch outcome's message becomes the transition message. |
+| `artifacts` | Names declared by the image, each a non-empty UTF-8 value of at most 64 KiB. Stored, authored by `script:<path>`, when a check passes or a watch reports an outcome. |
+
+The whole file is at most 64 KiB, UTF-8, and one JSON object; any other field is
+an error. An empty or missing file is an empty result.
+
+### Environment
+
+| Variable | Value |
+| --- | --- |
+| `TARIBOY_TASK_KEY` | The task key. |
+| `TARIBOY_TASK_QUEUE` | The task's queue prefix. |
+| `TARIBOY_WORKFLOW_NAME` | The pinned workflow name. |
+| `TARIBOY_WORKFLOW_VERSION` | The pinned `workflow_version`. |
+| `TARIBOY_WORKFLOW_STATUS` | The status the run belongs to. |
+| `TARIBOY_WORKFLOW_OUTCOME` | The requested outcome. Checks only; absent from a watch run. |
+| `TARIBOY_WORKFLOW_DIR` | Root of the unpacked, read-only workflow image. |
+| `TARIBOY_TASK_FILE` | The task snapshot, `runs/<run-id>/task.json`. |
+| `TARIBOY_TASK_DIR` | `<base-dir>/tasks/<KEY>/state/`, an owner-only directory that persists for the life of the task. |
+| `TARIBOY_RESULT_FILE` | Where the script writes its result, `runs/<run-id>/result.json`. |
+| `TARIBOY_QUIET_EXIT` | `111`. |
+| `TARIBOY_REJECT_EXIT` | `112`. |
+
+The image's `env` values and the queue secrets are present under their own
+names.
+
+### Task snapshot
+
+`TARIBOY_TASK_FILE` is a JSON snapshot taken when the run is prepared. It
+contains no secret and no environment value.
+
+| Field | Meaning |
+| --- | --- |
+| `key`, `queue` | The task. |
+| `title`, `description`, `priority`, `customer` | Task fields. Title, description, and artifact values are untrusted input. |
+| `status`, `category` | The workflow status of the run and the task's category. |
+| `outcome`, `message` | The transition request a check verifies; empty for a watch run. |
+| `visit` | `{id, entered_at}`: the stay in the status that the run belongs to. |
+| `holders` | Map of pool name to the agent that last held the task for it. |
+| `artifacts` | Current artifacts: `name`, `value`, `author`, `created_at`. |
+| `workflow` | `name`, `version`, and `digest` of the pinned image. |
+
+A watch script that keeps state in `TARIBOY_TASK_DIR` should key it by
+`visit.id`. When the script reported an outcome, the daemon applied it, and the
+task later came back to the same status, the new run has a new visit id and
+should start fresh. When the daemon restarted before it recorded the outcome,
+the next run has the same visit id, and the script can see its earlier state
+and report the outcome again.
+
+### Run modes
+
+| `run_as` | Working directory | Environment, later entries winning |
+| --- | --- | --- |
+| `queue` (default) | `TARIBOY_TASK_DIR` | the daemon's own environment, then the image's `env`, then the queue secrets |
+| `agent` | the holder's effective working directory | the daemon's own environment, the holder's environment and agent secrets (as its own background scripts get them), then the image's `env`, then the queue secrets |
+
+Watch scripts always run as `queue`, so they do not depend on which agent held
+the task. `run_as: agent` is for checks that inspect a worktree or a local
+branch. The holder is fixed when the run is created: the task's assignee.
+
+In both modes the protocol variables come last and cannot be overridden by any
+other layer. `TARIBOY_TOOLS_SOCKET`, `TARIBOY_DAEMON_SOCKET`,
+`TARIBOY_PLUGIN_SOCKET`, and `TARIBOY_PLUGIN_TOKEN` are removed from every
+layer. A queue secret overrides an agent environment value or agent secret of
+the same name.
+
+### Redaction
+
+Queue secret values of at least 6 bytes are replaced with `[redacted]` in a
+script's message and in the artifact values it returns before they are stored,
+and in the log text that `ttasks workflow log` and the log route serve. The
+redaction is a filter of the queue's **current** values:
+
+- a secret rotated or removed after a run is no longer redacted in that run's
+  old log;
+- an encoded form of a value (base64, URL encoding, a split string) is never
+  redacted;
+- the log file on disk is not redacted;
+- an agent secret printed by a `run_as: agent` check is not redacted, which is
+  why that log is readable only by the customer and that holder.
+
+A script author must not print secrets.
+
+### Runs and logs
+
+Every run is a durable record with its kind, script, mode, state, verdict, exit
+code, message, times, and log path. Its combined stdout and stderr go to an
+owner-only log that starts with the script path and working directory.
+
+| Run state | Meaning |
+| --- | --- |
+| `pending` | Created; the worker starts it soon. |
+| `running` | The process runs. |
+| `finished` | The process ended; `verdict` is `pass`, `reject`, `outcome`, `quiet`, or `failure`. |
+| `cancelled` | The task left the status or was cancelled before or during the run; the process was killed. |
+| `interrupted` | The daemon stopped while the run was in progress. |
+
+After a daemon restart every run that was `running` is recorded as
+`interrupted`. An interrupted check closes its request as `failed` and counts as
+a script failure; an interrupted watch is scheduled to run again at once.
+Pending runs start normally.
+
+Who can read what:
+
+- Runs (`workflow runs`, the run route, the `runs` of the task view) are visible
+  to anyone who can read the task.
+- A run **log** is readable by the customer and by an agent that is a holder of
+  the task. The log of a `run_as: agent` run is readable only by the customer
+  and the holder recorded on that run. Anyone else gets `forbidden`.
+
+```bash
+ttasks workflow runs DEV-ab12
+ttasks workflow log DEV-ab12 7
+ttasks workflow log DEV-ab12 7 --max-bytes 4096
+```
+
+`workflow log` prints the last 64 KiB by default, at most 1 MiB; when the log is
+longer, a first line on stderr says so.
 
 ## Operator move and cancel
 
@@ -289,17 +695,17 @@ ttasks cancel DEV-ab12
 `workflow move` moves the task to any status of its pinned image regardless of
 outcomes, requirements, and checks. It needs `--to` and a non-empty `--reason`
 (`reason_required`); an unknown status fails with `status_unknown` and lists the
-declared statuses. The move closes the current visit, enters the target as an
-ordinary status entry (so it dispatches or opens a customer wait just as an
-advance would), and records `workflow.moved` with the reason. A move out of a
-terminal status reopens the task. Moving to a script-owned status leaves the
-task waiting, and the move is how a task leaves one today: from the example,
-`ttasks workflow move DEV-ab12 --to complete --reason 'PR merged'`.
+declared statuses. The move stops the scripts of the current status, cancels a
+pending request, closes the current visit, enters the target as an ordinary
+status entry (so it dispatches, opens a customer wait, or starts a watch just as
+an advance would), and records `workflow.moved` with the reason. A move out of a
+terminal status reopens the task.
 
 `cancel` closes any unfinished task as `cancelled` (`workflow_closed` when it is
-already closed), cancels a pending request, and resolves the workflow's own
-wait and the current assignee's questions to the customer. The workflow status stays as the record of
-where the task stopped. It records `workflow.cancelled`.
+already closed). It stops the scripts of the current status, cancels a pending
+request, and resolves the workflow's own wait and the current assignee's
+questions to the customer. The workflow status stays as the record of where the
+task stopped. It records `workflow.cancelled`.
 
 ## Questions on a workflow task
 
@@ -314,15 +720,13 @@ Agents still use `ttasks ask` and `ttasks comment`.
 - **In a customer status** the task already waits on the customer through the
   workflow's own wait. A comment that mentions the customer does not add a
   second wait, and a comment does not answer the workflow's question: only an
-  outcome does. Leaving the status by any route resolves that wait; so does
-  leaving any other status, or a cancel, should the workflow have a wait of its
-  own open there.
+  outcome does. Leaving the status by any route resolves that wait.
 - **In a script status** a comment does not change the category.
 
 ## The task view
 
 `ttasks workflow get KEY` (`--json` for the whole view) shows where a task is
-and what it may do next. Both agents and the operator can read it.
+and what it may do next. Agents and the operator can read it.
 
 | Field | Meaning |
 | --- | --- |
@@ -334,7 +738,33 @@ and what it may do next. Both agents and the operator can read it.
 | `outcomes` | Each outcome with `to`, `requires`, `missing` (required artifacts with no value), and `checks` (script paths). A finished task has none. |
 | `artifacts` | The current value of each artifact. |
 | `visits` | Every stay in a status with who entered it, when it was left, and by which outcome and message. |
-| `last_request` | The latest transition request and its state. |
+| `last_request` | The latest transition request: `id`, `outcome`, `message`, `actor`, `state`, `result_message`, times, and `wait_seconds` while pending. |
+| `runs` | The 20 most recent script runs, newest first. |
+
+## Commands
+
+| Command | Who | Purpose |
+| --- | --- | --- |
+| `tariboy workflow validate\|build\|ls\|inspect\|rm` | operator | Manage workflow images; see [Workflow images](/docs/workflow-images#commands). |
+| `ttasks queue workflow set QUEUE REF [--revision N]` | operator | Bind an image. |
+| `ttasks queue workflow get QUEUE` | operator | Read the binding. |
+| `ttasks queue workflow clear QUEUE --revision N` | operator | Unbind. |
+| `ttasks queue pool set\|list\|get` | operator | Manage pools; see [Agent pools](#agent-pools). |
+| `ttasks queue secret set QUEUE KEY [--value V]` | operator | Set a secret; stdin when `--value` is absent. |
+| `ttasks queue secret ls QUEUE` | operator | List secret keys. |
+| `ttasks queue secret rm QUEUE KEY` | operator | Remove a secret. |
+| `ttasks workflow get KEY` | agent, operator | The task view. |
+| `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` | holder, operator | Set an artifact; stdin when no value. |
+| `ttasks artifacts ls KEY` | agent, operator | Current artifacts. |
+| `ttasks artifacts show KEY NAME` | agent, operator | One artifact and its history. |
+| `ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT] [--no-wait]` | holder, customer | Declare an outcome and wait for its checks. |
+| `ttasks workflow runs KEY` | agent, operator | List script runs. |
+| `ttasks workflow log KEY RUN [--max-bytes N]` | holder, operator | Read a run log. |
+| `ttasks workflow move KEY --to STATUS --reason TEXT` | operator | Move without checks. |
+| `ttasks cancel KEY` | operator | Cancel the task. |
+
+"agent" means any agent that can read the task; "holder" means the agent that
+holds it, under the rules above.
 
 ## REST routes
 
@@ -346,36 +776,63 @@ generated OpenAPI document is the authority for request and response schemas.
 | `PUT` | `/api/task-queues/{queue}/workflow` | bind an image (`ref`, `revision`) | operator |
 | `GET` | `/api/task-queues/{queue}/workflow` | read the binding | operator |
 | `DELETE` | `/api/task-queues/{queue}/workflow` | unbind (`revision`) | operator |
-| `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`) | agent, operator |
+| `PUT` | `/api/task-queues/{queue}/secrets/{key}` | set a secret (`value`); returns `queue`, `key`, `updated_at` | operator |
+| `GET` | `/api/task-queues/{queue}/secrets` | list `secrets` (`key`, `updated_at`) | operator |
+| `DELETE` | `/api/task-queues/{queue}/secrets/{key}` | remove a secret | operator |
+| `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`); returns the request | agent, operator |
+| `GET` | `/api/tasks/{key}/workflow/requests/{id}` | one transition request | agent, operator |
 | `PUT` | `/api/tasks/{key}/artifacts/{name}` | set an artifact (`value`) | agent, operator |
 | `GET` | `/api/tasks/{key}/artifacts` | list current artifacts | agent, operator |
 | `GET` | `/api/tasks/{key}/artifacts/{name}` | read an artifact and its history | agent, operator |
 | `GET` | `/api/tasks/{key}/workflow` | the task view | agent, operator |
+| `GET` | `/api/tasks/{key}/workflow/runs` | list `runs`, newest first | agent, operator |
+| `GET` | `/api/tasks/{key}/workflow/runs/{id}` | one run | agent, operator |
+| `GET` | `/api/tasks/{key}/workflow/runs/{id}/log` | the redacted log tail (`max_bytes`); returns `run_id`, `text`, `truncated` | holder, operator |
 | `POST` | `/api/tasks/{key}/workflow/move` | move to a status (`to`, `reason`) | operator |
 | `POST` | `/api/tasks/{key}/cancel` | cancel | operator |
 
-Agents reach the same operations through `advance`, `artifact_set`,
-`artifact_ls`, `artifact_show`, and `workflow_get` over their identity-bound
-socket.
+Agents reach the agent operations over their identity-bound socket with the
+actions `advance`, `request_get`, `artifact_set`, `artifact_ls`,
+`artifact_show`, `workflow_get`, `workflow_runs`, and `workflow_run_log`.
 
 ## Stored state
 
-Migration `0055` adds the following. See
-[State model](/docs/architecture/state-model).
+See [State model](/docs/architecture/state-model) for the tables.
 
 | Table or column | Holds |
 | --- | --- |
 | `tasks.workflow_digest` | The pinned image digest; `NULL` for a flexible task. |
 | `tasks.workflow_status` | The current workflow status. |
 | `tasks.workflow_paused_reason` | Reserved for pause; always empty. |
-| `task_queue_workflows` | One binding per queue: digest, revision, update time. Its digest references the image row with `ON DELETE RESTRICT`. |
+| `task_queue_workflows` | One binding per queue: digest, revision, update time. |
+| `task_queue_secrets` | Queue secret values in plaintext, per queue and key (migration `0056`). |
 | `task_workflow_holders` | The last holder of each task and pool, with the dispatch time. |
-| `task_status_visits` | One row per stay in a status, with its outcome and message. |
-| `task_transition_requests` | Each `advance`, with its state (`pending`, `applied`, `rejected`, `failed`, `cancelled`); at most one is `pending` per task. |
+| `task_status_visits` | One row per stay in a status, with its outcome and message, the `rejected_requests`, `script_failures`, and `idle_iterations` counters, and `next_watch_at`, when a script status's watch runs next (migration `0057`). |
+| `task_transition_requests` | Each request, with its state and `result_message`; at most one is `pending` per task. |
 | `task_artifacts` | Every artifact value with its author and time. |
+| `task_script_runs` | Every run: kind, script, mode, state, verdict, exit code, message, process id, times, log path, and for a `run_as: agent` check the `holder` (migrations `0057`, `0058`). At most one run of a task is `pending` or `running`. |
 
-Migration `0054` removed the earlier workflow engine. Tasks that it had managed
-became flexible tasks and keep a `workflow.removed` event.
+Files of a task live under `<base-dir>/tasks/<KEY>/`; directories are `0700`
+and files `0600`:
+
+```text
+<base-dir>/tasks/<KEY>/
+  state/                 TARIBOY_TASK_DIR, kept for the life of the task
+  runs/<run-id>/
+    task.json            the snapshot the run received
+    result.json          the result file, when the script wrote one
+    run.log              combined stdout and stderr, not redacted
+```
+
+Nightly retention deletes the rows of closed task trees, run records included.
+It does not yet remove `<base-dir>/tasks/<KEY>/`.
+
+Events recorded on a workflow task: `workflow.transition_requested`,
+`workflow.transitioned`, `workflow.transition_rejected` (with the script's
+message), `workflow.transition_failed` (with the reason and log path),
+`workflow.script_run` (every run that ended, with its state, verdict, and exit
+code), `workflow.script_failed` (a failed watch run), `workflow.moved`,
+`workflow.cancelled`, and `artifact.set`.
 
 ## Error codes
 
@@ -384,13 +841,14 @@ became flexible tasks and keep a `workflow.removed` event.
 | `workflow_managed` | 409 | The command does not apply to a task with a workflow. |
 | `workflow_not_bound` | 409 | The task has no workflow. |
 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
+| `workflow_paused` | 409 | Reserved for pausing; does not occur today. |
 | `workflow_in_use` | 409 | A queue binds the image or a task, open or closed, pins it. |
 | `workflow_pool_empty` | 409 | A pool the image names is missing or has no agents. |
-| `workflow_secret_missing` | 409 | A secret the image requires has no value in the queue. |
+| `workflow_secret_missing` | 409 | A secret the image requires has no value in the queue, or `secret rm` would remove a secret the bound image requires. |
 | `workflow_unavailable` | 503 | The workflow image store is not available. |
 | `queue_workflow_not_found` | 404 | The queue has no binding. |
 | `not_holder` | 403 | The caller does not own the current status. |
-| `forbidden` | 403 | A caller that is not the customer used an operator-only route: binding, move, or cancel. |
+| `forbidden` | 403 | A caller that is not the customer used an operator-only route, or a caller that may not read a run log asked for it. |
 | `status_changed` | 409 | An advance named `from`, and the task is in another status. |
 | `outcome_unknown` | 400 | The status does not declare that outcome. |
 | `status_unknown` | 400, 409 | The image does not declare that status (400 for a move, 409 for a task in an undeclared status). |
@@ -400,33 +858,36 @@ became flexible tasks and keep a `workflow.removed` event.
 | `invalid_artifact` | 400 | The value is empty or not valid UTF-8. |
 | `artifact_too_large` | 413 | The value exceeds 64 KiB. |
 | `transition_pending` | 409 | Another transition request is still pending. |
-| `checks_unavailable` | 409 | The transition declares checks, which cannot run yet. |
+| `script_running` | 409 | A cancelled script run of the task is still stopping; retry the advance shortly. |
+| `run_not_found` | 404 | The task has no run with that id. |
+| `not_found` | 404 | Unknown task, request, image, or queue secret, or a run that has no readable log yet. |
+| `run_log_invalid` | 409 | The run's stored log path is not `<base-dir>/tasks/<KEY>/runs/<id>/run.log`, a component is a symlink, or the file is not a regular file. |
+| `invalid_request` | 400 | `max_bytes` is not a non-negative whole number. |
+| `invalid_secret_key` | 400 | A secret key is malformed or starts with `TARIBOY_`. |
+| `invalid_secret` | 400 | A secret value is empty or not valid UTF-8. |
+| `secret_too_large` | 413 | A secret value exceeds 64 KiB. |
 | `reason_required` | 400 | A move needs a reason. |
 | `invalid_message` | 400 | The transition message exceeds 4 KiB. |
 | `revision_conflict` | 409 | The binding, pool, or task revision is not the current one. |
 
-## Not yet available
+`rejected` and `failed` are not error codes: they are states of a transition
+request, and `workflow.transition_rejected` and `workflow.transition_failed` are
+the events that record them. The advance call itself succeeds and returns the
+pending request.
 
-These are designed but not built. Do not rely on them.
+## Troubleshooting
 
-- **Scripts do not run.** Checks and watch scripts are never executed. A
-  transition that declares `checks` is refused with `checks_unavailable`, and a
-  status owned by a script waits until an operator moves the task. Transition
-  requests are therefore only ever `applied`.
-- **No queue secrets.** An image that lists `requires_secrets` binds without
-  them.
-- **No pause and resume.** `workflow_paused_reason` exists and is always empty,
-  and `waiting_on: pause` never appears. Stall limits (`idle_iterations`,
-  `rejected_requests`, `script_failures`, `unavailable_grace`) are stored in the
-  image but not enforced.
-- **The Goal block of the agent prompt** still shows the flexible-task guidance
-  for every task, including a workflow task. Agents learn the outcomes from
-  `ttasks workflow get` and from the `workflow_managed` error.
-- **Desktop has no workflow UI.** The task list does not separate status from
-  category, there are no outcome buttons, and queue settings cannot bind a
-  workflow. Drive workflow tasks through `ttasks` and the REST API.
-- **Compose cannot bind a workflow** to a queue; it still rejects a
-  `task_queues.<prefix>.workflow` value and a non-empty `workflows:` map.
+| Symptom | Cause and fix |
+| --- | --- |
+| `queue workflow set` fails with `workflow_secret_missing` | Set every key in `details.secrets` with `ttasks queue secret set`, then bind again. |
+| A new task stays in category `open` | No pool member is eligible: enable the agent, its loop, and Goal, clear a halt, or finish its other assigned task. The daemon retries every minute. |
+| `advance` prints `rejected:` | A check says the condition does not hold. Fix what its message says, then repeat the advance. |
+| `advance` prints `failed:` | A check could not run or broke the protocol. Read the log it names with `ttasks workflow log KEY RUN`. A check that failed with `the daemon restarted during check ...` was interrupted; repeat the advance. |
+| `advance` says the request is still pending | The checks run longer than `wait_seconds` allows the CLI to wait. They keep running; follow them with `ttasks workflow get KEY`. |
+| `advance` fails with `script_running` | A watch or check of the previous status is still being killed. Retry in a few seconds. |
+| A script status never moves | Read `ttasks workflow runs KEY`. A run of `quiet` verdicts means the condition has not happened; `failure` verdicts mean a broken script: read its log. The operator can always `ttasks workflow move` the task. |
+| `workflow log` returns `forbidden` | The caller is neither the customer nor a holder of the task, or the run is a `run_as: agent` check of another holder. |
+| A secret value shows in a log | It was rotated or removed after the run, or it was printed encoded. Rotate the secret and fix the script. |
 
 ## Agent pools
 
@@ -492,3 +953,23 @@ persisted cursor, so a restart can replay a message without creating a second
 task. A new trigger matches only messages committed after it was created.
 
 The routes keep their `workflow-triggers` path for compatibility.
+
+## Not built yet
+
+These are designed but not built. Do not rely on them.
+
+- **Pause and resume.** The daemon does not pause a stalled task, and there is
+  no continue or release decision for the customer. `workflow_paused_reason`
+  stays empty and `waiting_on: pause` never appears. The visit counters
+  `rejected_requests` and `script_failures` are counted, but no limit acts on
+  them, and `idle_iterations` is not counted.
+- **Holder availability.** A holder that is disabled, halted, or removed from
+  its pool keeps the task; nothing reassigns it. `unavailable_grace` is not
+  enforced.
+- **The Goal block of the agent prompt** still shows the flexible-task guidance
+  for every task. Agents learn the status, outcomes, and the last request from
+  `ttasks workflow get` and from the `workflow_managed` error.
+- **Desktop has no workflow UI.** The task list does not separate status from
+  category, there are no outcome buttons, run logs are not shown, and queue
+  settings cannot bind a workflow or set secrets. Drive workflow tasks through
+  `ttasks` and the REST API.

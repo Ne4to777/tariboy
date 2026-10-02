@@ -32,7 +32,7 @@ TAURI_BUNDLE_VERBOSITY = $(if $(filter 1,$(DESKTOP_BUNDLE_VERBOSE)),--verbose,)
 
 export CGO_ENABLED=0
 
-.PHONY: build install uninstall setup check backend-check frontend-check check-output-contract-fixture full-check test smoke-contract-test smoke-image-skills-contract fmt fmt-check vet e2e iteration-timeout-e2e group-request-deadline-e2e tariboy-tasks-e2e smoke full-smoke ui ui-dev store-ui docs clean up start down attach a desktop desktop-mac desktop-binaries desktop-version-check desktop-lock-check desktop-platform-check desktop-tools-check desktop-preflight desktop-smoke desktop-e2e-tools-check desktop-e2e-build desktop-e2e server-install
+.PHONY: build install uninstall setup check backend-check frontend-check check-output-contract-fixture full-check test smoke-contract-test smoke-image-skills-contract fmt fmt-check vet e2e workflow-e2e iteration-timeout-e2e group-request-deadline-e2e tariboy-tasks-e2e smoke full-smoke ui ui-dev store-ui docs clean up start down attach a desktop desktop-mac desktop-binaries desktop-version-check desktop-lock-check desktop-platform-check desktop-tools-check desktop-preflight desktop-smoke desktop-e2e-tools-check desktop-e2e-build desktop-e2e server-install
 
 build:
 	$(GO) build -trimpath -o $(BINDIR)/tariboyd ./cmd/tariboyd
@@ -155,6 +155,12 @@ vet:
 
 e2e: build
 	./scripts/e2e.sh
+
+# Isolated e2e for workflow scripts: checks, watch scripts, a queue secret,
+# redaction, an operator move and cancel, and a daemon restart during a watch.
+# Uses its own base/runtime directories and no HTTP listener.
+workflow-e2e: build
+	./scripts/workflow-e2e.sh
 
 # Isolated recovery e2e for extending a running iteration timeout: repeated
 # extensions, daemon adoption, persisted deadlines, and final enforcement.
@@ -604,6 +610,7 @@ full-check:
 	run_step "check"                     '$(SUBMAKE) check'; \
 	run_step "build"                     '$(SUBMAKE) build'; \
 	run_step "e2e"                       './scripts/e2e.sh'; \
+	run_step "workflow-e2e"              './scripts/workflow-e2e.sh'; \
 	run_step "iteration-timeout-e2e"     './scripts/iteration-timeout-e2e.sh'; \
 	run_step "group-request-deadline-e2e" './scripts/group-request-deadline-e2e.sh'; \
 	run_step "full-smoke"                '$(SUBMAKE) full-smoke'; \

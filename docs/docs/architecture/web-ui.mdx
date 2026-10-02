@@ -545,9 +545,9 @@ token in the WebSocket query because browser sockets cannot set an
 Authorization header.
 
 Queue settings expose explicit pool membership, edited with the revisioned
-pool route. The UI has no workflow controls: queue workflows are being rebuilt
-on workflow images, and the UI does not infer phases from title prefixes or
-assignee. Operator history remains available after completion. See
+pool route. The UI has no workflow controls yet: binding a workflow image,
+queue secrets, outcomes, and script runs are driven through `ttasks` and the
+REST API, and the UI does not infer phases from title prefixes or assignee. Operator history remains available after completion. See
 [Task workflows](/docs/task-workflows).
 
 The navigation hierarchy is **Server → Agent**.

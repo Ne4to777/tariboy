@@ -271,6 +271,27 @@ task), and `task_artifacts`. Workflow mutations append `workflow.transitioned`,
 `queue.workflow_cleared`, in the same transaction as the change. See
 [Task workflows](/docs/task-workflows).
 
+Migration `0056` adds `task_queue_secrets`: per-queue secret values for
+workflow scripts, in plaintext like agent secrets, deleted with their queue. No
+read route returns a value; setting and removing a key append
+`queue.secret_set` and `queue.secret_removed` with the key only. Migration
+`0057` adds `task_script_runs`, the durable record of every check and watch run
+(kind, script, mode, state, verdict, exit code, message, process id, times, and
+log path), with a unique partial index that allows one `pending` or `running`
+run per task, and `task_status_visits.next_watch_at`, when the open visit of a
+script status runs its watch next. Migration `0058` adds
+`task_script_runs.holder`, the agent a `run_as: agent` check ran as, which
+decides who may read its log. A check moves its transition request to
+`applied`, `rejected`, or `failed` in the transaction that records the run;
+rejections and failures increment the visit's `rejected_requests` and
+`script_failures` counters. Script runs append `workflow.script_run`,
+`workflow.transition_rejected`, `workflow.transition_failed`, and
+`workflow.script_failed` events. At daemon start every run still `running` is
+recorded as `interrupted` before the worker starts. Run files live under
+`<base-dir>/tasks/<KEY>/` (`state/` and `runs/<run-id>/`), owner-only; nightly
+retention deletes the rows of closed task trees but does not remove that
+directory yet.
+
 ## Image assignment state
 
 User Store registrations belong to each daemon's SQLite database and persist

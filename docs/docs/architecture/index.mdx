@@ -74,7 +74,8 @@ controls](/docs/security-controls) for the full transport and credential rules.
 | Loop engine and shim runner | At most one iteration per agent, prompt preparation, timeouts, completion, and process supervision | Task state rules |
 | Image store and builder | Built plugin/prompt artifacts addressed by ref id, source provenance, runnable import/export, and Store path resolution | Harness/model/runtime policy or editable source snapshots |
 | Bus | Channels, subscriptions, deliveries, acknowledgement, and redelivery | Direct process-to-process delivery guarantees |
-| Native Tasks service | Queues, task trees, comments, relations, pools, triggers, and notifications | Agent authentication |
+| Native Tasks service | Queues, task trees, comments, relations, pools, triggers, notifications, workflow bindings, queue secrets, transition requests, and script run records | Agent authentication or running script processes |
+| Workflow script worker | Executing pending check and watch runs: environment, working directory, process group, timeout, run log, and result parsing | What a verdict means for the task |
 | Plugin host | Plugin process lifecycle, plugin tokens, and provider-channel watches | Provider credentials in plugin environments |
 | AI proxy and pricing catalog | Provider routing, scoped tokens, budgets, immutable request costs, daily model-price refresh, usage, and transcripts | Durable provider keys or proxy leases in SQLite |
 | API and event hub | Command registry, REST responses, and resumable event hints | State changes outside their owning services |
@@ -159,11 +160,23 @@ logged for its agent without preventing unrelated agents from starting.
 
 In steady state it runs the schedule publisher, the task notification outbox
 publisher, the per-agent goal reconciler, the queue-trigger ingress reconciler,
-AI ingestion, the daily pricing
+the workflow script worker, AI ingestion, the daily pricing
 catalog worker, budget cache refresh, retention pruner, nightly database
 maintenance (backup, cleanup, compaction; see
 [State model](/docs/architecture/state-model#nightly-backup-and-data-retention)),
 loop engines, and plugin supervisors.
+
+The workflow script worker (`internal/workflowrun`) executes the check and
+watch scripts of workflow tasks. Before it starts, the daemon records every run
+that was still `running` as `interrupted`. The worker wakes on task changes,
+when a run finishes, and every two seconds; it schedules due watches, kills runs
+whose cancellation was requested, and starts pending runs, at most four at once
+and never two of one task. Each run is its own process group under the daemon
+account, with no agent tools socket. The tasks service decides what a finished
+run means in one transaction. On shutdown the worker kills its scripts and
+leaves their records `running` for the next start to mark `interrupted`. See
+[Task workflows](/docs/task-workflows#script-protocol).
+
 Shutdown stops the proxy first, then cancels and awaits the pricing worker and
 the other workers before loops/plugins and SQLite stop. That ordering prevents
 a catalog publication, final outbox, or usage write from racing a closed
@@ -320,7 +333,7 @@ than launching the binary directly. See
   </Card>
   <Card title="Task workflows" href="/docs/task-workflows" icon="git-branch">
     Queues bound to workflow images, agent pools, dispatch, artifacts,
-    outcomes, and queue triggers.
+    outcomes, check and watch scripts, queue secrets, and queue triggers.
   </Card>
   <Card title="AI proxy & audit log" href="/docs/architecture/ai-proxy" icon="activity">
     Routing, budgets, usage, and the per-iteration transcript.

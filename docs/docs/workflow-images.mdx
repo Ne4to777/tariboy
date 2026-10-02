@@ -11,18 +11,17 @@ directory that holds a `Workflowfile.yaml`, status instructions, and scripts.
 The manifest declares a status graph: who owns each status, which outcomes lead
 to which next status, and which artifacts and checks a transition needs.
 
-:::note
-A queue can bind a workflow image, and its tasks then follow the image's
-statuses; see [Task workflows](/docs/task-workflows). Scripts are not executed
-yet (a transition with `checks` is refused and a script-owned status waits for
-an operator), and queue secrets, pause and resume, the Goal prompt block, the
-Desktop UI, and Compose binding are still to come.
-:::
+A queue binds a workflow image, and its tasks then follow the image's statuses;
+see [Task workflows](/docs/task-workflows) for binding, the runtime, and the
+script protocol.
 
-Fields such as `watch`, `checks`, `requires_secrets`, `env`, and `limits` are
-manifest schema: they are validated and stored with the image, but nothing
-runs or enforces them yet. `owner`, `transitions`, `requires`, and `artifacts`
-drive queue tasks today.
+Everything in the manifest drives queue tasks except `limits`. `owner`,
+`transitions`, `requires`, and `artifacts` shape the status graph; the daemon
+runs `checks` when a holder requests a transition and runs each `watch` while a
+task is in its script status; `requires_secrets` names queue secrets that must
+be set before the image can be bound and that the scripts receive; `env` sets
+non-secret variables for every script. `limits` are validated and stored, but
+nothing enforces them yet, because pausing a stalled task is not built.
 
 ## Source layout
 
@@ -156,10 +155,16 @@ Status IDs, outcome names (`on`), artifact names, and pool names match
 | `cancelled` | terminal | `true` when the result counts as cancelled rather than done. Allowed only on a terminal status. |
 
 A watch has a required `script`, a required `every` duration of at least `1s`,
-and an optional positive `timeout` (default `60s`, maximum `30m`).
+and an optional positive `timeout` (default `60s`, maximum `30m`). The daemon
+runs it once when a task enters the status, then `every` after each run
+finishes.
 
 A check has a required `script`, an optional `run_as` (`queue`, the default, or
-`agent`), and an optional `timeout` (default `60s`, maximum `30m`).
+`agent`), and an optional `timeout` (default `60s`, maximum `30m`). The checks of
+a transition run in declared order when the holder requests it.
+
+How scripts are run, their exit codes, result file, environment, and run modes
+are described under [Script protocol](/docs/task-workflows#script-protocol).
 
 ### Paths
 
@@ -180,7 +185,9 @@ A path in `instructions`, `watch.script`, or `checks[].script`:
 | `unavailable_grace` | `5m` | Non-negative duration such as `5m`; `0` is allowed. |
 
 A status `limits` block overrides the workflow-wide block, which overrides the
-defaults. The limits are validated and stored; nothing enforces them yet.
+defaults. The limits are validated and stored; nothing enforces them yet. The
+daemon counts rejected requests and script failures per visit of a status, but
+pausing a task when a limit is reached is not built.
 
 ### Validation
 
@@ -332,15 +339,15 @@ Errors:
 
 ## Using an image
 
-A published image is bound to a queue with `ttasks queue workflow set`; tasks
-created in that queue pin the version and follow its statuses. See
-[Task workflows](/docs/task-workflows) for binding, dispatch, artifacts,
-outcomes, and the operator commands.
+A published image is bound to a queue with `ttasks queue workflow set`, or from
+Compose with `task_queues.<PREFIX>.workflow`; tasks created in that queue pin
+the version and follow its statuses. See [Task workflows](/docs/task-workflows)
+for binding, queue secrets, dispatch, artifacts, outcomes, scripts, and the
+operator commands, and [Compose](/docs/binaries/compose#queue-workflows) for
+the Compose form.
 
-## Not yet available
+## Not built yet
 
-Still to come: running scripts (a transition that declares `checks` is refused
-with `checks_unavailable`, and a script-owned status waits for an operator
-move), queue secrets for `requires_secrets`, pause and resume and the stall
-limits, the workflow guidance in the agent's Goal prompt, the Desktop workflow
-UI, and binding a workflow image from Compose.
+Pausing a stalled task and the `limits` that trigger it, the workflow guidance
+in the agent's Goal prompt, and the Desktop workflow UI are designed but not
+built.

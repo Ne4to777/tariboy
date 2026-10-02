@@ -64,16 +64,57 @@ alphanumeric). A pool is an explicit list of compose agents, normalized by agent
 name, and independent of `groups`: putting an agent in a group does not put it in
 a pool, and a pool does not alter group membership.
 
-The `workflows:` map and `task_queues.<prefix>.workflow` belonged to the
-removed task workflow engine. A non-empty value for either is rejected with an
-error that names the key. An empty `workflows: {}`, as written by older team
-exports, is accepted and ignored. Queue workflows are being rebuilt on
-[workflow images](/docs/workflow-images); see
-[Task workflows](/docs/task-workflows).
+The top-level `workflows:` map belonged to the removed task workflow engine. A
+non-empty value is rejected with an error that names the key. An empty
+`workflows: {}`, as written by older team exports, is accepted and ignored.
 
 `compose up` first converges images, agents, and groups. It then reconciles the
-queue and its pools through the daemon's Native Tasks API. Repeating
-`compose up` is idempotent; it also restores changed queue names and pool
-membership. `compose status` remains read-only and reports queue and pool
-membership drift alongside agent, group, and budget drift. Existing compose
-files without `task_queues` keep their previous behavior.
+queue and its pools through the daemon's Native Tasks API, and last binds queue
+workflows. Repeating `compose up` is idempotent; it also restores changed queue
+names and pool membership. `compose status` remains read-only and reports queue,
+pool membership, and workflow drift alongside agent, group, and budget drift.
+Existing compose files without `task_queues` keep their previous behavior.
+
+## Queue workflows
+
+A queue may name the [workflow image](/docs/workflow-images) it follows:
+
+```yaml
+task_queues:
+  DEV:
+    name: Development
+    workflow: team/development:0.1.0
+    pools:
+      developers: [dev-a, dev-b]
+```
+
+`workflow` takes one of four forms:
+
+| Value | `compose up` |
+| --- | --- |
+| `NAME` | Binds the already built `NAME:latest`. |
+| `NAME:TAG` | Binds the already built `NAME:TAG`. |
+| `STORE/NAME` | Builds the workflow source `NAME` from the registered Store `STORE`, then binds the version that build produced. |
+| `STORE/NAME:TAG` | Builds `STORE/NAME`, then binds `NAME:TAG`. |
+
+Each Store workflow is built once per run, before any queue is bound, and a
+bind runs after the queue's pools exist, since a bind needs the pools the
+workflow names. A queue already bound to the resolved digest is left alone. A
+form without a Store prefix fails when the image is not built. Rebinding a
+queue to a newer version leaves its existing tasks on the version they pinned.
+
+Compose never clears a binding: removing `workflow` from the file leaves the
+queue bound; unbind with `ttasks queue workflow clear`. Compose never handles a
+secret value. When the workflow lists `requires_secrets` that the queue does
+not have, the bind fails with `workflow_secret_missing`, and the error names the
+secrets and the command to set one:
+
+```bash
+printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
+```
+
+`compose status` never builds. It resolves the declared workflow through
+`NAME:TAG`, `latest` when no tag is given, and reports a queue whose binding is
+missing, differs from that image, or names an image that is not built yet. A
+bound queue whose file declares no workflow is listed as not declared. See
+[Task workflows](/docs/task-workflows).

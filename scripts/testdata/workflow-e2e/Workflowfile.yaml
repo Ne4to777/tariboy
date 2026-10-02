@@ -1,0 +1,69 @@
+# Fixture of scripts/workflow-e2e.sh. Every script reads its controls from
+# the task snapshot, so the test drives it through public artifacts only.
+schema_version: 1
+name: e2e-flow
+workflow_version: 0.1.0
+initial_status: build
+
+requires_secrets: [E2E_TOKEN]
+env:
+  E2E_MODE: fixture
+
+artifacts:
+  - name: report
+    description: What the builder produced; required to leave build.
+  - name: gate
+    description: Verdict of the second check of built - pass, reject, slow, or fail.
+  - name: finish_mode
+    description: What the finish watch does - done, sleep, or anything else to fail.
+  - name: verdict
+    description: Written by the monitor watch when it reports merged.
+
+statuses:
+  - id: build
+    owner: { pool: builders }
+    instructions: ./statuses/build.md
+    transitions:
+      - on: built
+        to: approval
+        requires: [report]
+        checks:
+          - script: ./scripts/check-env.sh
+            timeout: 20s
+          - script: ./scripts/check-gate.sh
+            run_as: agent
+            timeout: 20s
+
+  - id: approval
+    owner: customer
+    instructions: ./statuses/approval.md
+    transitions:
+      - { on: approved, to: monitor }
+      - { on: rework, to: build }
+      - { on: drop, to: dropped }
+
+  - id: monitor
+    owner: script
+    watch:
+      script: ./scripts/watch-monitor.sh
+      every: 1s
+      timeout: 20s
+    transitions:
+      - { on: merged, to: finish }
+      - { on: reopened, to: build }
+
+  - id: finish
+    owner: script
+    watch:
+      script: ./scripts/watch-finish.sh
+      every: 1s
+      timeout: 60s
+    transitions:
+      - { on: finished, to: done }
+
+  - id: done
+    terminal: true
+
+  - id: dropped
+    terminal: true
+    cancelled: true

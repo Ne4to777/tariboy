@@ -78,8 +78,10 @@ from the status owner; `waiting_on` says whether a `wait_customer` task waits on
 the `customer` or on a `script`. The daemon assigns the task, so `ttasks done`,
 `ttasks update --status`, `ttasks assign`, and `ttasks ready --claim` are
 refused with `workflow_managed`. The agent or customer that owns the status
-leaves it with `ttasks advance`. Status filters, blocking relations, and the
-active-descendants check use the category for every task. See
+leaves it with `ttasks advance`; a transition that declares checks applies only
+after the workflow's check scripts pass, and a status owned by a script is left
+when its watch script reports an outcome. Status filters, blocking relations,
+and the active-descendants check use the category for every task. See
 [Task workflows](/docs/task-workflows).
 
 ## Filing a task into a queue
@@ -347,9 +349,13 @@ On a task in a queue bound to a workflow, use the workflow commands instead of
 ttasks workflow get TEST-fkt3
 ttasks artifacts set TEST-fkt3 plan --file plan.md
 ttasks advance TEST-fkt3 --outcome planned --message "Plan ready"
+ttasks workflow runs TEST-fkt3
+ttasks workflow log TEST-fkt3 4
 ```
 
-`workflow move`, `cancel`, and `queue workflow` are operator-only. See
+`advance` waits for the transition's checks and prints `rejected:` with the
+script's message or `failed:` with the run log to read. `workflow move`,
+`cancel`, `queue workflow`, and `queue secret` are operator-only. See
 [Task workflows](/docs/task-workflows) for the full flow.
 
 Create, comment, and relation actions accept stable idempotency keys internally

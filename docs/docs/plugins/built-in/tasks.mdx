@@ -59,15 +59,20 @@ ttasks workflow get OPS-12
 ttasks artifacts set OPS-12 plan --file plan.md
 ttasks artifacts ls OPS-12
 ttasks artifacts show OPS-12 plan
-ttasks advance OPS-12 --outcome planned --message "Plan ready"
+ttasks advance OPS-12 --outcome planned --from plan --message "Plan ready"
+ttasks workflow runs OPS-12
+ttasks workflow log OPS-12 4
 ```
 
-`workflow get` lists the outcomes, the artifacts each still needs, and the
-checks it declares. An agent may set artifacts and advance only while it holds
-the task in a pool status. `ttasks workflow move`, `ttasks cancel`, and
-`ttasks queue workflow` are operator-only and unavailable to an agent. Scripts
-do not run yet, so an outcome that declares checks is refused with
-`checks_unavailable`.
+`workflow get` lists the outcomes, the artifacts each still needs, the checks
+it declares, and the last transition request. An agent may set artifacts and
+advance only while it holds the task in a pool status. When the outcome
+declares checks, `advance` waits for the daemon to run them: a rejection prints
+`rejected:` with the check's message, which says what to fix before repeating
+the advance; a failure prints `failed:` with the run to read with
+`workflow log`. A holder of the task may read run logs. `ttasks workflow move`,
+`ttasks cancel`, `ttasks queue workflow`, and `ttasks queue secret` are
+operator-only and unavailable to an agent.
 
 ## Durable state and notifications
 

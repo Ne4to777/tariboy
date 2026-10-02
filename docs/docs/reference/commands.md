@@ -221,17 +221,19 @@ derives identity from the socket.
 | `ttasks done KEY [--complete-anyway]` | Complete, optionally overriding active descendants |
 
 These verbs drive a task that follows a queue's workflow image. Agent mode
-sends `advance`, `artifact_set`, `artifact_ls`, `artifact_show`, and
-`workflow_get` over the identity-bound socket; operator mode calls the REST
-routes as the customer.
+sends `advance`, `request_get`, `artifact_set`, `artifact_ls`, `artifact_show`,
+`workflow_get`, `workflow_runs`, and `workflow_run_log` over the identity-bound
+socket; operator mode calls the REST routes as the customer.
 
 | Command | Modes | REST route |
 | --- | --- | --- |
-| `ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT]` (`--from` refuses with `status_changed` when the task has moved on) | agent, operator | `POST /api/tasks/{key}/advance` |
+| `ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT] [--no-wait]` (`--from` refuses with `status_changed` when the task has moved on; waits for the transition's checks, polling `GET /api/tasks/{key}/workflow/requests/{id}`, unless `--no-wait`) | agent, operator | `POST /api/tasks/{key}/advance` |
 | `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` (stdin when absent; stored as given, up to 64 KiB) | agent, operator | `PUT /api/tasks/{key}/artifacts/{name}` |
 | `ttasks artifacts ls KEY` | agent, operator | `GET /api/tasks/{key}/artifacts` |
 | `ttasks artifacts show KEY NAME` | agent, operator | `GET /api/tasks/{key}/artifacts/{name}` |
 | `ttasks workflow get KEY` | agent, operator | `GET /api/tasks/{key}/workflow` |
+| `ttasks workflow runs KEY` (newest first) | agent, operator | `GET /api/tasks/{key}/workflow/runs` |
+| `ttasks workflow log KEY RUN [--max-bytes N]` (last 64 KiB by default, at most 1 MiB; queue secrets redacted; customer and the task's holders only) | agent, operator | `GET /api/tasks/{key}/workflow/runs/{id}/log` |
 | `ttasks workflow move KEY --to STATUS --reason TEXT` | operator only | `POST /api/tasks/{key}/workflow/move` |
 | `ttasks cancel KEY` | operator only | `POST /api/tasks/{key}/cancel` |
 | `ttasks queue workflow set QUEUE REF [--revision N]` | operator only | `PUT /api/task-queues/{queue}/workflow` |
@@ -243,9 +245,13 @@ routes as the customer.
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the
-status's outcomes and the `ttasks advance` form to use, with `--from` set to the current status. An outcome that declares
-checks is refused with `checks_unavailable` because scripts do not run yet. `ttasks show` prints
-`status` (the workflow status), `category`, and `waiting_on`.
+status's outcomes and the `ttasks advance` form to use, with `--from` set to the current status. For an outcome that
+declares checks, `ttasks advance` exits `0` when the transition applied and `1`
+when a check rejected it, a check failed, the request was cancelled, or the wait
+ran out; the output names the next command. `ttasks show` prints
+`status` (the workflow status), `category`, and `waiting_on`. See
+[Task workflows](/docs/task-workflows#script-protocol) for the scripts behind
+checks and watch statuses.
 
 The following administration roots are operator-only and are documented by
 `ttasks --help-json`: `queue` (including pools and triggers; see

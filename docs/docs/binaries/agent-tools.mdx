@@ -45,8 +45,13 @@ assigns the work, and `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` do not apply. The agent reads `ttasks workflow get KEY`,
 sets declared artifacts with `ttasks artifacts set|ls|show`, and leaves its
 status with `ttasks advance KEY --outcome NAME --from STATUS`, where `--from`
-makes a retried advance fail with `status_changed` instead of applying twice. `ttasks workflow move`,
-`ttasks cancel`, and `ttasks queue workflow` are operator-only.
+makes a retried advance fail with `status_changed` instead of applying twice.
+`advance` waits for the transition's check scripts and exits non-zero on a
+rejection or failure, naming the next command; `--no-wait` returns the pending
+request at once. `ttasks workflow runs KEY` and `ttasks workflow log KEY RUN`
+show what the scripts did. `ttasks workflow move`, `ttasks cancel`, and the
+`ttasks queue` commands are operator-only. Workflow scripts themselves never
+receive the tools socket.
 
 `tariboyd` normally selects and persists one sticky assigned task per enabled
 agent, then stamps its key and top-level root onto the AI-proxy lease before the
