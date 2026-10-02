@@ -52,6 +52,9 @@ type ScriptRun struct {
 	// Holder is the agent a run_as agent check ran as, fixed when the run was
 	// created; "" for queue and watch runs.
 	Holder string `json:"holder,omitempty"`
+	// PID is the process a running run recorded, for the worker's recovery
+	// after a restart; it is never marshalled.
+	PID *int `json:"-"`
 }
 
 // RunJob is everything the worker needs to execute one pending run.
@@ -99,21 +102,25 @@ type scriptRunRecord struct {
 
 const scriptRunSelect = `
 	SELECT r.id, t.task_key, r.kind, r.script, r.run_as, r.state, r.verdict, r.exit_code, r.message,
-	       r.created_at, r.started_at, r.finished_at, r.log_path, r.holder,
+	       r.created_at, r.started_at, r.finished_at, r.log_path, r.holder, r.pid,
 	       r.task_id, r.visit_id, COALESCE(r.request_id, 0), r.check_index, r.cancel_requested
 	FROM task_script_runs r JOIN tasks t ON t.id = r.task_id`
 
 func scanScriptRun(row interface{ Scan(...any) error }) (scriptRunRecord, error) {
 	var r scriptRunRecord
-	var exit sql.NullInt64
+	var exit, pid sql.NullInt64
 	if err := row.Scan(&r.ID, &r.TaskKey, &r.Kind, &r.Script, &r.RunAs, &r.State, &r.Verdict, &exit, &r.Message,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.LogPath, &r.Holder,
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.LogPath, &r.Holder, &pid,
 		&r.taskID, &r.visitID, &r.requestID, &r.checkIndex, &r.cancelRequested); err != nil {
 		return scriptRunRecord{}, err
 	}
 	if exit.Valid {
 		code := int(exit.Int64)
 		r.ExitCode = &code
+	}
+	if pid.Valid {
+		p := int(pid.Int64)
+		r.PID = &p
 	}
 	return r, nil
 }
@@ -364,7 +371,17 @@ func (s *Service) SetScriptRunPID(ctx context.Context, id int64, pid int) error 
 // CancelRequestedRuns lists the running runs whose cancellation was requested;
 // the worker kills them.
 func (s *Service) CancelRequestedRuns(ctx context.Context) ([]ScriptRun, error) {
-	records, err := queryScriptRuns(ctx, s.db, cancelRequestedWhere)
+	return s.listScriptRuns(ctx, cancelRequestedWhere)
+}
+
+// RunningScriptRuns lists every running run with its recorded PID. At daemon
+// start the worker uses it to find the scripts a previous daemon left behind.
+func (s *Service) RunningScriptRuns(ctx context.Context) ([]ScriptRun, error) {
+	return s.listScriptRuns(ctx, runningRunsWhere)
+}
+
+func (s *Service) listScriptRuns(ctx context.Context, where string) ([]ScriptRun, error) {
+	records, err := queryScriptRuns(ctx, s.db, where)
 	if err != nil {
 		return nil, err
 	}
@@ -791,9 +808,9 @@ func (s *Service) failWatchTx(ctx context.Context, tx *sql.Tx, task Task, run sc
 	return err
 }
 
-// RecoverScriptRuns runs at daemon start: every running run is recorded as
-// interrupted, its check request fails, and its watch reschedules now. Pending
-// runs stay pending.
+// RecoverScriptRuns runs when the worker starts: every running run is recorded
+// as interrupted, its check request fails, and its watch runs next after
+// every. Pending runs stay pending.
 func (s *Service) RecoverScriptRuns(ctx context.Context) error {
 	runs, err := queryScriptRuns(ctx, s.db, runningRunsWhere)
 	if err != nil {
@@ -858,8 +875,14 @@ func (s *Service) interruptRun(ctx context.Context, id int64) error {
 			return err
 		}
 		if live {
+			// The next run follows after every, as after any finished run.
+			manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
+			if err != nil {
+				return err
+			}
+			status, _ := currentStatus(manifest, task.WorkflowStatus)
 			if _, err := tx.ExecContext(ctx, `UPDATE task_status_visits SET next_watch_at = ? WHERE id = ?`,
-				watchTime(s.clock()), run.visitID); err != nil {
+				watchTime(s.clock().Add(watchEvery(status))), run.visitID); err != nil {
 				return err
 			}
 		}

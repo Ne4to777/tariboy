@@ -782,10 +782,16 @@ func TestRecoverScriptRuns(t *testing.T) {
 		if state, _, _ := runState(t, svc, run.ID); state != "interrupted" {
 			t.Fatalf("run = %s", state)
 		}
-		if _, _, _, next := openVisit(t, svc, task); next != svc.clock().UTC().Format(dispatchedAtLayout) {
+		// The next run follows after every, as after any run: an interrupted
+		// run may have been killed by the restart it caused.
+		every := svc.clock().Add(5 * time.Minute)
+		if _, _, _, next := openVisit(t, svc, task); next != every.UTC().Format(dispatchedAtLayout) {
 			t.Fatalf("next_watch_at = %q", next)
 		}
-		pending := scheduleWatch(t, svc, actor, task)
+		if n, err := svc.ScheduleDueWatches(ctx, every); err != nil || n != 1 {
+			t.Fatalf("scheduled = %d, %v", n, err)
+		}
+		pending := listRuns(t, svc, actor, task)[0]
 		if err := svc.RecoverScriptRuns(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -793,6 +799,34 @@ func TestRecoverScriptRuns(t *testing.T) {
 			t.Fatalf("pending run = %s", state)
 		}
 	})
+}
+
+func TestRunningScriptRunsCarryTheirPID(t *testing.T) {
+	svc, actor, task, _ := runFixture(t)
+	ctx := context.Background()
+	_, first := advanceApprove(t, svc, actor, task)
+	if runs, err := svc.RunningScriptRuns(ctx); err != nil || len(runs) != 0 {
+		t.Fatalf("running before the claim = %#v, %v", runs, err)
+	}
+	if ok, err := svc.ClaimScriptRun(ctx, first.ID, "t", "/log"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	runs, err := svc.RunningScriptRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].ID != first.ID || runs[0].PID != nil {
+		t.Fatalf("running without a pid = %#v, %v", runs, err)
+	}
+	if err := svc.SetScriptRunPID(ctx, first.ID, 4242); err != nil {
+		t.Fatal(err)
+	}
+	runs, err = svc.RunningScriptRuns(ctx)
+	if err != nil || len(runs) != 1 || runs[0].PID == nil || *runs[0].PID != 4242 || runs[0].TaskKey != task.Key {
+		t.Fatalf("running = %#v, %v", runs, err)
+	}
+	// The pid is the worker's business; a reader never sees it.
+	raw, err := json.Marshal(runs[0])
+	if err != nil || strings.Contains(string(raw), "4242") {
+		t.Fatalf("run json = %s, %v", raw, err)
+	}
 }
 
 func TestPendingRunJobs(t *testing.T) {

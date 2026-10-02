@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -25,13 +26,9 @@ const (
 	DefaultParallel = 4
 )
 
-// Completion retries: a run whose completion cannot be recorded stays running
-// and is recovered as interrupted at the next daemon start.
-const (
-	completeAttempts   = 5
-	completeRetryDelay = 500 * time.Millisecond
-	completeTimeout    = 10 * time.Second
-)
+// completeTimeout bounds one attempt to record a finished run. A completion
+// that fails is kept and tried again on every pass until it is recorded.
+const completeTimeout = 10 * time.Second
 
 // protocolNames are the TARIBOY_* names the protocol owns. No other layer may
 // set one, including TARIBOY_WORKFLOW_OUTCOME on a run that has no outcome.
@@ -44,6 +41,10 @@ var protocolNames = func() []string {
 	return names
 }()
 
+// procRoot is where the worker reads a process's environment to prove that a
+// recorded PID is still a run's script; a test points it elsewhere.
+var procRoot = "/proc"
+
 // defaultPath is the PATH of a queue run whose environment names none.
 const defaultPath = "PATH=/usr/bin:/bin"
 
@@ -55,6 +56,8 @@ type Jobs interface {
 	CompleteScriptRun(ctx context.Context, id int64, done tasks.RunCompletion) error
 	ScheduleDueWatches(ctx context.Context, now time.Time) (int, error)
 	CancelRequestedRuns(ctx context.Context) ([]tasks.ScriptRun, error)
+	RunningScriptRuns(ctx context.Context) ([]tasks.ScriptRun, error)
+	RecoverScriptRuns(ctx context.Context) error
 }
 
 // Supervisor is the daemon worker that executes pending workflow script runs.
@@ -74,8 +77,17 @@ type Supervisor struct {
 // activeRun is a run this worker is executing.
 type activeRun struct {
 	task            string
+	kind            string
 	cancel          context.CancelFunc
 	cancelRequested atomic.Bool
+}
+
+// unrecorded is a finished run whose completion failed; the worker tries to
+// record it again on every pass.
+type unrecorded struct {
+	job    tasks.RunJob
+	done   tasks.RunCompletion
+	runDir string
 }
 
 // worker is the state of one Run call.
@@ -87,19 +99,26 @@ type worker struct {
 	finished chan struct{}
 	wg       sync.WaitGroup
 
-	mu      sync.Mutex
-	running map[int64]*activeRun
-	busy    map[string]bool // tasks with a run in progress
+	mu        sync.Mutex
+	running   map[int64]*activeRun
+	busy      map[string]bool      // tasks with a run in progress or unrecorded
+	retry     map[int64]unrecorded // completions to record again
+	quietDirs map[string]string    // task key -> directory of its latest quiet run
+	recovered bool                 // RecoverScriptRuns has succeeded
 }
 
-// Run executes pending runs until ctx ends. It wakes on Wake, when a run
-// finishes, and every Interval. When ctx ends it kills every running script,
-// waits for them, and leaves their records running for RecoverScriptRuns.
+// Run executes pending runs until ctx ends. It first terminates the scripts a
+// previous daemon left behind and records their runs as interrupted, and starts
+// nothing before that succeeded. It wakes on Wake, when a run finishes, and
+// every Interval. When ctx ends it kills every running script, waits for them,
+// and leaves their records running for the next start; completions not yet
+// recorded are dropped with them.
 func (s *Supervisor) Run(ctx context.Context) {
 	w := &worker{
 		s: s, log: s.Log, clock: s.Clock, parallel: s.Parallel,
 		finished: make(chan struct{}, 1),
 		running:  map[int64]*activeRun{}, busy: map[string]bool{},
+		retry: map[int64]unrecorded{}, quietDirs: map[string]string{},
 	}
 	if w.log == nil {
 		w.log = slog.Default()
@@ -120,7 +139,9 @@ func (s *Supervisor) Run(ctx context.Context) {
 	defer ticker.Stop()
 	wake := s.Wake
 	for {
-		w.pass(ctx)
+		if w.ensureRecovered(ctx) {
+			w.pass(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -134,9 +155,35 @@ func (s *Supervisor) Run(ctx context.Context) {
 	}
 }
 
-// pass is one loop iteration: schedule due watches, kill cancelled runs, and
-// start pending runs.
+// ensureRecovered reports whether recovery has succeeded, attempting it if
+// not: the orphaned scripts of a previous daemon are terminated, then their
+// runs are recorded as interrupted. A failure is logged and tried again next
+// pass.
+func (w *worker) ensureRecovered(ctx context.Context) bool {
+	if w.recovered {
+		return true
+	}
+	if err := w.terminateOrphans(ctx); err != nil {
+		if ctx.Err() == nil {
+			w.log.Error("find orphaned workflow scripts", "err", err)
+		}
+		return false
+	}
+	if err := w.s.Jobs.RecoverScriptRuns(ctx); err != nil {
+		if ctx.Err() == nil {
+			w.log.Error("recover workflow script runs", "err", err)
+		}
+		return false
+	}
+	w.recovered = true
+	return true
+}
+
+// pass is one loop iteration: record unrecorded completions, schedule due
+// watches, kill cancelled runs, and, while a slot is free, start pending runs,
+// checks first.
 func (w *worker) pass(ctx context.Context) {
+	w.recordUnrecorded(ctx)
 	if _, err := w.s.Jobs.ScheduleDueWatches(ctx, w.clock()); err != nil && ctx.Err() == nil {
 		w.log.Error("schedule workflow watch runs", "err", err)
 	}
@@ -148,10 +195,16 @@ func (w *worker) pass(ctx context.Context) {
 		w.mu.Lock()
 		active := w.running[run.ID]
 		w.mu.Unlock()
-		if active != nil && !active.cancelRequested.Swap(true) {
+		if active != nil && active.cancel != nil && !active.cancelRequested.Swap(true) {
 			w.log.Info("cancel workflow script run", "run_id", run.ID, "task", run.TaskKey, "script", run.Script)
 			active.cancel()
 		}
+	}
+	w.mu.Lock()
+	free := len(w.running) < w.parallel
+	w.mu.Unlock()
+	if !free {
+		return
 	}
 	jobs, err := w.s.Jobs.PendingRunJobs(ctx)
 	if err != nil {
@@ -160,6 +213,8 @@ func (w *worker) pass(ctx context.Context) {
 		}
 		return
 	}
+	// A check holds up an agent waiting for its request; a watch can wait.
+	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].Run.Kind == KindCheck && jobs[j].Run.Kind != KindCheck })
 	for _, job := range jobs {
 		if ctx.Err() != nil {
 			return
@@ -168,11 +223,18 @@ func (w *worker) pass(ctx context.Context) {
 		full := len(w.running) >= w.parallel
 		_, running := w.running[job.Run.ID]
 		busy := w.busy[job.Run.TaskKey]
+		watches := 0
+		for _, active := range w.running {
+			if active.kind != KindCheck {
+				watches++
+			}
+		}
 		w.mu.Unlock()
 		if full {
 			return
 		}
-		if running || busy {
+		// With more than one slot, one is always left for a check.
+		if running || busy || (job.Run.Kind != KindCheck && w.parallel > 1 && watches >= w.parallel-1) {
 			continue
 		}
 		w.start(ctx, job)
@@ -180,7 +242,8 @@ func (w *worker) pass(ctx context.Context) {
 }
 
 // start claims one job and executes it in the background. A job that cannot
-// be prepared is claimed and completed as a failure without running anything.
+// be prepared is claimed with no log path and completed in the background as a
+// failure without running anything.
 func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 	id := job.Run.ID
 	spec, reason := w.prepare(job)
@@ -198,42 +261,42 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 	if !claimed {
 		return
 	}
-	if reason == "" {
-		for _, dir := range []string{spec.TaskDir, spec.RunDir} {
-			if err := ownerDir(dir); err != nil {
-				reason = fmt.Sprintf("cannot create directory %s: %v", dir, err)
-				break
-			}
-		}
-	}
-	if reason != "" {
-		reason = tasks.RedactSecrets(reason, secretValues(job.QueueSecrets))
-		w.log.Warn("workflow script run failed before it started", "run_id", id, "task", job.Run.TaskKey,
-			"script", job.Run.Script, "reason", reason)
-		w.complete(ctx, job, tasks.RunCompletion{
-			Verdict: VerdictFailure, Message: reason,
-			FinishedAt: w.clock().UTC().Format(time.RFC3339Nano),
-		})
-		return
-	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	active := &activeRun{task: job.Run.TaskKey, cancel: cancel}
+	active := &activeRun{task: job.Run.TaskKey, kind: job.Run.Kind, cancel: cancel}
 	w.mu.Lock()
 	w.running[id] = active
 	w.busy[active.task] = true
 	w.mu.Unlock()
-	spec.OnStart = func(pid int) {
-		if err := w.s.Jobs.SetScriptRunPID(ctx, id, pid); err != nil && ctx.Err() == nil {
-			w.log.Error("record workflow script pid", "run_id", id, "task", job.Run.TaskKey, "err", err)
-		}
-	}
-	w.log.Info("workflow script started", "run_id", id, "task", job.Run.TaskKey, "kind", job.Run.Kind,
-		"script", job.Run.Script, "cwd", spec.Cwd)
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
-		defer w.release(id, active)
+		defer cancel()
+		if reason == "" {
+			for _, dir := range []string{spec.TaskDir, spec.RunDir} {
+				if err := ownerDir(dir); err != nil {
+					reason = fmt.Sprintf("cannot create directory %s: %v", dir, err)
+					break
+				}
+			}
+		}
+		if reason != "" {
+			reason = tasks.RedactSecrets(reason, secretValues(job.QueueSecrets))
+			w.log.Warn("workflow script run failed before it started", "run_id", id, "task", job.Run.TaskKey,
+				"script", job.Run.Script, "reason", reason)
+			w.finish(ctx, id, job, tasks.RunCompletion{
+				Verdict: VerdictFailure, Message: reason,
+				FinishedAt: w.clock().UTC().Format(time.RFC3339Nano),
+			}, "")
+			return
+		}
+		spec.OnStart = func(pid int) {
+			if err := w.s.Jobs.SetScriptRunPID(ctx, id, pid); err != nil && ctx.Err() == nil {
+				w.log.Error("record workflow script pid", "run_id", id, "task", job.Run.TaskKey, "err", err)
+			}
+		}
+		w.log.Info("workflow script started", "run_id", id, "task", job.Run.TaskKey, "kind", job.Run.Kind,
+			"script", job.Run.Script, "cwd", spec.Cwd)
 		res := Execute(runCtx, spec)
 		cancel()
 		attrs := []any{"run_id", id, "task", job.Run.TaskKey, "script", job.Run.Script,
@@ -241,6 +304,7 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 			"duration", res.Finished.Sub(res.Started).Round(time.Millisecond)}
 		if ctx.Err() != nil {
 			w.log.Info("workflow script killed at shutdown; left for recovery", attrs...)
+			w.forget(id, active.task)
 			return
 		}
 		if active.cancelRequested.Load() {
@@ -254,48 +318,108 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 			FinishedAt: w.clock().UTC().Format(time.RFC3339Nano),
 		}, job.QueueSecrets)
 		w.log.Debug("workflow script message", "run_id", id, "message", done.Message)
-		w.complete(ctx, job, done)
+		w.finish(ctx, id, job, done, spec.RunDir)
 	}()
 }
 
-// release forgets a finished run, after its completion is recorded, so the
-// next run of the task cannot start before the engine has seen this one.
-func (w *worker) release(id int64, active *activeRun) {
+// finish records a finished run and frees its slot. When the completion fails
+// the run is kept for the next pass and its task stays busy, so the next run of
+// the task cannot start before the engine has seen this one.
+func (w *worker) finish(ctx context.Context, id int64, job tasks.RunJob, done tasks.RunCompletion, runDir string) {
+	err := w.complete(ctx, id, done)
 	w.mu.Lock()
 	delete(w.running, id)
-	delete(w.busy, active.task)
+	if err != nil && ctx.Err() == nil {
+		w.retry[id] = unrecorded{job: job, done: done, runDir: runDir}
+		w.mu.Unlock()
+		w.log.Error("record workflow script run; trying again on the next pass", "run_id", id,
+			"task", job.Run.TaskKey, "err", err)
+		return
+	}
+	delete(w.busy, job.Run.TaskKey)
+	stale := ""
+	if err == nil {
+		stale = w.rememberQuietLocked(job, done, runDir)
+	}
 	w.mu.Unlock()
-	select {
-	case w.finished <- struct{}{}:
-	default:
+	w.removeRunDir(stale)
+	w.notify()
+}
+
+// recordUnrecorded tries every kept completion once more.
+func (w *worker) recordUnrecorded(ctx context.Context) {
+	w.mu.Lock()
+	pending := make(map[int64]unrecorded, len(w.retry))
+	for id, entry := range w.retry {
+		pending[id] = entry
+	}
+	w.mu.Unlock()
+	for id, entry := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := w.complete(ctx, id, entry.done); err != nil {
+			w.log.Error("record workflow script run", "run_id", id, "task", entry.job.Run.TaskKey, "err", err)
+			continue
+		}
+		w.mu.Lock()
+		delete(w.retry, id)
+		delete(w.busy, entry.job.Run.TaskKey)
+		stale := w.rememberQuietLocked(entry.job, entry.done, entry.runDir)
+		w.mu.Unlock()
+		w.removeRunDir(stale)
 	}
 }
 
-// complete records a finished run, retrying a few times. A completion that
-// cannot be recorded leaves the run running for RecoverScriptRuns.
-func (w *worker) complete(ctx context.Context, job tasks.RunJob, done tasks.RunCompletion) {
-	id := job.Run.ID
-	for attempt := 1; ; attempt++ {
-		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completeTimeout)
-		err := w.s.Jobs.CompleteScriptRun(cctx, id, done)
-		cancel()
-		if err == nil {
-			return
-		}
-		w.log.Error("record workflow script run", "run_id", id, "task", job.Run.TaskKey,
-			"attempt", attempt, "err", err)
-		if attempt == completeAttempts {
-			w.log.Error("workflow script run stays running until the next daemon start",
-				"run_id", id, "task", job.Run.TaskKey)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			w.log.Error("workflow script run stays running until the next daemon start",
-				"run_id", id, "task", job.Run.TaskKey)
-			return
-		case <-time.After(completeRetryDelay):
-		}
+// complete makes one attempt to record a finished run. A run the engine no
+// longer has counts as recorded.
+func (w *worker) complete(ctx context.Context, id int64, done tasks.RunCompletion) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), completeTimeout)
+	defer cancel()
+	err := w.s.Jobs.CompleteScriptRun(cctx, id, done)
+	if tasks.ErrorCode(err) == "run_not_found" {
+		return nil
+	}
+	return err
+}
+
+// rememberQuietLocked keeps the files of only the latest quiet watch run of a
+// task: it remembers runDir of a quiet run and returns the directory of the
+// task's previous quiet run, now stale. Other runs keep their files.
+func (w *worker) rememberQuietLocked(job tasks.RunJob, done tasks.RunCompletion, runDir string) string {
+	if job.Run.Kind != KindWatch || done.Verdict != VerdictQuiet || runDir == "" {
+		return ""
+	}
+	stale := w.quietDirs[job.Run.TaskKey]
+	w.quietDirs[job.Run.TaskKey] = runDir
+	if stale == runDir {
+		return ""
+	}
+	return stale
+}
+
+func (w *worker) removeRunDir(dir string) {
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		w.log.Warn("remove the files of a quiet workflow watch run", "dir", dir, "err", err)
+	}
+}
+
+// forget frees the slot of a run left for recovery at shutdown.
+func (w *worker) forget(id int64, task string) {
+	w.mu.Lock()
+	delete(w.running, id)
+	delete(w.busy, task)
+	w.mu.Unlock()
+	w.notify()
+}
+
+func (w *worker) notify() {
+	select {
+	case w.finished <- struct{}{}:
+	default:
 	}
 }
 

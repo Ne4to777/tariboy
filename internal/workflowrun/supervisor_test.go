@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -104,6 +106,18 @@ type fakeJobs struct {
 	activeAll   int
 	completed   chan int64
 	started     chan int64
+
+	completeFail     map[int64]int           // CompleteScriptRun fails this many more times
+	completeNotFound map[int64]bool          // CompleteScriptRun answers run_not_found
+	completeBlock    map[int64]chan struct{} // CompleteScriptRun waits for the channel
+	attempts         map[int64]int           // CompleteScriptRun calls per run
+	pendingCalls     int                     // PendingRunJobs calls
+	running          []tasks.ScriptRun       // RunningScriptRuns rows
+	recoverFail      int                     // RecoverScriptRuns fails this many more times
+	recovered        bool                    // RecoverScriptRuns succeeded
+	claimedEarly     bool                    // a run was claimed before recovery succeeded
+	activeWatches    int
+	maxWatches       int
 }
 
 func newFakeJobs(jobs ...tasks.RunJob) *fakeJobs {
@@ -111,7 +125,35 @@ func newFakeJobs(jobs ...tasks.RunJob) *fakeJobs {
 		jobs: jobs, claimed: map[int64]string{}, refuse: map[int64]bool{}, pids: map[int64]int{},
 		completions: map[int64]tasks.RunCompletion{}, cancel: map[int64]bool{}, active: map[string]int{},
 		completed: make(chan int64, 64), started: make(chan int64, 64),
+		completeFail: map[int64]int{}, completeNotFound: map[int64]bool{}, completeBlock: map[int64]chan struct{}{},
+		attempts: map[int64]int{},
 	}
+}
+
+func (f *fakeJobs) kindOf(id int64) string {
+	for _, j := range f.jobs {
+		if j.Run.ID == id {
+			return j.Run.Kind
+		}
+	}
+	return ""
+}
+
+func (f *fakeJobs) RunningScriptRuns(context.Context) ([]tasks.ScriptRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tasks.ScriptRun(nil), f.running...), nil
+}
+
+func (f *fakeJobs) RecoverScriptRuns(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recoverFail > 0 {
+		f.recoverFail--
+		return errors.New("recovery failed")
+	}
+	f.recovered = true
+	return nil
 }
 
 func (f *fakeJobs) taskOf(id int64) string {
@@ -126,6 +168,7 @@ func (f *fakeJobs) taskOf(id int64) string {
 func (f *fakeJobs) PendingRunJobs(context.Context) ([]tasks.RunJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pendingCalls++
 	var out []tasks.RunJob
 	for _, j := range f.jobs {
 		if _, ok := f.claimed[j.Run.ID]; !ok {
@@ -147,6 +190,9 @@ func (f *fakeJobs) ClaimScriptRun(_ context.Context, id int64, startedAt, logPat
 	if _, ok := f.claimed[id]; ok {
 		return false, nil
 	}
+	if !f.recovered {
+		f.claimedEarly = true
+	}
 	f.claimed[id] = logPath
 	return true, nil
 }
@@ -160,16 +206,37 @@ func (f *fakeJobs) SetScriptRunPID(_ context.Context, id int64, pid int) error {
 	f.activeAll++
 	f.maxTask = max(f.maxTask, f.active[task])
 	f.maxAll = max(f.maxAll, f.activeAll)
+	if f.kindOf(id) == KindWatch {
+		f.activeWatches++
+		f.maxWatches = max(f.maxWatches, f.activeWatches)
+	}
 	f.started <- id
 	return nil
 }
 
 func (f *fakeJobs) CompleteScriptRun(_ context.Context, id int64, done tasks.RunCompletion) error {
 	f.mu.Lock()
+	block := f.completeBlock[id]
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts[id]++
+	if f.completeNotFound[id] {
+		return &tasks.Error{Status: 404, Code: "run_not_found", Msg: "script run not found"}
+	}
+	if f.completeFail[id] > 0 {
+		f.completeFail[id]--
+		return errors.New("database is locked")
+	}
 	if _, ok := f.pids[id]; ok {
 		f.active[f.taskOf(id)]--
 		f.activeAll--
+		if f.kindOf(id) == KindWatch {
+			f.activeWatches--
+		}
 	}
 	f.completions[id] = done
 	delete(f.cancel, id)
@@ -280,6 +347,24 @@ func (h *harness) awaitCompletion(id int64, within time.Duration) tasks.RunCompl
 		case <-deadline:
 			h.t.Fatalf("run %d was not completed within %v", id, within)
 		}
+	}
+}
+
+// awaitRecovered waits for RecoverScriptRuns to succeed.
+func (h *harness) awaitRecovered() {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.jobs.mu.Lock()
+		recovered := h.jobs.recovered
+		h.jobs.mu.Unlock()
+		if recovered {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatal("recovery did not run")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -630,6 +715,237 @@ func TestSupervisorRedactsQueueSecretsFromWhatAScriptReturns(t *testing.T) {
 	}
 	if got := done.Artifacts["note"]; got != "v-[redacted]-abc" {
 		t.Fatalf("artifact note = %q, want the long secret redacted and the short one kept", got)
+	}
+}
+
+func watchJob(id int64, key, script string) tasks.RunJob {
+	job := checkJob(id, key, script)
+	job.Run.Kind, job.Outcome = KindWatch, ""
+	return job
+}
+
+func TestSupervisorRetriesAFailedCompletionAndKeepsTheTaskBusy(t *testing.T) {
+	h := newHarness(t, checkJob(1, "DEV-1", "scripts/pass.sh"), checkJob(2, "DEV-1", "scripts/pass.sh"))
+	h.jobs.completeFail[1] = 3
+	h.start()
+	if done := h.awaitCompletion(1, 5*time.Second); done.Verdict != VerdictPass {
+		t.Fatalf("completion = %+v", done)
+	}
+	h.awaitCompletion(2, 5*time.Second)
+	h.jobs.mu.Lock()
+	defer h.jobs.mu.Unlock()
+	if h.jobs.attempts[1] != 4 {
+		t.Fatalf("completion attempts = %d, want 4", h.jobs.attempts[1])
+	}
+	// Run 2 of the same task was claimed only after run 1 was recorded.
+	if h.jobs.attempts[2] != 1 || h.jobs.maxTask != 1 {
+		t.Fatalf("attempts %v, max runs of one task %d", h.jobs.attempts, h.jobs.maxTask)
+	}
+}
+
+func TestSupervisorKeepsATaskBusyWhileItsCompletionFails(t *testing.T) {
+	h := newHarness(t, checkJob(1, "DEV-1", "scripts/pass.sh"), checkJob(2, "DEV-1", "scripts/pass.sh"))
+	h.jobs.completeFail[1] = 1 << 30
+	h.start()
+	waitFile(t, filepath.Join(h.marks, "pass-DEV-1"))
+	time.Sleep(300 * time.Millisecond)
+	h.jobs.mu.Lock()
+	attempts := h.jobs.attempts[1]
+	_, claimedTwo := h.jobs.claimed[2]
+	h.jobs.mu.Unlock()
+	// The completion is retried on every pass, and the task stays busy.
+	if attempts < 3 || claimedTwo {
+		t.Fatalf("attempts %d, second run claimed %v", attempts, claimedTwo)
+	}
+}
+
+func TestSupervisorCountsRunNotFoundAsCompleted(t *testing.T) {
+	h := newHarness(t, checkJob(1, "DEV-1", "scripts/pass.sh"), checkJob(2, "DEV-1", "scripts/pass.sh"))
+	h.jobs.completeNotFound[1] = true
+	h.start()
+	h.awaitCompletion(2, 5*time.Second)
+	h.jobs.mu.Lock()
+	defer h.jobs.mu.Unlock()
+	if h.jobs.attempts[1] != 1 {
+		t.Fatalf("attempts = %d; run_not_found is final", h.jobs.attempts[1])
+	}
+}
+
+func TestSupervisorCompletesAPreStartFailureInTheBackground(t *testing.T) {
+	broken := checkJob(1, "DEV-1", "scripts/absent.sh")
+	h := newHarness(t, broken, checkJob(2, "DEV-2", "scripts/pass.sh"))
+	release := make(chan struct{})
+	h.jobs.completeBlock[1] = release
+	h.start()
+	// The pass is not held by the blocked completion of run 1.
+	h.awaitCompletion(2, 5*time.Second)
+	if path := h.jobs.claimedPath(1); path != "" {
+		t.Fatalf("pre-start failure claimed with log path %q", path)
+	}
+	close(release)
+	if done := h.awaitCompletion(1, 5*time.Second); done.Verdict != VerdictFailure {
+		t.Fatalf("completion = %+v", done)
+	}
+}
+
+func TestSupervisorRecoversBeforeStartingAnyRun(t *testing.T) {
+	h := newHarness(t, checkJob(1, "DEV-1", "scripts/pass.sh"))
+	h.jobs.recoverFail = 2
+	h.start()
+	h.awaitCompletion(1, 5*time.Second)
+	h.jobs.mu.Lock()
+	defer h.jobs.mu.Unlock()
+	if !h.jobs.recovered || h.jobs.claimedEarly {
+		t.Fatalf("recovered %v, claimed before recovery %v", h.jobs.recovered, h.jobs.claimedEarly)
+	}
+}
+
+// orphan starts a real child in its own process group, as a script the
+// previous daemon left behind, with env added to its environment.
+func orphan(t *testing.T, env ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-exited
+	})
+	return cmd
+}
+
+func TestSupervisorTerminatesOnlyProvenOrphans(t *testing.T) {
+	h := newHarness(t)
+	resultFile := filepath.Join(h.base, "tasks", "DEV-7", "runs", "7", "result.json")
+	ours := orphan(t, "TARIBOY_RESULT_FILE="+resultFile)
+	stranger := orphan(t, "TARIBOY_RESULT_FILE="+filepath.Join(h.base, "tasks", "DEV-8", "runs", "9", "result.json"))
+	oursPID, strangerPID := ours.Process.Pid, stranger.Process.Pid
+	h.jobs.running = []tasks.ScriptRun{
+		{ID: 7, TaskKey: "DEV-7", Kind: KindCheck, State: "running", PID: &oursPID},
+		{ID: 8, TaskKey: "DEV-8", Kind: KindWatch, State: "running", PID: &strangerPID},
+	}
+	h.start()
+	groupGone(t, oursPID)
+	h.awaitRecovered()
+	if err := syscall.Kill(strangerPID, 0); err != nil {
+		t.Fatalf("a process that is not the run's script was signalled: %v", err)
+	}
+}
+
+func TestSupervisorSignalsNothingWithoutProc(t *testing.T) {
+	h := newHarness(t)
+	var logged strings.Builder
+	var logMu sync.Mutex
+	h.sup.Log = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logged.Write(p)
+	}), nil))
+	procRoot = filepath.Join(t.TempDir(), "no-proc")
+	t.Cleanup(func() { procRoot = "/proc" })
+	resultFile := filepath.Join(h.base, "tasks", "DEV-7", "runs", "7", "result.json")
+	ours := orphan(t, "TARIBOY_RESULT_FILE="+resultFile)
+	pid := ours.Process.Pid
+	h.jobs.running = []tasks.ScriptRun{{ID: 7, TaskKey: "DEV-7", Kind: KindCheck, State: "running", PID: &pid}}
+	h.start()
+	h.awaitRecovered()
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the orphan was signalled without proof: %v", err)
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if !strings.Contains(logged.String(), "run_id=7") || !strings.Contains(logged.String(), "pid="+strconv.Itoa(pid)) {
+		t.Fatalf("log = %q", logged.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestSupervisorStartsChecksBeforeWatches(t *testing.T) {
+	h := newHarness(t, watchJob(1, "DEV-1", "scripts/quiet.sh"), checkJob(2, "DEV-2", "scripts/sleep.sh"))
+	h.sup.Parallel = 1
+	h.start()
+	h.awaitCompletion(1, 10*time.Second)
+	h.jobs.mu.Lock()
+	defer h.jobs.mu.Unlock()
+	if _, ok := h.jobs.completions[2]; !ok {
+		t.Fatal("the watch run finished before the check that was pending with it")
+	}
+}
+
+func TestSupervisorKeepsOneSlotFromWatches(t *testing.T) {
+	h := newHarness(t, watchJob(1, "DEV-1", "scripts/sleep.sh"), watchJob(2, "DEV-2", "scripts/sleep.sh"),
+		watchJob(3, "DEV-3", "scripts/sleep.sh"))
+	h.sup.Parallel = 2
+	h.start()
+	for id := int64(1); id <= 3; id++ {
+		h.awaitCompletion(id, 10*time.Second)
+	}
+	h.jobs.mu.Lock()
+	defer h.jobs.mu.Unlock()
+	if h.jobs.maxWatches != 1 {
+		t.Fatalf("%d watch runs at once with Parallel=2, want 1", h.jobs.maxWatches)
+	}
+}
+
+func TestSupervisorAsksForJobsOnlyWithAFreeSlot(t *testing.T) {
+	h := newHarness(t, checkJob(1, "DEV-1", "scripts/stubborn.sh"), checkJob(2, "DEV-2", "scripts/pass.sh"))
+	h.sup.Parallel = 1
+	h.start()
+	h.awaitStart(1)
+	h.jobs.mu.Lock()
+	before := h.jobs.pendingCalls
+	h.jobs.mu.Unlock()
+	for range 5 {
+		h.nudge()
+		time.Sleep(40 * time.Millisecond)
+	}
+	h.jobs.mu.Lock()
+	after := h.jobs.pendingCalls
+	h.jobs.mu.Unlock()
+	if after != before {
+		t.Fatalf("PendingRunJobs called %d times while every slot was taken", after-before)
+	}
+}
+
+func TestSupervisorKeepsOnlyTheLatestQuietRunDirectory(t *testing.T) {
+	h := newHarness(t, watchJob(1, "DEV-1", "scripts/quiet.sh"), watchJob(2, "DEV-1", "scripts/quiet.sh"),
+		watchJob(3, "DEV-1", "scripts/sleep.sh"), watchJob(4, "DEV-1", "scripts/quiet.sh"))
+	h.start()
+	runDir := func(id int) string { return filepath.Join(h.base, "tasks", "DEV-1", "runs", strconv.Itoa(id)) }
+	exists := func(id int) bool {
+		_, err := os.Stat(runDir(id))
+		return err == nil
+	}
+	h.awaitCompletion(2, 5*time.Second)
+	waitGone := func(id int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for exists(id) {
+			if time.Now().After(deadline) {
+				t.Fatalf("run directory %d is still there", id)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitGone(1)
+	if !exists(2) {
+		t.Fatal("the latest quiet run lost its directory")
+	}
+	h.awaitCompletion(4, 10*time.Second)
+	waitGone(2)
+	if !exists(3) || !exists(4) {
+		t.Fatalf("run 3 kept %v, run 4 kept %v; a non-quiet run and the latest quiet run keep their files", exists(3), exists(4))
 	}
 }
 

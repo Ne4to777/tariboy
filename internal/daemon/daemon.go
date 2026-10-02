@@ -820,14 +820,11 @@ func Run(ctx context.Context, o Options) error {
 			return err
 		}, log)
 	}()
-	// The workflow script worker executes check and watch runs. Runs left
-	// running by a previous daemon are recorded as interrupted first, so the
-	// worker never sees them. It runs on gctx like the goroutines above, so it
-	// kills its scripts and stops before st.Close(); their rows stay running
-	// for the next start.
-	if err := taskService.RecoverScriptRuns(ctx); err != nil {
-		log.Error("recover workflow script runs", "err", err)
-	}
+	// The workflow script worker executes check and watch runs. Before it
+	// starts any, it terminates the scripts a previous daemon left running and
+	// records their runs as interrupted. It runs on gctx like the goroutines
+	// above, so it kills its scripts and stops before st.Close(); their rows
+	// stay running for the next start.
 	workflowRunWake, stopWorkflowRunWake := taskHub.Subscribe()
 	workflowRunner := &workflowrun.Supervisor{
 		Jobs: taskService, Images: workflowImages.Store, BaseDir: p.Base,
