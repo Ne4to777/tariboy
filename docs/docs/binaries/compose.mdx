@@ -97,6 +97,8 @@ task_queues:
 | `STORE/NAME` | Builds the workflow source `NAME` from the registered Store `STORE`, then binds the version that build produced. |
 | `STORE/NAME:TAG` | Builds `STORE/NAME`, then binds `NAME:TAG`. |
 
+A tag of `.` or `..` is a validation error.
+
 Each Store workflow is built once per run, before any queue is bound, and a
 bind runs after the queue's pools exist, since a bind needs the pools the
 workflow names. A queue already bound to the resolved digest is left alone. A
@@ -113,8 +115,12 @@ secrets and the command to set one:
 printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
 ```
 
-`compose status` never builds. It resolves the declared workflow through
-`NAME:TAG`, `latest` when no tag is given, and reports a queue whose binding is
-missing, differs from that image, or names an image that is not built yet. A
-bound queue whose file declares no workflow is listed as not declared. See
-[Task workflows](/docs/task-workflows).
+`compose status` never builds. A `STORE/NAME` workflow is compared with the
+`workflow_version` of its Store source, as the daemon reads it from the Store,
+and reported as `(Store source)`; when the Store or the source cannot be read,
+and for every other form, status resolves the declared workflow through
+`NAME:TAG`, `latest` when no tag is given. It reports a queue whose binding is
+missing, differs, or names an image that is not built yet. A bound queue whose
+file declares no workflow is listed as not declared. When the daemon fails to
+return a queue's binding, that queue shows `workflow UNKNOWN (<error code>)` and
+status goes on with the next one. See [Task workflows](/docs/task-workflows).

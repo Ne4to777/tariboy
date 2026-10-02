@@ -254,6 +254,32 @@ func (r *Runner) inspectWorkflowImage(ref string) (img workflowImage, found bool
 	return img, true, nil
 }
 
+// storeWorkflowVersion reads the workflow_version of a Store workflow source
+// as the daemon reads it from the Store's checkout; ok is false when the Store
+// or the source cannot be read.
+func (r *Runner) storeWorkflowVersion(ref WorkflowRef) (string, bool) {
+	raw, err := r.call.Call("GET", "/api/stores/"+ref.Store, map[string]string{})
+	if err != nil {
+		return "", false
+	}
+	var detail struct {
+		Workflows []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Error   string `json:"error"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return "", false
+	}
+	for _, workflow := range detail.Workflows {
+		if workflow.Name == ref.Name && workflow.Error == "" && workflow.Version != "" {
+			return workflow.Version, true
+		}
+	}
+	return "", false
+}
+
 // queueWorkflow reads the binding of a queue; bound is false when it has none.
 func (r *Runner) queueWorkflow(queue string) (tasks.QueueWorkflow, bool, error) {
 	raw, err := r.call.Call("GET", "/api/task-queues/"+queue+"/workflow", map[string]string{})
@@ -1018,8 +1044,11 @@ func (r *Runner) Status(f File) error {
 }
 
 // statusQueueWorkflow reports the workflow of one queue. It never builds: a
-// declared workflow is compared through NAME:TAG (latest by default), so a
-// Store workflow that is not built yet reads as pending.
+// Store workflow without a tag is compared with the workflow_version of its
+// Store source when the daemon can read that source; any other declared
+// workflow, and a Store source that cannot be read, is compared through
+// NAME:TAG (latest by default), so a Store workflow that is not built yet reads
+// as pending. A daemon error on the queue's binding is reported for the queue.
 func (r *Runner) statusQueueWorkflow(prefix string, want TaskQueueSpec, drift *int) error {
 	ref, declared, err := want.WorkflowRef()
 	if err != nil {
@@ -1027,7 +1056,13 @@ func (r *Runner) statusQueueWorkflow(prefix string, want TaskQueueSpec, drift *i
 	}
 	bound, isBound, err := r.queueWorkflow(prefix)
 	if err != nil {
-		return fmt.Errorf("status task queue %s workflow: %w", prefix, err)
+		code := err.Error()
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.Code != "" {
+			code = apiErr.Code
+		}
+		r.logf("task queue %-10s workflow UNKNOWN (%s)", prefix, code)
+		return nil
 	}
 	have := fmt.Sprintf("%s:%s %s", bound.Name, bound.Version, shortDigest(bound.Digest))
 	switch {
@@ -1036,6 +1071,22 @@ func (r *Runner) statusQueueWorkflow(prefix string, want TaskQueueSpec, drift *i
 		return nil
 	case !declared:
 		return nil
+	}
+	if ref.Store != "" && ref.Tag == "" {
+		if version, ok := r.storeWorkflowVersion(ref); ok {
+			want := ref.Name + ":" + version
+			switch {
+			case !isBound:
+				r.logf("task queue %-10s workflow MISSING (want=%s, Store source)", prefix, want)
+				*drift++
+			case bound.Name != ref.Name || bound.Version != version:
+				r.logf("task queue %-10s workflow drift: have=%s want=%s (Store source)", prefix, have, want)
+				*drift++
+			default:
+				r.logf("task queue %-10s workflow %s ok", prefix, have)
+			}
+			return nil
+		}
 	}
 	img, found, err := r.inspectWorkflowImage(ref.Ref())
 	if err != nil {

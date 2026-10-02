@@ -73,7 +73,8 @@ func ParseWorkflowRef(s string) (WorkflowRef, error) {
 	ref.Name = rest
 	if i := strings.Index(rest, ":"); i >= 0 {
 		ref.Name, ref.Tag = rest[:i], rest[i+1:]
-		if parsed, err := image.ParseRef("x:" + ref.Tag); err != nil || parsed.Tag != ref.Tag {
+		// A tag names a directory of the image store, so "." and ".." are refused.
+		if parsed, err := image.ParseRef("x:" + ref.Tag); err != nil || parsed.Tag != ref.Tag || ref.Tag == "." || ref.Tag == ".." {
 			return WorkflowRef{}, fmt.Errorf("invalid tag %q", ref.Tag)
 		}
 	}

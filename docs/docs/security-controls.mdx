@@ -120,25 +120,34 @@ you trust that far.
   variables cannot be overridden by the daemon environment, an agent, the
   image's `env`, or a secret.
 - A `run_as: queue` script runs in the task's owner-only state directory with
-  the daemon's environment, the image's `env`, and the queue secrets. A
-  `run_as: agent` check also receives the holder's environment and agent
-  secrets and runs in the holder's working directory.
+  the daemon's environment, the image's `env`, and the queue secrets; when none
+  of these sets `PATH`, it gets `PATH=/usr/bin:/bin`. A `run_as: agent` check
+  also receives the holder's environment and agent secrets and runs in the
+  holder's working directory.
 - The files of a task under `<base-dir>/tasks/<KEY>/` are owner-only:
-  directories `0700`, files `0600`. The run log on disk is not redacted.
+  directories `0700`, files `0600`. The run log on disk is not redacted. The
+  nightly database cleanup removes the directory of every task it deletes.
 
 Queue secrets are stored per queue in `tariboyd.db` in plaintext, like agent
 secrets. They are set only by the operator (`ttasks queue secret set`, value
-from stdin preferred). No read route, event, task snapshot, artifact, or result
-file carries a value, and Compose never handles one. Queue secret values of at
-least 6 bytes are replaced with `[redacted]` in a script's message and returned
-artifact values before they are stored, and in run log text served by the log
-route. This filter uses the queue's current values only: a rotated or removed
-secret is no longer redacted in an old log, and encoded forms are never
-redacted. Script authors must not print secrets. A run log is readable only by
-the customer and a holder of the task, and the log of a `run_as: agent` check
-only by the customer and the holder it ran as, because it may hold that agent's
-own secrets, which are not redacted. Neither the database nor
-`<base-dir>/tasks/` is in the support-bundle allowlist.
+from stdin preferred; the route accepts a body of at most 512 KiB). Removing a
+secret is refused while the workflow bound to the queue requires its key; older
+workflow versions still pinned by unfinished tasks are not checked, and a
+script of such a task that misses its secret fails. No read route, event, task
+snapshot, artifact, or result file carries a value, and Compose never handles
+one. Queue secret values of at least 6 bytes are replaced with `[redacted]` in
+a script's message and returned artifact values before they are stored, and in
+run log text served by the log route; every match is found before any is
+replaced, so overlapping or adjacent values leave no part of either. A log tail
+never returns text from before the requested window, even where a redaction
+shortened the window. This filter uses the queue's current values only: a
+rotated or removed secret is no longer redacted in an old log, and encoded
+forms are never redacted. Script authors must not print secrets. A run log is
+readable only by the customer and a holder of the task, and the log of a
+`run_as: agent` check only by the customer and the holder it ran as, because it
+may hold that agent's own secrets, which are not redacted; an agent check
+recorded while no agent held the task is the customer's alone. Neither the
+database nor `<base-dir>/tasks/` is in the support-bundle allowlist.
 
 ## Pricing catalog boundary
 

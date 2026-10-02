@@ -146,6 +146,8 @@ transaction:
 - **Native Tasks** — only whole trees whose every task is `done` or
   `cancelled` with `completed_at` before the cutoff, with their comments,
   waits, events, notifications and read state, relations, and outbox rows. A tree related to a task that stays is kept.
+  After the deletion commits, each deleted task's `<base-dir>/tasks/<KEY>/`
+  directory is removed; a key that is not a single path element is skipped.
 - **AI proxy Usage** — `ai_requests` rows. Retention is `0` (keep everything)
   or at least 31 days, so the calendar-month budget window never loses rows,
   and rows inside the longest rolling `budgets` period are kept even when it
@@ -281,16 +283,22 @@ log path), with a unique partial index that allows one `pending` or `running`
 run per task, and `task_status_visits.next_watch_at`, when the open visit of a
 script status runs its watch next. Migration `0058` adds
 `task_script_runs.holder`, the agent a `run_as: agent` check ran as, which
-decides who may read its log. A check moves its transition request to
-`applied`, `rejected`, or `failed` in the transaction that records the run;
-rejections and failures increment the visit's `rejected_requests` and
-`script_failures` counters. Script runs append `workflow.script_run`,
+decides who may read its log. Migration `0059` adds only indexes: runs by task,
+visit, and request, the `pending` and `running` runs, and the open visits with a
+scheduled watch. A check moves its transition request to `applied`,
+`rejected`, or `failed` in the transaction that records the run; rejections and
+failures increment the visit's `rejected_requests` and `script_failures`
+counters. Script runs append `workflow.script_run`,
 `workflow.transition_rejected`, `workflow.transition_failed`, and
-`workflow.script_failed` events. At daemon start every run still `running` is
-recorded as `interrupted` before the worker starts. Run files live under
-`<base-dir>/tasks/<KEY>/` (`state/` and `runs/<run-id>/`), owner-only; nightly
-retention deletes the rows of closed task trees but does not remove that
-directory yet.
+`workflow.script_failed` events; a quiet watch run appends none, and only the
+newest 20 quiet runs of a visit are kept. Closing a visit by any route cancels
+its pending transition request. When the worker starts, before it starts any
+run, it terminates a script a crashed daemon left running when `/proc` proves
+the recorded PID is that run's script, then records every run still `running`
+as `interrupted`. Run files live under `<base-dir>/tasks/<KEY>/` (`state/` and
+`runs/<run-id>/`), owner-only; only the latest quiet watch run of a task keeps
+its run directory, and nightly retention removes the directory of every task it
+deletes.
 
 ## Image assignment state
 
@@ -402,5 +410,5 @@ terminally classifies the stale row as `harness_error`.
 Two daemons pointed at the same base dir share the same DB and loop managers and
 will double-run each other's agents — double-executed iterations and reaped
 sessions. Always isolate a test daemon with its own base dir, runtime dir, and
-the web UI disabled. See [Development → Isolation](/docs/development#isolation).
+the web UI disabled. See [Development → Test isolation](/docs/development#test-isolation).
 :::

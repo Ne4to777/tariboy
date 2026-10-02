@@ -33,6 +33,7 @@ func TestParseWorkflowRefRejectsMalformedValues(t *testing.T) {
 	for _, in := range []string{
 		" development", "development ", "a/b/c", "a:b:c", "/development", "official/", "official/:1.0.0",
 		":1.0.0", "development:", "Development", "official/Dev", "../x", "official/..", "a b", "official/dev:../x", "dev\n",
+		"development:.", "development:..", "official/development:.", "official/development:..",
 	} {
 		if got, err := ParseWorkflowRef(in); err == nil {
 			t.Errorf("ParseWorkflowRef(%q) = %+v; want an error", in, got)
@@ -75,6 +76,8 @@ type workflowComposeCaller struct {
 	bound    map[string]tasks.QueueWorkflow
 	buildErr map[string]error
 	bindErr  error
+	stores   map[string]map[string]any // Store name -> GET /api/stores/{name}
+	queueErr map[string]error          // queue -> GET .../workflow error
 }
 
 func newWorkflowComposeCaller() *workflowComposeCaller {
@@ -84,6 +87,8 @@ func newWorkflowComposeCaller() *workflowComposeCaller {
 		images:                 map[string]map[string]any{},
 		bound:                  map[string]tasks.QueueWorkflow{},
 		buildErr:               map[string]error{},
+		stores:                 map[string]map[string]any{},
+		queueErr:               map[string]error{},
 	}
 }
 
@@ -115,6 +120,9 @@ func (f *workflowComposeCaller) Call(method, route string, body any) (json.RawMe
 		f.record(method, route, body)
 		queue := strings.Split(route, "/")[3]
 		if method == "GET" {
+			if err := f.queueErr[queue]; err != nil {
+				return nil, err
+			}
 			b, ok := f.bound[queue]
 			if !ok {
 				return nil, &client.APIError{Code: "queue_workflow_not_found", Msg: "queue has no workflow binding"}
@@ -133,6 +141,13 @@ func (f *workflowComposeCaller) Call(method, route string, body any) (json.RawMe
 		}
 		f.bound[queue] = cur
 		return mustJSON(cur), nil
+	case method == "GET" && strings.HasPrefix(route, "/api/stores/"):
+		f.record(method, route, body)
+		detail, ok := f.stores[strings.TrimPrefix(route, "/api/stores/")]
+		if !ok {
+			return nil, &client.APIError{Code: "not_found", Msg: "store not found"}
+		}
+		return mustJSON(detail), nil
 	}
 	return f.taskQueueComposeCaller.Call(method, route, body)
 }
@@ -353,5 +368,41 @@ func TestStatusShowsBoundDriftedPendingAndUndeclaredWorkflows(t *testing.T) {
 	fc.bound["DEV"] = bound
 	if got := status(t, fc, ""); !strings.Contains(got, "workflow development:0.1.0 aaaaaaaaaaaa (not declared)") || !strings.Contains(got, "drift: 0") {
 		t.Fatalf("undeclared status:\n%s", got)
+	}
+
+	// A Store workflow without a tag is compared with its source's version
+	// when the Store can be read: here the source moved on although latest
+	// still names the bound image.
+	storeWith := func(version string) map[string]any {
+		return map[string]any{"name": "official", "workflows": []map[string]any{
+			{"name": "other", "version": "9.9.9"}, {"name": "development", "version": version}}}
+	}
+	fc = newWorkflowComposeCaller()
+	fc.images["development:latest"] = map[string]any{"name": "development", "version": "0.1.0", "digest": digestA}
+	fc.bound["DEV"] = bound
+	fc.stores["official"] = storeWith("0.2.0")
+	if got := status(t, fc, "official/development"); !strings.Contains(got, "workflow drift: have=development:0.1.0 aaaaaaaaaaaa want=development:0.2.0 (Store source)") || !strings.Contains(got, "drift: 1") {
+		t.Fatalf("Store source drift status:\n%s", got)
+	}
+	fc = newWorkflowComposeCaller()
+	fc.bound["DEV"] = bound
+	fc.stores["official"] = storeWith("0.1.0")
+	if got := status(t, fc, "official/development"); !strings.Contains(got, "workflow development:0.1.0 aaaaaaaaaaaa ok") || !strings.Contains(got, "drift: 0") {
+		t.Fatalf("Store source ok status:\n%s", got)
+	}
+	// A source the Store cannot read falls back to latest.
+	fc = newWorkflowComposeCaller()
+	fc.images["development:latest"] = map[string]any{"name": "development", "version": "0.1.0", "digest": digestA}
+	fc.bound["DEV"] = bound
+	fc.stores["official"] = map[string]any{"name": "official", "workflows": []map[string]any{{"name": "development", "error": "bad file"}}}
+	if got := status(t, fc, "official/development"); !strings.Contains(got, "workflow development:0.1.0 aaaaaaaaaaaa ok") {
+		t.Fatalf("unreadable source status:\n%s", got)
+	}
+
+	// A daemon error on one queue's binding is reported for that queue.
+	fc = newWorkflowComposeCaller()
+	fc.queueErr["DEV"] = &client.APIError{Code: "internal", Msg: "database is locked"}
+	if got := status(t, fc, "official/development"); !strings.Contains(got, "workflow UNKNOWN (internal)") || !strings.Contains(got, "drift:") {
+		t.Fatalf("binding error status:\n%s", got)
 	}
 }

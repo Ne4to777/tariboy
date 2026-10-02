@@ -85,7 +85,7 @@ terminal change requires the loop/shim, Web UI, and Desktop documentation.
   as it finishes, while a failure also prints its command and complete
   diagnostics.
 - Run `make full-check` once before final handoff when the diff reaches e2e,
-  packaging, or desktop behavior. It runs `check`, then `make build`, the three core E2E scripts,
+  packaging, or desktop behavior. It runs `check`, then `make build`, the four core E2E scripts,
   `full-smoke`, the browser suites, and the host's desktop gates, and it takes
   tens of minutes. Neither target stops at the first failure; both end with a
   summary table and fail if any step failed.

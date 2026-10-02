@@ -7,6 +7,9 @@ snap() { python3 "$TARIBOY_WORKFLOW_DIR/scripts/snapshot.py" "$@"; }
 pwd -P >"$TARIBOY_TASK_DIR/agent-check.cwd"
 printf '%s\n' "${AGENT_MARK:-}" >"$TARIBOY_TASK_DIR/agent-check.mark"
 snap sha256 E2E_TOKEN >"$TARIBOY_TASK_DIR/agent-check.sha"
+# Deliberately careless: the holder's own secret goes to the log, which only
+# the customer and this agent may read; no other principal's read may show it.
+echo "agent secret ${E2E_AGENT_SECRET:-}"
 
 gate="$(snap artifact gate)"
 case "$gate" in

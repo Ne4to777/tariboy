@@ -504,7 +504,9 @@ watches at least every two seconds, so the actual pause can be a little longer
 than `every`. Runs of one task never overlap.
 
 - Exit `111` means nothing changed: the daemon schedules the next run and
-  resets `script_failures`.
+  resets `script_failures`. A quiet run records no event. Only the newest 20
+  quiet runs of a visit are kept, and only the latest quiet run of a task keeps
+  its files under `runs/`; other runs keep theirs.
 - Exit `0` with an `outcome` in the result file applies that transition. The
   daemon stores the script's artifacts first, then records an applied
   transition request authored by `script:<path>`, so the visit history and the
@@ -516,6 +518,10 @@ than `every`. Runs of one task never overlap.
 
 Leaving the status by any route, or cancelling the task, stops the watch: the
 schedule is cleared, a pending run is cancelled, and a running one is killed.
+
+The worker runs up to four scripts at once. Pending checks start before
+pending watch runs, because an agent waits for a check, and one slot is always
+left for a check.
 
 ## Script protocol
 
@@ -564,8 +570,10 @@ The script may write JSON to `TARIBOY_RESULT_FILE`. The file is optional.
 | `message` | At most 4 KiB. A rejection's message goes to the agent; a watch outcome's message becomes the transition message. |
 | `artifacts` | Names declared by the image, each a non-empty UTF-8 value of at most 64 KiB. Stored, authored by `script:<path>`, when a check passes or a watch reports an outcome. |
 
-The whole file is at most 64 KiB, UTF-8, and one JSON object; any other field is
-an error. An empty or missing file is an empty result.
+The whole file is at most 64 KiB, UTF-8, and one JSON object. Field names match
+exactly: any other field, including one that differs only in case, and a field
+or artifact name that appears twice, is an error. An empty or missing file is an
+empty result.
 
 ### Environment
 
@@ -614,12 +622,13 @@ and report the outcome again.
 
 | `run_as` | Working directory | Environment, later entries winning |
 | --- | --- | --- |
-| `queue` (default) | `TARIBOY_TASK_DIR` | the daemon's own environment, then the image's `env`, then the queue secrets |
+| `queue` (default) | `TARIBOY_TASK_DIR` | the daemon's own environment, then the image's `env`, then the queue secrets; `PATH=/usr/bin:/bin` when none of them sets `PATH` |
 | `agent` | the holder's effective working directory | the daemon's own environment, the holder's environment and agent secrets (as its own background scripts get them), then the image's `env`, then the queue secrets |
 
 Watch scripts always run as `queue`, so they do not depend on which agent held
 the task. `run_as: agent` is for checks that inspect a worktree or a local
-branch. The holder is fixed when the run is created: the task's assignee.
+branch. The holder is fixed when the run is created: the task's assignee. When
+no agent is the assignee, the run records no holder and fails without running.
 
 In both modes the protocol variables come last and cannot be overridden by any
 other layer. `TARIBOY_TOOLS_SOCKET`, `TARIBOY_DAEMON_SOCKET`,
@@ -658,18 +667,33 @@ owner-only log that starts with the script path and working directory.
 | `cancelled` | The task left the status or was cancelled before or during the run; the process was killed. |
 | `interrupted` | The daemon stopped while the run was in progress. |
 
-After a daemon restart every run that was `running` is recorded as
-`interrupted`. An interrupted check closes its request as `failed` and counts as
-a script failure; an interrupted watch is scheduled to run again at once.
-Pending runs start normally.
+After a daemon restart the worker recovers before it starts any run. A script
+that a crashed daemon left running is terminated first: on Linux, when the
+recorded process is alive and its environment carries that run's
+`TARIBOY_RESULT_FILE`, its process group gets `SIGTERM` and, two seconds later,
+`SIGKILL`; without `/proc` nothing is signalled and the daemon logs a warning
+naming the run and the process. Then every run that was `running` is recorded
+as `interrupted`. An interrupted check closes its request as `failed` and counts
+as a script failure; an interrupted watch runs again after `every`, as after any
+run. Pending runs start normally.
+
+A run whose result the worker cannot record, for example while the database is
+busy, stays in the worker and is recorded on a later pass; no other run of the
+task starts meanwhile.
 
 Who can read what:
 
 - Runs (`workflow runs`, the run route, the `runs` of the task view) are visible
   to anyone who can read the task.
+- An agent recorded as a holder of the task, now or earlier, keeps **read**
+  access to it even when it is no longer the assignee: `show`, `workflow get`,
+  `artifacts ls` and `show`, `request get`, `workflow runs`, and `workflow log`.
+  A holder whose checked transition moved the task into a script status or to
+  another pool still sees its request's result. A holder row grants no write.
 - A run **log** is readable by the customer and by an agent that is a holder of
   the task. The log of a `run_as: agent` run is readable only by the customer
-  and the holder recorded on that run. Anyone else gets `forbidden`.
+  and the holder recorded on that run, and one recorded without a holder only
+  by the customer. Anyone else gets `forbidden`.
 
 ```bash
 ttasks workflow runs DEV-ab12
@@ -776,7 +800,7 @@ generated OpenAPI document is the authority for request and response schemas.
 | `PUT` | `/api/task-queues/{queue}/workflow` | bind an image (`ref`, `revision`) | operator |
 | `GET` | `/api/task-queues/{queue}/workflow` | read the binding | operator |
 | `DELETE` | `/api/task-queues/{queue}/workflow` | unbind (`revision`) | operator |
-| `PUT` | `/api/task-queues/{queue}/secrets/{key}` | set a secret (`value`); returns `queue`, `key`, `updated_at` | operator |
+| `PUT` | `/api/task-queues/{queue}/secrets/{key}` | set a secret (`value`, body at most 512 KiB); returns `queue`, `key`, and the stored `updated_at` | operator |
 | `GET` | `/api/task-queues/{queue}/secrets` | list `secrets` (`key`, `updated_at`) | operator |
 | `DELETE` | `/api/task-queues/{queue}/secrets/{key}` | remove a secret | operator |
 | `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`); returns the request | agent, operator |
@@ -810,7 +834,7 @@ See [State model](/docs/architecture/state-model) for the tables.
 | `task_status_visits` | One row per stay in a status, with its outcome and message, the `rejected_requests`, `script_failures`, and `idle_iterations` counters, and `next_watch_at`, when a script status's watch runs next (migration `0057`). |
 | `task_transition_requests` | Each request, with its state and `result_message`; at most one is `pending` per task. |
 | `task_artifacts` | Every artifact value with its author and time. |
-| `task_script_runs` | Every run: kind, script, mode, state, verdict, exit code, message, process id, times, log path, and for a `run_as: agent` check the `holder` (migrations `0057`, `0058`). At most one run of a task is `pending` or `running`. |
+| `task_script_runs` | Every run: kind, script, mode, state, verdict, exit code, message, process id, times, log path, and for a `run_as: agent` check the `holder` (migrations `0057`, `0058`; indexes in `0059`). At most one run of a task is `pending` or `running`. |
 
 Files of a task live under `<base-dir>/tasks/<KEY>/`; directories are `0700`
 and files `0600`:

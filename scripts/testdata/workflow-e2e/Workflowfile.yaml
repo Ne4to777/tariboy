@@ -33,6 +33,13 @@ statuses:
           - script: ./scripts/check-gate.sh
             run_as: agent
             timeout: 20s
+      # From the pool straight into a script status: the holder loses the
+      # assignment when the check passes and must still read its request.
+      - on: shipped
+        to: finish
+        checks:
+          - script: ./scripts/check-ship.sh
+            timeout: 20s
 
   - id: approval
     owner: customer
