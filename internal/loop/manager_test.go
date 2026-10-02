@@ -510,6 +510,69 @@ func TestStartScriptDoesNotLaunchCanceledPendingRecord(t *testing.T) {
 	}
 }
 
+func TestScriptRuntimeIsTheAgentScriptEnvironmentWithoutToolsSocket(t *testing.T) {
+	m, as, agentsDir, _ := newManager(t, &fakeRunner{})
+	t.Setenv("TARIBOY_TOOLS_SOCKET", "/baseline/tools.sock")
+	t.Setenv("TARIBOY_DAEMON_SOCKET", "/baseline/daemon.sock")
+	t.Setenv("SCRIPT_RUNTIME_BASELINE", "base")
+	t.Setenv("SCRIPT_RUNTIME_SHARED", "base")
+	workdir := t.TempDir()
+	if err := as.Create(agent.Agent{Name: "worker", ImageRef: "basic:latest", Cwd: workdir,
+		Env: map[string]string{"SCRIPT_RUNTIME_SHARED": "agent", "AGENT_ONLY": "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := as.SecretSet("worker", "AGENT_TOKEN", "t0k3n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := as.Create(agent.Agent{Name: "nocwd", ImageRef: "basic:latest"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, env, err := m.ScriptRuntime("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd != workdir {
+		t.Fatalf("cwd = %q, want %q", cwd, workdir)
+	}
+	values := map[string]string{}
+	for _, kv := range env {
+		name, value, _ := strings.Cut(kv, "=")
+		if _, dup := values[name]; dup {
+			t.Fatalf("variable %s appears twice", name)
+		}
+		values[name] = value
+	}
+	for name, want := range map[string]string{
+		"SCRIPT_RUNTIME_BASELINE": "base", "SCRIPT_RUNTIME_SHARED": "agent",
+		"AGENT_ONLY": "a", "AGENT_TOKEN": "t0k3n", "TARIBOY_AGENT": "worker",
+	} {
+		if values[name] != want {
+			t.Fatalf("%s = %q, want %q", name, values[name], want)
+		}
+	}
+	for _, name := range []string{"TARIBOY_TOOLS_SOCKET", "TARIBOY_DAEMON_SOCKET"} {
+		if _, ok := values[name]; ok {
+			t.Fatalf("%s is present in the script runtime environment", name)
+		}
+	}
+	bin := agentdir.New(agentsDir, "worker").WithRuntime(m.cfg.RuntimeDir).BinDir()
+	if !strings.HasPrefix(values["PATH"], bin+":") {
+		t.Fatalf("PATH = %q, want the agent bin directory %q first", values["PATH"], bin)
+	}
+
+	cwd, _, err = m.ScriptRuntime("nocwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := agentdir.New(agentsDir, "nocwd").WithRuntime(m.cfg.RuntimeDir).Workdir(); cwd != want {
+		t.Fatalf("cwd without an agent cwd = %q, want the agent workdir %q", cwd, want)
+	}
+	if _, _, err := m.ScriptRuntime("ghost"); err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("unknown agent error = %v, want one naming the agent", err)
+	}
+}
+
 func buildBasic(t *testing.T, st *image.Store) {
 	buildTestImage(t, st, "basic", "BODY")
 }

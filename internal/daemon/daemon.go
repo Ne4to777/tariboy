@@ -47,6 +47,7 @@ import (
 	"github.com/alekzonder/tariboy/internal/userpath"
 	"github.com/alekzonder/tariboy/internal/version"
 	"github.com/alekzonder/tariboy/internal/workflowimage"
+	"github.com/alekzonder/tariboy/internal/workflowrun"
 
 	"go.opentelemetry.io/otel"
 )
@@ -734,7 +735,7 @@ func Run(ctx context.Context, o Options) error {
 	// their final flush/refresh before the store closes.
 	gctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Add(12)
+	wg.Add(13)
 	scheduler := schedule.NewScheduler(schedStore, channelBus, log, time.Now, time.After)
 	go func() {
 		defer wg.Done()
@@ -813,6 +814,25 @@ func Run(ctx context.Context, o Options) error {
 			_, err := command.Handler(cctx, registry.Params{registry.RequestContextParam: ctx, "source": selector})
 			return err
 		}, log)
+	}()
+	// The workflow script worker executes check and watch runs. Runs left
+	// running by a previous daemon are recorded as interrupted first, so the
+	// worker never sees them. It runs on gctx like the goroutines above, so it
+	// kills its scripts and stops before st.Close(); their rows stay running
+	// for the next start.
+	if err := taskService.RecoverScriptRuns(ctx); err != nil {
+		log.Error("recover workflow script runs", "err", err)
+	}
+	workflowRunWake, stopWorkflowRunWake := taskHub.Subscribe()
+	workflowRunner := &workflowrun.Supervisor{
+		Jobs: taskService, Images: workflowImages.Store, BaseDir: p.Base,
+		BaseEnv: os.Environ, AgentRuntime: manager.ScriptRuntime,
+		Clock: time.Now, Wake: workflowRunWake, Log: log,
+	}
+	go func() {
+		defer wg.Done()
+		defer stopWorkflowRunWake()
+		workflowRunner.Run(gctx)
 	}()
 	// Defers run LIFO. Registration order top-to-bottom is:
 	//   st.Close (top of Run) -> manager.Shutdown -> [cancel+wg.Wait] -> proxy.Shutdown

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -1865,7 +1867,7 @@ func (m *Manager) startScript(ctx context.Context, ag agent.Agent, r script.Run)
 	}
 
 	secrets, _ := m.cfg.Store.SecretMap(ag.Name)
-	env := BuildEnv(os.Environ(), l.BinDir(), ag.Name, "", l.Sock(), false, "", "", ag.Env, secrets)
+	env := agentScriptEnv(ag, l, secrets, l.Sock())
 	// Appended last: os/exec keeps the final value of a duplicated key, so an
 	// agent's own environment cannot redefine the protocol.
 	env = append(env, script.ProtocolEnv()...)
@@ -1945,6 +1947,53 @@ func (m *Manager) startScript(ctx context.Context, ag agent.Agent, r script.Run)
 		}
 		m.finishScript(key, r, code, err, logPath)
 	}()
+}
+
+// agentScriptEnv is the environment of a script that runs as ag: the daemon
+// baseline, the agent's environment and secrets, and the agent bin directory
+// on PATH. toolsSock is the agent tools socket, or "" for a script that must
+// not reach it.
+func agentScriptEnv(ag agent.Agent, l agentdir.Layout, secrets map[string]string, toolsSock string) []string {
+	env := BuildEnv(os.Environ(), l.BinDir(), ag.Name, "", toolsSock, false, "", "", ag.Env, secrets)
+	if toolsSock != "" {
+		return env
+	}
+	out := env[:0]
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !noToolsSocketEnv[name] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// noToolsSocketEnv names the variables that reach the agent tools socket or
+// the daemon API; a script without the tools socket gets none of them.
+var noToolsSocketEnv = map[string]bool{
+	"TARIBOY_TOOLS_SOCKET":  true,
+	"TARIBOY_DAEMON_SOCKET": true,
+	"TARIBOY_PLUGIN_SOCKET": true,
+	"TARIBOY_PLUGIN_TOKEN":  true,
+}
+
+// ScriptRuntime returns the working directory and environment a script run
+// "as the agent" uses: the daemon baseline, the agent's environment and
+// secrets, the agent bin directory on PATH, and no tools socket.
+func (m *Manager) ScriptRuntime(agentName string) (cwd string, env []string, err error) {
+	ag, err := m.cfg.Store.Get(agentName)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, agent.ErrNotFound) {
+		return "", nil, fmt.Errorf("agent %q not found", agentName)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("load agent %q: %w", agentName, err)
+	}
+	secrets, err := m.cfg.Store.SecretMap(ag.Name)
+	if err != nil {
+		return "", nil, fmt.Errorf("load secrets of agent %q: %w", agentName, err)
+	}
+	l := agentdir.New(m.cfg.AgentsDir, ag.Name).WithRuntime(m.cfg.RuntimeDir)
+	return cwdOf(ag, l), agentScriptEnv(ag, l, secrets, ""), nil
 }
 
 func (m *Manager) finishScript(key string, r script.Run, code int, runErr error, logPath string) {
