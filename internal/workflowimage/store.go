@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/alekzonder/tariboy/internal/workflowfile"
@@ -59,7 +61,7 @@ func invalidf(format string, args ...any) error {
 // checkName rejects values that could escape the store when joined into a
 // path.
 func checkName(kind, v string) error {
-	if v == "" || v == "." || strings.ContainsAny(v, "/\\\x00") || strings.Contains(v, "..") {
+	if v == "" || v == "." || v == ".." || strings.ContainsAny(v, "/\\\x00") {
 		return invalidf("%s %q is not a valid name", kind, v)
 	}
 	return nil
@@ -100,6 +102,36 @@ func (s *Store) FilePath(name, digest, rel string) (string, error) {
 		return "", fmt.Errorf("%w: file %q", ErrNotFound, rel)
 	}
 	return p, nil
+}
+
+// readRegular reads a regular file without following a symlink at path, so a
+// file swapped after the directory walk cannot pull in outside bytes. The
+// type, size, and mode come from the opened descriptor, and the read stops
+// one byte past limit.
+func readRegular(path string, limit int64) ([]byte, fs.FileMode, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot be opened as a regular file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, 0, errors.New("is not a regular file")
+	}
+	if fi.Size() > limit {
+		return nil, 0, fmt.Errorf("is larger than %d bytes", limit)
+	}
+	content, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if int64(len(content)) > limit {
+		return nil, 0, fmt.Errorf("is larger than %d bytes", limit)
+	}
+	return content, fi.Mode(), nil
 }
 
 // scan reads the whole source directory. It rejects anything but regular
@@ -145,20 +177,20 @@ func scan(root string) ([]sourceFile, error) {
 		if info.Size() > maxFileSize {
 			return invalidf("file %q is larger than %d bytes", rel, maxFileSize)
 		}
-		total += info.Size()
+		content, mode, err := readRegular(p, maxFileSize)
+		if err != nil {
+			return invalidf("%q: %v", rel, err)
+		}
+		sum := sha256.Sum256(content)
+		total += int64(len(content))
 		if total > maxTotalSize {
 			return invalidf("source is larger than %d bytes", maxTotalSize)
 		}
-		content, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(content)
 		files = append(files, sourceFile{
 			FileEntry: FileEntry{
 				Path:       rel,
 				SHA256:     hex.EncodeToString(sum[:]),
-				Executable: info.Mode().Perm()&0o111 != 0,
+				Executable: mode.Perm()&0o111 != 0,
 				Size:       int64(len(content)),
 			},
 			content: content,
@@ -334,7 +366,9 @@ func (s *Store) moveTags(name, digest string, tags ...string) error {
 			err = s.writeTag(name, tag, digest)
 		}
 		if err != nil {
-			s.restoreTags(name, done)
+			if rerr := s.restoreTags(name, done); rerr != nil {
+				err = errors.Join(err, fmt.Errorf("restore tags: %w", rerr))
+			}
 			return err
 		}
 		done = append(done, tagState{tag, old, had})
@@ -348,14 +382,16 @@ type tagState struct {
 	had    bool
 }
 
-func (s *Store) restoreTags(name string, states []tagState) {
+func (s *Store) restoreTags(name string, states []tagState) error {
+	var errs []error
 	for _, st := range states {
 		if st.had {
-			_ = s.writeTag(name, st.tag, st.digest)
-		} else {
-			_ = os.Remove(s.tagPath(name, st.tag))
+			errs = append(errs, s.writeTag(name, st.tag, st.digest))
+		} else if err := os.Remove(s.tagPath(name, st.tag)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func (s *Store) writeTag(name, tag, digest string) error {

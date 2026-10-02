@@ -407,3 +407,83 @@ func TestPublishRestoresTagsOnFailure(t *testing.T) {
 		t.Fatalf("refs = %v", entries)
 	}
 }
+
+func TestReadRegularRefusesSymlinkAndOversize(t *testing.T) {
+	dir := t.TempDir()
+	put(t, dir, "real.txt", "secret", 0o644)
+	if err := os.Symlink("real.txt", filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readRegular(filepath.Join(dir, "link.txt"), 100); err == nil {
+		t.Fatal("symlink was read")
+	}
+	put(t, dir, "big.txt", strings.Repeat("a", 50), 0o755)
+	if _, _, err := readRegular(filepath.Join(dir, "big.txt"), 10); err == nil {
+		t.Fatal("oversized file was read")
+	}
+	b, mode, err := readRegular(filepath.Join(dir, "big.txt"), 50)
+	if err != nil || len(b) != 50 || mode.Perm()&0o111 == 0 {
+		t.Fatalf("readRegular = %d bytes, %v, %v", len(b), mode, err)
+	}
+}
+
+func TestPublishRollsBackFirstTagWhenSecondFails(t *testing.T) {
+	s := newStore(t)
+	a := publish(t, s, writeSource(t, "0.1.0"))
+	// A directory named latest makes the second tag move fail.
+	latest := filepath.Join(s.Dir, "demo", "tags", "latest")
+	if err := os.Remove(latest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(latest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Publish(writeSource(t, "0.2.0"), t0); err == nil {
+		t.Fatal("Publish succeeded")
+	}
+	if _, err := s.Resolve("demo", "0.2.0"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("0.2.0 tag survived: %v", err)
+	}
+	if d, err := s.Resolve("demo", "0.1.0"); err != nil || d != a.Digest {
+		t.Fatalf("0.1.0 = %q, %v", d, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(s.Dir, "demo", "refs")); len(entries) != 1 {
+		t.Fatalf("refs = %v", entries)
+	}
+}
+
+func TestRestoreTagsReportsFailure(t *testing.T) {
+	skipRoot(t)
+	s := newStore(t)
+	publish(t, s, writeSource(t, "0.1.0"))
+	tags := filepath.Join(s.Dir, "demo", "tags")
+	if err := os.Chmod(tags, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tags, 0o700) })
+	if err := s.restoreTags("demo", []tagState{{tag: "latest"}}); err == nil {
+		t.Fatal("restore failure was swallowed")
+	}
+}
+
+func TestNameWithDoubleDot(t *testing.T) {
+	s := newStore(t)
+	src := writeSource(t, "0.1.0")
+	data, err := os.ReadFile(filepath.Join(src.Dir, "Workflowfile.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, src.Dir, "Workflowfile.yaml", strings.Replace(string(data), "name: demo", "name: foo..bar", 1), 0o644)
+	src, err = workflowfile.Parse(src.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Publish(src, t0); err != nil {
+		t.Fatalf("Publish foo..bar: %v", err)
+	}
+	for _, c := range [][2]string{{"..", "latest"}, {"a/b", "latest"}, {"x", ".."}} {
+		if _, err := s.Resolve(c[0], c[1]); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Resolve(%q, %q) = %v", c[0], c[1], err)
+		}
+	}
+}
