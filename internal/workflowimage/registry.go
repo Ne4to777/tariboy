@@ -10,6 +10,10 @@ import (
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 )
 
+// beforeRecord runs after the content is published and before its row is
+// inserted. Tests replace it to inject failures between the two writes.
+var beforeRecord = func() {}
+
 // Registry publishes workflow images through the Store and records each
 // manifest in SQLite, so a manifest can be read by digest inside a database
 // transaction.
@@ -31,36 +35,53 @@ func (r *Registry) insert(m Manifest) error {
 }
 
 // Publish publishes to disk and records the manifest. On a database failure
-// it removes content and tags this call introduced.
+// it removes content and tags this call introduced. The whole sequence runs
+// under the package lock, so no other publication or removal can interleave
+// with the rollback.
 func (r *Registry) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
-	// Tag state before publishing, so a rollback can put "latest" back.
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Tag state before publishing, so a rollback can put it back. When the
+	// names are invalid, Store.Publish reports it.
 	var before []tagState
 	if src != nil && checkName("workflow name", src.Name) == nil && checkName("workflow version", src.WorkflowVersion) == nil {
 		for _, tag := range []string{src.WorkflowVersion, latestTag} {
 			d, err := r.Store.readTag(src.Name, tag)
-			before = append(before, tagState{tag: tag, digest: d, had: err == nil})
+			switch {
+			case err == nil:
+				before = append(before, tagState{tag: tag, digest: d, had: true})
+			case errors.Is(err, ErrNotFound):
+				before = append(before, tagState{tag: tag})
+			default:
+				return Manifest{}, false, err
+			}
 		}
 	}
-	m, created, err := r.Store.Publish(src, now)
+	m, created, err := r.Store.publishLocked(src, now)
 	if err != nil {
 		return Manifest{}, false, err
 	}
+	beforeRecord()
 	if err := r.insert(m); err != nil {
+		err = fmt.Errorf("record workflow image %s %s: %w", m.Name, m.Version, err)
 		if created {
-			r.rollback(m, before)
+			err = errors.Join(err, r.rollback(m, before))
 		}
-		return Manifest{}, false, fmt.Errorf("record workflow image %s %s: %w", m.Name, m.Version, err)
+		return Manifest{}, false, err
 	}
 	return m, created, nil
 }
 
 // rollback undoes a publication that created content: tags return to their
-// earlier state and the new content is deleted.
-func (r *Registry) rollback(m Manifest, before []tagState) {
-	mu.Lock()
-	defer mu.Unlock()
-	r.Store.restoreTags(m.Name, before)
-	_ = removeAll(r.Store.ContentDir(m.Name, m.Digest))
+// earlier state and the new content is deleted. The caller holds mu.
+func (r *Registry) rollback(m Manifest, before []tagState) error {
+	tagErr := r.Store.restoreTags(m.Name, before)
+	rmErr := removeAll(r.Store.ContentDir(m.Name, m.Digest))
+	if err := errors.Join(tagErr, rmErr); err != nil {
+		return fmt.Errorf("roll back workflow image %s %s: %w", m.Name, m.Version, err)
+	}
+	return nil
 }
 
 // Get returns the recorded manifest for a digest. It reads only SQLite.
@@ -82,7 +103,15 @@ func (r *Registry) Get(digest string) (Manifest, error) {
 
 // Remove removes a tag; when the content goes, it removes the row too.
 func (r *Registry) Remove(name, tag string) error {
-	digest, contentRemoved, err := r.Store.RemoveTag(name, tag)
+	if err := checkName("name", name); err != nil {
+		return err
+	}
+	if err := checkName("tag", tag); err != nil {
+		return err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	digest, contentRemoved, err := r.Store.removeTagLocked(name, tag)
 	if err != nil {
 		return err
 	}

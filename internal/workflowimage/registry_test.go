@@ -4,12 +4,117 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alekzonder/tariboy/internal/store"
+	"github.com/alekzonder/tariboy/internal/workflowfile"
 )
+
+const failInsertTrigger = `CREATE TRIGGER fail_insert BEFORE INSERT ON task_workflow_images
+WHEN NEW.version = '1.1.0' BEGIN SELECT RAISE(ABORT, 'insert refused'); END`
+
+func TestRegistryRollbackRestoresTags(t *testing.T) {
+	r, db := newRegistry(t)
+	first, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(failInsertTrigger); err != nil {
+		t.Fatal(err)
+	}
+	src := writeSource(t, "1.1.0")
+	put(t, src.Dir, "statuses/work.md", "changed\n", 0o644)
+	if _, _, err := r.Publish(src, t0); err == nil {
+		t.Fatal("publish succeeded although the insert was refused")
+	}
+	if d, err := r.Store.Resolve("demo", "latest"); err != nil || d != first.Digest {
+		t.Fatalf("latest = %q, %v; want %s", d, err, first.Digest)
+	}
+	if _, err := r.Store.Resolve("demo", "1.1.0"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("1.1.0 tag survived: %v", err)
+	}
+	entries, err := os.ReadDir(r.Store.refsDir("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != first.Digest {
+		t.Fatalf("refs = %v, want only %s", entries, first.Digest)
+	}
+}
+
+func TestRegistryRollbackFailureIsReported(t *testing.T) {
+	skipRoot(t)
+	r, db := newRegistry(t)
+	if _, _, err := r.Publish(writeSource(t, "1.0.0"), t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(failInsertTrigger); err != nil {
+		t.Fatal(err)
+	}
+	tags := r.Store.tagsDir("demo")
+	beforeRecord = func() { _ = os.Chmod(tags, 0o500) }
+	t.Cleanup(func() {
+		beforeRecord = func() {}
+		_ = os.Chmod(tags, 0o700)
+	})
+	src := writeSource(t, "1.1.0")
+	put(t, src.Dir, "statuses/work.md", "changed\n", 0o644)
+	_, _, err := r.Publish(src, t0)
+	if err == nil || !strings.Contains(err.Error(), "insert refused") || !strings.Contains(err.Error(), "roll back") {
+		t.Fatalf("err = %v, want the insert error joined with a rollback error", err)
+	}
+}
+
+func TestRegistryConcurrentPublish(t *testing.T) {
+	r, db := newRegistry(t)
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		name := fmt.Sprintf("demo%d", i)
+		a, b := writeSource(t, "1.0.0"), writeSource(t, "1.1.0")
+		put(t, b.Dir, "statuses/work.md", "other\n", 0o644)
+		a.Name, b.Name = name, name
+		srcs := []*workflowfile.File{a, b}
+		versions := []string{"1.0.0", "1.1.0"}
+		digests := make([]string, 2)
+		var wg sync.WaitGroup
+		for j := range srcs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				m, _, err := r.Publish(srcs[j], t0)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				digests[j] = m.Digest
+			}()
+		}
+		wg.Wait()
+		if t.Failed() {
+			return
+		}
+		for j, v := range versions {
+			if d, err := r.Store.Resolve(name, v); err != nil || d != digests[j] {
+				t.Fatalf("%s tag = %q, %v; want %s", v, d, err, digests[j])
+			}
+			if _, err := r.Get(digests[j]); err != nil {
+				t.Fatalf("row for %s missing: %v", v, err)
+			}
+		}
+		if d, err := r.Store.Resolve(name, "latest"); err != nil || (d != digests[0] && d != digests[1]) {
+			t.Fatalf("latest = %q, %v", d, err)
+		}
+	}
+	if n := rowCount(t, db); n != 2*rounds {
+		t.Fatalf("rows = %d, want %d", n, 2*rounds)
+	}
+}
 
 func newRegistry(t *testing.T) (*Registry, *sql.DB) {
 	t.Helper()

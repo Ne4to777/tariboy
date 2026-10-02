@@ -212,6 +212,13 @@ func scan(root string) ([]sourceFile, error) {
 // and every file's path, executable bit, and content, and nothing else. The
 // bool reports whether the content was new.
 func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	return s.publishLocked(src, now)
+}
+
+// publishLocked is Publish for a caller that already holds mu.
+func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
 	if errs := workflowfile.Validate(src); len(errs) > 0 {
 		return Manifest{}, false, &InvalidError{Errors: errs}
 	}
@@ -233,9 +240,6 @@ func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, 
 	if err != nil {
 		return Manifest{}, false, err
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	name, version := src.Name, src.WorkflowVersion
 	prev, err := s.readTag(name, version)
@@ -569,6 +573,12 @@ func (s *Store) RemoveTag(name, tag string) (string, bool, error) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	return s.removeTagLocked(name, tag)
+}
+
+// removeTagLocked is RemoveTag for a caller that already holds mu and has
+// checked the names.
+func (s *Store) removeTagLocked(name, tag string) (string, bool, error) {
 	digest, err := s.readTag(name, tag)
 	if err != nil {
 		return "", false, err
