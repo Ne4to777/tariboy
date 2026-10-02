@@ -215,9 +215,12 @@ queue prefix plus four random characters (`TEST-fkt3`), minted against the
 `task_key` UNIQUE constraint rather than a counter, and it never changes when a
 task moves between parents or between daemons. `task_key_aliases` holds the
 numeric keys retired by that migration so they keep resolving; the daemon
-rewrites any remaining numeric key at start, in one transaction that also
-rewrites `agents.current_goal_task_key`. `task_queues.next_number` is left in
-the schema but is no longer read or advanced. After that migration the daemon
+rewrites any remaining numeric key on its first start after the upgrade, in one
+transaction that also rewrites `agents.current_goal_task_key` and records the
+rewrite in `task_legacy_keys_migrated`. Later starts skip it, because a random
+suffix can be all digits too and must not be mistaken for a legacy key.
+`task_queues.next_number` is left in the schema but is no longer read or
+advanced. After that migration the daemon
 inserts the default `TASK` queue when no queue has that prefix. Recursive
 CTEs derive descendants, inherited access, blocking cycles, and active
 descendants without a configured depth limit.

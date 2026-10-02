@@ -1464,9 +1464,12 @@ queue prefix plus four random characters (`TEST-fkt3`), minted against the
 `task_key` UNIQUE constraint rather than a counter, and it never changes when a
 task moves between parents or between daemons. `task_key_aliases` holds the
 numeric keys retired by that migration so they keep resolving; the daemon
-rewrites any remaining numeric key at start, in one transaction that also
-rewrites `agents.current_goal_task_key`. `task_queues.next_number` is left in
-the schema but is no longer read or advanced. After that migration the daemon
+rewrites any remaining numeric key on its first start after the upgrade, in one
+transaction that also rewrites `agents.current_goal_task_key` and records the
+rewrite in `task_legacy_keys_migrated`. Later starts skip it, because a random
+suffix can be all digits too and must not be mistaken for a legacy key.
+`task_queues.next_number` is left in the schema but is no longer read or
+advanced. After that migration the daemon
 inserts the default `TASK` queue when no queue has that prefix. Recursive
 CTEs derive descendants, inherited access, blocking cycles, and active
 descendants without a configured depth limit.
@@ -5847,13 +5850,13 @@ image.
 # Ten-minute quickstart
 Source: https://alekzonder.github.io/tariboy/quickstart
 
-This path is for the `0.71.1` alpha on an Apple Silicon Mac.
+This path is for the `0.71.2` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.71.1_aarch64.dmg`;
+- a verified `Tariboy_0.71.2_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -7177,7 +7180,7 @@ runtime lifecycle.
 
 ## Alpha signing and Gatekeeper
 
-`0.71.1` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.71.2` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &
@@ -7274,7 +7277,7 @@ Source: https://alekzonder.github.io/tariboy/support
    selected harness on the remote host.
 5. For a daemon older than `0.10.1`, finish active work before updating it.
 
-The app and bundled daemons must report `0.71.1`. Resolve a local mismatch with
+The app and bundled daemons must report `0.71.2`. Resolve a local mismatch with
 the menu-bar **Install/Update CLI** action and a remote mismatch with the host
 Update action; do not copy or repoint individual binaries.
 
