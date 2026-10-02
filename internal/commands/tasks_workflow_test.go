@@ -246,8 +246,15 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 		}
 	}
 	viewProps, _ := doc.Components.Schemas["WorkflowView"]["properties"].(map[string]any)
-	if viewProps["paused_reason"] == nil {
-		t.Error("WorkflowView schema lacks paused_reason")
+	for _, name := range []string{"paused_reason", "declared_artifacts", "statuses"} {
+		if viewProps[name] == nil {
+			t.Errorf("WorkflowView schema lacks %s", name)
+		}
+	}
+	for _, name := range []string{"DeclaredArtifact", "StatusView"} {
+		if doc.Components.Schemas[name] == nil {
+			t.Errorf("openapi lacks schema %s", name)
+		}
 	}
 	props, _ := doc.Components.Schemas["Task"]["properties"].(map[string]any)
 	for _, name := range []string{"category", "waiting_on", "workflow_digest", "workflow_name", "workflow_version", "workflow_paused_reason"} {

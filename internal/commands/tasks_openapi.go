@@ -45,11 +45,16 @@ func taskOpenAPISchemas() map[string]map[string]any {
 		"Artifact":      objectSchema([]string{"id", "name", "value", "author", "created_at"}, map[string]any{"id": integer, "name": str, "value": str, "author": str, "created_at": str}),
 		"QueueWorkflow": objectSchema([]string{"queue", "name", "version", "digest", "revision", "updated_at"}, map[string]any{"queue": str, "name": str, "version": str, "digest": str, "revision": integer, "updated_at": str}),
 		"QueueSecret":   objectSchema([]string{"key", "updated_at"}, map[string]any{"key": str, "updated_at": str}),
-		"WorkflowView": objectSchema([]string{"name", "version", "digest", "status", "category", "owner", "outcomes", "artifacts", "visits"}, map[string]any{
+		"WorkflowView": objectSchema([]string{"name", "version", "digest", "status", "category", "owner", "outcomes", "artifacts", "visits", "declared_artifacts", "statuses"}, map[string]any{
 			"name": str, "version": str, "digest": str, "status": str, "category": status,
 			"waiting_on": str, "paused_reason": str, "owner": str, "holder": str, "instructions_path": str,
 			"outcomes": arrayOf("OutcomeView"), "artifacts": arrayOf("Artifact"), "visits": arrayOf("StatusVisit"),
-			"last_request": schemaRef("TransitionRequest"), "runs": arrayOf("ScriptRun")}),
+			"last_request": schemaRef("TransitionRequest"), "runs": arrayOf("ScriptRun"),
+			"declared_artifacts": arrayOf("DeclaredArtifact"), "statuses": arrayOf("StatusView")}),
+		"DeclaredArtifact": objectSchema([]string{"name", "description"}, map[string]any{"name": str, "description": str}),
+		"StatusView": objectSchema([]string{"id", "owner", "terminal"}, map[string]any{"id": str,
+			"owner":    map[string]any{"type": "string", "description": "pool:NAME, customer, script, or empty for a terminal status"},
+			"terminal": map[string]any{"type": "boolean"}}),
 		"ScriptRun": objectSchema([]string{"id", "task_key", "kind", "script", "run_as", "state", "created_at"}, map[string]any{
 			"id": integer, "task_key": str,
 			"kind":      map[string]any{"type": "string", "enum": []string{"check", "watch"}},

@@ -607,6 +607,29 @@ func TestAQuestionAnsweredWithinTheIterationIsNotIdle(t *testing.T) {
 	}
 }
 
+func TestTheIterationInWhichTheAnswerArrivesIsNotIdle(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	ctx := context.Background()
+	svc.clock = func() time.Time { return at(2) }
+	if _, err := svc.AddComment(ctx, AgentActor("dev-1"), task.Key, AddCommentInput{Body: "@" + task.Customer + " which database?"}); err != nil {
+		t.Fatal(err)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 0, 5))
+	// The customer answers during the next iteration, which only waited.
+	svc.clock = func() time.Time { return at(12) }
+	if _, err := svc.AddComment(ctx, CustomerActor("customer"), task.Key, AddCommentInput{Body: "Postgres."}); err != nil {
+		t.Fatal(err)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 6, 15))
+	if got := visitCounters(t, svc, task); got[0] != 0 {
+		t.Fatalf("counters = %v; the answer arrived during the iteration", got)
+	}
+	recordEnd(t, svc, iterationBetween("dev-1", task.Key, 16, 20))
+	if got := visitCounters(t, svc, task); got[0] != 1 {
+		t.Fatalf("counters = %v; the next plain iteration counts", got)
+	}
+}
+
 // resumedAt returns the open visit's resumed_at.
 func resumedAt(t *testing.T, svc *Service, task Task) string {
 	t.Helper()

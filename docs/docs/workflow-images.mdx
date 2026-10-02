@@ -234,6 +234,10 @@ then code.
 | `file_missing` | A named file does not exist or cannot be read. |
 | `file_not_regular` | A named path, or a component of it, is a symlink or not a regular file. |
 | `script_not_executable` | A named script has no executable bit. |
+| `source_invalid` | The source directory itself is refused: a symlink or special file anywhere in it, a root `manifest.json`, or a file, file-count, or total-size limit exceeded. Checked only once the manifest has no error. `validate` reports it with `path` `source`; `build` refuses with `workflow_invalid` and the same message. |
+
+`validate` runs the same checks as `build`, so a source `validate` accepts is
+one `build` accepts, apart from a version already published with other content.
 
 A manifest that cannot be read or decoded (including an unknown field) is
 reported as `workflow_invalid` without a per-field list.

@@ -260,26 +260,51 @@ func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, 
 	return s.publishLocked(src, now)
 }
 
-// publishLocked is Publish for a caller that already holds mu.
-func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+// Validate runs every check Publish makes before it writes anything: the
+// manifest validation, then the source scan. A source the scan refuses is
+// reported as one source_invalid error. It reads src.Dir and writes nothing.
+func Validate(src *workflowfile.File) []workflowfile.ValidationError {
+	_, _, err := prepareSource(src)
+	var invalid *InvalidError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &invalid):
+		return invalid.Errors
+	default:
+		return []workflowfile.ValidationError{{Code: "source_invalid", Path: "source", Message: err.Error()}}
+	}
+}
+
+// prepareSource validates src and reads its whole directory.
+func prepareSource(src *workflowfile.File) ([]sourceFile, []FileEntry, error) {
 	if errs := workflowfile.Validate(src); len(errs) > 0 {
-		return Manifest{}, false, &InvalidError{Errors: errs}
+		return nil, nil, &InvalidError{Errors: errs}
 	}
 	if err := checkName("workflow name", src.Name); err != nil {
-		return Manifest{}, false, err
+		return nil, nil, err
 	}
 	if err := checkName("workflow version", src.WorkflowVersion); err != nil {
-		return Manifest{}, false, err
+		return nil, nil, err
 	}
 	files, err := scan(src.Dir)
 	if err != nil {
-		return Manifest{}, false, err
+		return nil, nil, err
 	}
 	entries := make([]FileEntry, len(files))
 	for i, f := range files {
 		entries[i] = f.FileEntry
 	}
 	if err := checkScanned(src, entries); err != nil {
+		return nil, nil, err
+	}
+	return files, entries, nil
+}
+
+// publishLocked is Publish for a caller that already holds mu.
+func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+	files, entries, err := prepareSource(src)
+	if err != nil {
 		return Manifest{}, false, err
 	}
 	digest := computeDigest(entries)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -147,11 +148,28 @@ func TestWorkflowGoalHolderQuestion(t *testing.T) {
 	g.Task.Status = tasks.StatusWaitCustomer
 	g.View.Category, g.View.WaitingOn = tasks.StatusWaitCustomer, tasks.WaitingOnCustomer
 	g.View.LastRequest = nil
+	g.CustomerQuestionBy = []string{"user:other", "agent:dev-1"}
 	want := poolGoalPrefix("develop", "wait_customer") +
 		"### Status instructions\n\nYour question to the customer is open. Wait for the customer's answer before you work on this task again.\n\n" +
 		"### Artifacts\n\n- `summary` by agent:dev-1:\n```\ns\n```"
 	if got := FormatRuntimeWorkflowGoal(g); got != want {
 		t.Fatalf("goal =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestWorkflowGoalAnotherPrincipalsQuestion(t *testing.T) {
+	for name, askers := range map[string][]string{"former holder": {"agent:dev-2"}, "unknown": nil} {
+		g := poolGoal()
+		g.Task.Status = tasks.StatusWaitCustomer
+		g.View.Category, g.View.WaitingOn = tasks.StatusWaitCustomer, tasks.WaitingOnCustomer
+		g.View.LastRequest = nil
+		g.CustomerQuestionBy = askers
+		want := poolGoalPrefix("develop", "wait_customer") +
+			"### Status instructions\n\nA question to the customer is open. Wait for the answer before you work on this task again.\n\n" +
+			"### Artifacts\n\n- `summary` by agent:dev-1:\n```\ns\n```"
+		if got := FormatRuntimeWorkflowGoal(g); got != want {
+			t.Fatalf("%s: goal =\n%s\nwant\n%s", name, got, want)
+		}
 	}
 }
 
@@ -345,7 +363,7 @@ func TestTaskWorkflowGoalsWarnsOnceWithoutAnImageStore(t *testing.T) {
 	warnNoWorkflowImages = sync.Once{}
 	var logged strings.Builder
 	src := TaskWorkflowGoals{
-		Tasks: stubViewReader{view: tasks.WorkflowView{Status: "develop", InstructionsPath: "statuses/develop.md"}},
+		Tasks: &stubViewReader{view: tasks.WorkflowView{Status: "develop", InstructionsPath: "statuses/develop.md"}},
 		Log:   slog.New(slog.NewTextHandler(&logged, nil)),
 	}
 	for i := 0; i < 3; i++ {
@@ -359,8 +377,40 @@ func TestTaskWorkflowGoalsWarnsOnceWithoutAnImageStore(t *testing.T) {
 	}
 }
 
-type stubViewReader struct{ view tasks.WorkflowView }
+func TestTaskWorkflowGoalsNamesWhoAskedTheCustomer(t *testing.T) {
+	waiting := tasks.WorkflowView{Status: "develop", Category: tasks.StatusWaitCustomer, WaitingOn: tasks.WaitingOnCustomer,
+		Owner: "pool:developers", Holder: "agent:dev-2"}
+	detail := tasks.TaskDetail{Task: tasks.Task{Customer: "user:customer"}, WaitingFor: []tasks.WaitingFor{
+		{ExpectedPrincipal: "user:customer", RequestingPrincipal: "agent:dev-1"},
+		{ExpectedPrincipal: "agent:reviewer-1", RequestingPrincipal: "agent:dev-2"},
+	}}
+	reader := &stubViewReader{view: waiting, detail: detail}
+	goal, err := TaskWorkflowGoals{Tasks: reader}.WorkflowGoal(context.Background(), "DEV-12", "dev-2")
+	if err != nil || !reflect.DeepEqual(goal.CustomerQuestionBy, []string{"agent:dev-1"}) {
+		t.Fatalf("goal = %#v, %v", goal, err)
+	}
+	if !strings.Contains(FormatRuntimeWorkflowGoal(goal), "A question to the customer is open.") {
+		t.Fatalf("goal block =\n%s", FormatRuntimeWorkflowGoal(goal))
+	}
+	// A task that does not wait on the customer reads no waits.
+	reader.view.Category, reader.view.WaitingOn, reader.taskReads = tasks.StatusInProgress, "", 0
+	if goal, err = (TaskWorkflowGoals{Tasks: reader}).WorkflowGoal(context.Background(), "DEV-12", "dev-2"); err != nil ||
+		goal.CustomerQuestionBy != nil || reader.taskReads != 0 {
+		t.Fatalf("goal = %#v, reads = %d, %v", goal, reader.taskReads, err)
+	}
+}
 
-func (s stubViewReader) GetWorkflow(context.Context, tasks.Actor, string) (tasks.WorkflowView, error) {
+type stubViewReader struct {
+	view      tasks.WorkflowView
+	detail    tasks.TaskDetail
+	taskReads int
+}
+
+func (s *stubViewReader) GetWorkflow(context.Context, tasks.Actor, string) (tasks.WorkflowView, error) {
 	return s.view, nil
+}
+
+func (s *stubViewReader) GetTask(context.Context, tasks.Actor, string) (tasks.TaskDetail, error) {
+	s.taskReads++
+	return s.detail, nil
 }

@@ -105,7 +105,9 @@ func workflowValidate() registry.Command {
 			if err != nil {
 				return nil, err
 			}
-			errs := workflowfile.Validate(f)
+			// The same validation build runs, so validate reports every
+			// source build would refuse.
+			errs := workflowimage.Validate(f)
 			if errs == nil {
 				errs = []workflowfile.ValidationError{}
 			}

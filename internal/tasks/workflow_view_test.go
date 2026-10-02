@@ -141,6 +141,55 @@ func TestGetWorkflowOfACancelledTaskOffersNoExit(t *testing.T) {
 	}
 }
 
+func TestGetWorkflowListsDeclaredArtifactsAndStatuses(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	if _, err := svc.db.Exec(`UPDATE task_workflow_images SET manifest = json_set(manifest, '$.definition.artifacts[0].description', 'The plan.')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	wantArtifacts := []DeclaredArtifact{{Name: "plan", Description: "The plan."}, {Name: "summary"}}
+	wantStatuses := []StatusView{
+		{ID: "develop", Owner: "pool:developers"}, {ID: "review", Owner: "pool:reviewers"},
+		{ID: "approval", Owner: "customer"}, {ID: "merge", Owner: "script"},
+		{ID: "done", Terminal: true}, {ID: "dropped", Terminal: true},
+	}
+	view, err := svc.GetWorkflow(ctx, actor, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(view.DeclaredArtifacts, wantArtifacts) || !reflect.DeepEqual(view.Statuses, wantStatuses) {
+		t.Fatalf("declared = %#v statuses = %#v", view.DeclaredArtifacts, view.Statuses)
+	}
+	f := jsonFields(t, view)
+	statuses, _ := f["statuses"].([]any)
+	if f["declared_artifacts"] == nil || len(statuses) != 6 ||
+		!reflect.DeepEqual(statuses[4], map[string]any{"id": "done", "owner": "", "terminal": true}) {
+		t.Fatalf("JSON = %v", f)
+	}
+	// A closed task still lists them: an operator may still move it.
+	if _, err := svc.CancelWorkflowTask(ctx, actor, task.Key); err != nil {
+		t.Fatal(err)
+	}
+	if view, err = svc.GetWorkflow(ctx, actor, task.Key); err != nil || !reflect.DeepEqual(view.Statuses, wantStatuses) ||
+		!reflect.DeepEqual(view.DeclaredArtifacts, wantArtifacts) {
+		t.Fatalf("cancelled view = %#v, %v", view, err)
+	}
+}
+
+func TestGetWorkflowWithNoDeclaredArtifactsHasEmptyLists(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	if _, err := svc.db.Exec(`UPDATE task_workflow_images SET manifest = json_remove(manifest, '$.definition.artifacts')`); err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.GetWorkflow(context.Background(), actor, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := jsonFields(t, view); f["declared_artifacts"] == nil {
+		t.Fatalf("JSON declared_artifacts = %v", f["declared_artifacts"])
+	}
+}
+
 func TestGetWorkflowInAStatusTheManifestDoesNotDeclare(t *testing.T) {
 	svc, actor, task := requestFixture(t)
 	if _, err := svc.db.Exec(`UPDATE tasks SET workflow_status = 'gone' WHERE id = ?`, task.ID); err != nil {

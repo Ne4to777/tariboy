@@ -507,7 +507,9 @@ than `every`. Runs of one task never overlap.
   quiet runs of a visit are kept, and only the newest 20 quiet runs of a task
   keep their files under `runs/`; other runs, and a run cancelled while it went
   quiet, keep theirs. Files of quiet runs from before a daemon restart stay
-  until nightly retention removes the task's directory.
+  until nightly retention removes the task's directory. A run cancelled between
+  the worker's last poll of it and its completion may still lose its log
+  directory later; only the task's newest 20 quiet logs survive.
 - Exit `0` with an `outcome` in the result file applies that transition. The
   daemon stores the script's artifacts first, then records an applied
   transition request authored by `script:<path>`, so the visit history and the
@@ -800,8 +802,10 @@ Outcomes, last request, and commands appear only while the agent may work: a
 pool status that is not paused, with no open question of the holder. For a
 script, customer, closed, or paused task the instructions section says the
 agent must not work on it; while the holder's own question to the customer is
-open it says that question is open and the agent must wait for the answer. In
-none of these cases is the agent given an `advance` line.
+open it says "Your question to the customer is open" and the agent must wait
+for the answer. When the pool status waits on another principal's question,
+such as one a former holder asked, it says "A question to the customer is
+open" instead. In none of these cases is the agent given an `advance` line.
 
 ````text
 This task follows a workflow. Do only the work of its current status, `develop`. ...
@@ -912,9 +916,10 @@ the iteration started, and nothing in this list happened:
 - a check of an earlier request was still pending when the iteration ended, or
   that request was cancelled or applied during the iteration;
 - the holder's own question to the customer was open when the iteration ended,
-  or the holder asked one during the iteration; the customer's answer also
-  resets the count to zero, so the next plain iteration after the answer
-  counts one;
+  the holder asked one during the iteration, or the customer answered it during
+  the iteration; the answer, and the iteration in which it arrives, do not
+  count: the answer resets the count to zero, so the next plain iteration after
+  the one in which it arrived counts one;
 - the iteration started before the status was entered, or before the pause it
   belongs to was resumed;
 - the harness could not be launched or died before producing output (a
@@ -1043,6 +1048,8 @@ and what it may do next. Agents and the operator can read it.
 | `visits` | Every stay in a status with who entered it, when it was left, and by which outcome and message. |
 | `last_request` | The latest transition request: `id`, `outcome`, `message`, `actor`, `state`, `result_message`, times, and `wait_seconds` while pending. |
 | `runs` | The 20 most recent script runs, newest first. |
+| `declared_artifacts` | Every artifact the manifest declares, in manifest order, as `name` and `description`, whether or not it has a value. |
+| `statuses` | Every status the manifest declares, in manifest order, as `id`, `owner` (as in `owner` above: `pool:<name>`, `customer`, `script`, or empty for a terminal status), and `terminal`. A finished task lists them too. |
 
 ## Commands
 

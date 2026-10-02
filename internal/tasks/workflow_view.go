@@ -17,6 +17,19 @@ type OutcomeView struct {
 	Checks   []string `json:"checks,omitempty"`  // script paths
 }
 
+// DeclaredArtifact is one artifact the manifest declares.
+type DeclaredArtifact struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// StatusView is one status the manifest declares.
+type StatusView struct {
+	ID       string `json:"id"`
+	Owner    string `json:"owner"` // "pool:<name>", "customer", "script", or "" for terminal
+	Terminal bool   `json:"terminal"`
+}
+
 // WorkflowView is the read model of one workflow task: where it is, who owns
 // it, what it may do next, and its history.
 type WorkflowView struct {
@@ -35,6 +48,22 @@ type WorkflowView struct {
 	Visits           []StatusVisit      `json:"visits"`
 	LastRequest      *TransitionRequest `json:"last_request,omitempty"`
 	Runs             []ScriptRun        `json:"runs"` // the most recent script runs, newest first
+	// DeclaredArtifacts and Statuses list the manifest's artifacts and
+	// statuses in manifest order.
+	DeclaredArtifacts []DeclaredArtifact `json:"declared_artifacts"`
+	Statuses          []StatusView       `json:"statuses"`
+}
+
+// statusOwner renders a status's owner as the view shows it.
+func statusOwner(status workflowfile.Status) string {
+	switch {
+	case status.Terminal:
+		return ""
+	case status.Owner.Kind == workflowfile.OwnerPool:
+		return "pool:" + status.Owner.Pool
+	default:
+		return status.Owner.Kind
+	}
 }
 
 // GetWorkflow returns the workflow view of a task the actor may read.
@@ -54,7 +83,15 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 	view := WorkflowView{
 		Name: manifest.Name, Version: manifest.Version, Digest: manifest.Digest,
 		Status: task.WorkflowStatus, Category: task.Category, WaitingOn: task.WaitingOn, PausedReason: task.WorkflowPausedReason,
-		Outcomes: []OutcomeView{},
+		Outcomes:          []OutcomeView{},
+		DeclaredArtifacts: make([]DeclaredArtifact, 0, len(manifest.Definition.Artifacts)),
+		Statuses:          make([]StatusView, 0, len(manifest.Definition.Statuses)),
+	}
+	for _, a := range manifest.Definition.Artifacts {
+		view.DeclaredArtifacts = append(view.DeclaredArtifacts, DeclaredArtifact{Name: a.Name, Description: a.Description})
+	}
+	for _, s := range manifest.Definition.Statuses {
+		view.Statuses = append(view.Statuses, StatusView{ID: s.ID, Owner: statusOwner(s), Terminal: s.Terminal})
 	}
 	if view.Artifacts, err = currentArtifactsTx(ctx, tx, task.ID); err != nil {
 		return WorkflowView{}, err
@@ -64,13 +101,9 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 	// with workflow_closed.
 	closed := task.Status == StatusDone || task.Status == StatusCancelled
 	if status, ok := currentStatus(manifest, task.WorkflowStatus); ok && !closed {
-		switch {
-		case status.Terminal:
-		case status.Owner.Kind == workflowfile.OwnerPool:
-			view.Owner = "pool:" + status.Owner.Pool
+		view.Owner = statusOwner(status)
+		if !status.Terminal && status.Owner.Kind == workflowfile.OwnerPool {
 			view.Holder = task.Assignee
-		default:
-			view.Owner = status.Owner.Kind
 		}
 		view.InstructionsPath = strings.TrimPrefix(status.Instructions, "./")
 		for _, transition := range status.Transitions {

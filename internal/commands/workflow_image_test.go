@@ -134,6 +134,47 @@ func TestWorkflowValidateReportsResultWithoutWriting(t *testing.T) {
 	}
 }
 
+// TestWorkflowValidateReportsWhatBuildRefuses pins that validate runs the
+// same validation as build: every source build refuses, validate reports.
+func TestWorkflowValidateReportsWhatBuildRefuses(t *testing.T) {
+	cases := map[string]func(t *testing.T, src string){
+		"transition target names no status": func(t *testing.T, src string) {
+			m := strings.Replace(strings.ReplaceAll(workflowTestManifest, "VERSION", "1.0.0"), "to: finished", "to: nowhere", 1)
+			if err := os.WriteFile(filepath.Join(src, "Workflowfile.yaml"), []byte(m), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink in the source": func(t *testing.T, src string) {
+			if err := os.Symlink("work.md", filepath.Join(src, "statuses", "link.md")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"reserved manifest name": func(t *testing.T, src string) {
+			if err := os.WriteFile(filepath.Join(src, "manifest.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, breakSource := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := workflowCtx(t)
+			src := writeWorkflowSource(t, t.TempDir(), "1.0.0")
+			breakSource(t, src)
+			_, buildErr := cmdHandler(t, "workflow.build")(c, registry.Params{"path": src})
+			userError(t, buildErr, "workflow_invalid", http.StatusBadRequest)
+			got, err := cmdHandler(t, "workflow.validate")(c, registry.Params{"path": src})
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj := jsonObject(t, got)
+			errs, _ := obj["errors"].([]any)
+			if obj["valid"] != false || len(errs) == 0 {
+				t.Fatalf("validate = %#v; build refused with %v", obj, buildErr)
+			}
+		})
+	}
+}
+
 func TestWorkflowValidateUnparsableManifestIsWorkflowInvalid(t *testing.T) {
 	c := workflowCtx(t)
 	dir := t.TempDir()

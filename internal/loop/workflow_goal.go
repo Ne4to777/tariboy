@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,9 @@ type WorkflowGoal struct {
 	// InstructionsUnreadable is set when the status names an instructions file
 	// that could not be read.
 	InstructionsUnreadable bool
+	// CustomerQuestionBy lists the principals whose questions to the customer
+	// are open; it is read only while a pool status waits on the customer.
+	CustomerQuestionBy []string
 }
 
 // WorkflowGoalSource loads the workflow data of a task for the agent that
@@ -162,9 +166,12 @@ func goalInstructions(goal WorkflowGoal) string {
 	case !strings.HasPrefix(view.Owner, "pool:"):
 		return "This task is closed and has no open status. Do not work on it."
 	case view.Category == tasks.StatusWaitCustomer:
-		// In a pool status only the holder's own question makes an unpaused
-		// task wait on the customer.
-		return "Your question to the customer is open. Wait for the customer's answer before you work on this task again."
+		// In a pool status a question asked by a holder makes an unpaused task
+		// wait on the customer; it may be a former holder's.
+		if view.Holder != "" && slices.Contains(goal.CustomerQuestionBy, view.Holder) {
+			return "Your question to the customer is open. Wait for the customer's answer before you work on this task again."
+		}
+		return "A question to the customer is open. Wait for the answer before you work on this task again."
 	case goal.InstructionsUnreadable:
 		return "The status instructions could not be read."
 	case view.InstructionsPath == "" || strings.TrimSpace(goal.Instructions) == "":
@@ -300,6 +307,7 @@ type TaskWorkflowGoals struct {
 
 type workflowViewReader interface {
 	GetWorkflow(context.Context, tasks.Actor, string) (tasks.WorkflowView, error)
+	GetTask(context.Context, tasks.Actor, string) (tasks.TaskDetail, error)
 }
 
 // WorkflowGoal reads the task as agent sees it and its status instructions.
@@ -310,6 +318,21 @@ func (g TaskWorkflowGoals) WorkflowGoal(ctx context.Context, key, agent string) 
 		return WorkflowGoal{}, err
 	}
 	goal := WorkflowGoal{View: view}
+	if view.WaitingOn == tasks.WaitingOnCustomer && strings.HasPrefix(view.Owner, "pool:") {
+		// Whose question it is decides the Goal's wording; without the waits
+		// the neutral wording is used.
+		if detail, err := g.Tasks.GetTask(ctx, tasks.AgentActor(agent), key); err != nil {
+			if g.Log != nil {
+				g.Log.Warn("read workflow task waits", "task", key, "err", err)
+			}
+		} else {
+			for _, wait := range detail.WaitingFor {
+				if wait.ExpectedPrincipal == detail.Task.Customer {
+					goal.CustomerQuestionBy = append(goal.CustomerQuestionBy, wait.RequestingPrincipal)
+				}
+			}
+		}
+	}
 	if view.InstructionsPath == "" {
 		return goal, nil
 	}

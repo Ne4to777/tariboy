@@ -198,27 +198,38 @@ func requestedDuringTx(ctx context.Context, tx *sql.Tx, visitID int64, start, fi
 }
 
 // askedCustomerDuringTx reports whether the task's assignee asked the
-// customer a question from start to finish, both included.
+// customer a question, or had such a question answered, from start to finish,
+// both included.
 func askedCustomerDuringTx(ctx context.Context, tx *sql.Tx, task Task, start, finish time.Time) (bool, error) {
+	from, to := secondOf(start), secondAfter(finish)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT requested_at FROM task_waiting_for
-		WHERE expected_principal = ? AND task_id = ? AND requesting_principal = ? AND requested_at >= ? AND requested_at < ?`,
-		task.Customer, task.ID, task.Assignee, secondOf(start), secondAfter(finish))
+		SELECT requested_at, resolved_at FROM task_waiting_for
+		WHERE expected_principal = ? AND task_id = ? AND requesting_principal = ?
+		  AND ((requested_at >= ? AND requested_at < ?) OR (resolved_at >= ? AND resolved_at < ?))`,
+		task.Customer, task.ID, task.Assignee, from, to, from, to)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
+	within := func(field, value string) (bool, error) {
+		if value == "" {
+			return false, nil
+		}
+		t, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return false, fmt.Errorf("wait of task %s %s: %w", task.Key, field, err)
+		}
+		return !t.Before(start) && !t.After(finish), nil
+	}
 	for rows.Next() {
-		var requestedAt string
-		if err := rows.Scan(&requestedAt); err != nil {
+		var requestedAt, resolvedAt string
+		if err := rows.Scan(&requestedAt, &resolvedAt); err != nil {
 			return false, err
 		}
-		requested, err := time.Parse(time.RFC3339Nano, requestedAt)
-		if err != nil {
-			return false, fmt.Errorf("wait of task %s requested_at: %w", task.Key, err)
-		}
-		if !requested.Before(start) && !requested.After(finish) {
-			return true, nil
+		for _, f := range [][2]string{{"requested_at", requestedAt}, {"resolved_at", resolvedAt}} {
+			if ok, err := within(f[0], f[1]); err != nil || ok {
+				return ok, err
+			}
 		}
 	}
 	return false, rows.Err()

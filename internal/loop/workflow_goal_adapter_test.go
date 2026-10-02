@@ -130,4 +130,12 @@ func TestTaskWorkflowGoalsReadsTheViewAndTheInstructions(t *testing.T) {
 	if !strings.Contains(got, "### Status instructions\n\nThe status instructions could not be read.\n") || !strings.Contains(got, "### Commands") {
 		t.Fatalf("missing file:\n%s", got)
 	}
+
+	// The holder's own question reads as its own.
+	if _, err := svc.AddComment(ctx, tasks.AgentActor("dev-1"), task.Key, tasks.AddCommentInput{Body: "@user:customer which API?"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := RuntimeGoal(ctx, src, task, "dev-1", log); !strings.Contains(got, "\n\nYour question to the customer is open.") {
+		t.Fatalf("holder question:\n%s", got)
+	}
 }
