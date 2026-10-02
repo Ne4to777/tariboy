@@ -44,17 +44,20 @@ it("queues exactly one one-shot run", async () => {
   await waitFor(() => expect(calls.some((call) => call.path === "/api/agents/alpha/scripts/run" && call.method === "POST" && (call.body as { command?: string }).command === "make check")).toBe(true));
 });
 
-it("starts an immediate fixed-interval script with explicit quiet exit", async () => {
+it("starts a fixed-interval script without a quiet exit setting", async () => {
   const calls: Array<{ path: string; method: string; body?: unknown }> = [];
   stubFetch(calls); renderPage(); await screen.findByRole("button", { name: /nightly/ });
   fireEvent.click(screen.getAllByRole("button", { name: "Schedule" })[0]);
+  expect(screen.queryByLabelText("Quiet exit (optional)")).not.toBeInTheDocument();
+  expect(screen.getByText("A scheduled run that exits 111 publishes nothing and keeps the schedule running.")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "watch" } });
   fireEvent.change(screen.getByLabelText("Description"), { target: { value: "watch build" } });
   fireEvent.change(screen.getByLabelText("Command"), { target: { value: "./check-build" } });
   fireEvent.change(screen.getByLabelText("Every (seconds)"), { target: { value: "30" } });
-  fireEvent.change(screen.getByLabelText("Quiet exit (optional)"), { target: { value: "2" } });
   fireEvent.click(screen.getAllByRole("button", { name: "Schedule" }).at(-1)!);
-  await waitFor(() => expect(calls.some((call) => call.path === "/api/agents/alpha/scripts/schedule" && (call.body as { interval_seconds?: number; quiet_exit?: number }).interval_seconds === 30 && (call.body as { quiet_exit?: number }).quiet_exit === 2)).toBe(true));
+  await waitFor(() => expect(calls.some((call) => call.path === "/api/agents/alpha/scripts/schedule")).toBe(true));
+  const body = calls.find((call) => call.path === "/api/agents/alpha/scripts/schedule")!.body;
+  expect(body).toEqual({ script_name: "watch", description: "watch build", command: "./check-build", interval_seconds: 30 });
 });
 
 it("shows the complete stored launch command in the script definition", async () => {

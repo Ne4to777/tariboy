@@ -595,7 +595,6 @@ export interface ScriptDefinition {
   command: string;
   mode: ScriptMode;
   interval_seconds: number;
-  quiet_exit?: number;
   state: ScriptState;
   created_at: string;
   next_run_at?: string;
@@ -608,7 +607,6 @@ export interface RunOnceScriptSpec {
 }
 export interface ScheduleScriptSpec extends RunOnceScriptSpec {
   interval_seconds: number;
-  quiet_exit?: number;
 }
 export const listAgentScripts = (name: string) =>
   agentGet<{ scripts: ScriptDefinition[]; count: number }>(name, "scripts");

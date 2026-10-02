@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const activeRunStatuses = new Set(["pending", "running"]);
-const emptyForm = { script_name: "", description: "", command: "", mode: "once" as ScriptMode, interval_seconds: "", quiet_exit: "" };
+const emptyForm = { script_name: "", description: "", command: "", mode: "once" as ScriptMode, interval_seconds: "" };
 
 function when(value?: string) { return value ? fmtDateTime(value) : "—"; }
 function errorText(error: unknown) { return error instanceof ApiError ? error.message : String(error); }
@@ -96,18 +96,14 @@ export default function AgentScripts() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const interval = Number(form.interval_seconds);
-    const quiet = form.quiet_exit === "" ? undefined : Number(form.quiet_exit);
     if (form.mode === "every" && (!Number.isInteger(interval) || interval <= 0)) {
       toast.error("Scheduled scripts need a positive interval in seconds"); return;
-    }
-    if (quiet !== undefined && (!Number.isInteger(quiet) || quiet < 0 || quiet > 255)) {
-      toast.error("Quiet exit must be between 0 and 255"); return;
     }
     setBusy(true);
     try {
       const common = { script_name: form.script_name, description: form.description, command: form.command };
       if (form.mode === "once") await runAgentScriptOnce(name, common);
-      else await scheduleAgentScript(name, { ...common, interval_seconds: interval, ...(quiet === undefined ? {} : { quiet_exit: quiet }) });
+      else await scheduleAgentScript(name, { ...common, interval_seconds: interval });
       setForm(emptyForm);
       toast.success(form.mode === "once" ? "One-shot run queued" : "Scheduled script started");
       await load();
@@ -185,7 +181,7 @@ export default function AgentScripts() {
         <Field label="Name"><Input required value={form.script_name} onChange={(event) => setForm({ ...form, script_name: event.target.value })} /></Field>
         <Field label="Description"><Input required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></Field>
         <Field label="Command" className="sm:col-span-2"><Textarea required value={form.command} onChange={(event) => setForm({ ...form, command: event.target.value })} /></Field>
-        {form.mode === "every" && <><Field label="Every (seconds)"><Input required min="1" type="number" value={form.interval_seconds} onChange={(event) => setForm({ ...form, interval_seconds: event.target.value })} /></Field><Field label="Quiet exit (optional)"><Input min="0" max="255" type="number" value={form.quiet_exit} onChange={(event) => setForm({ ...form, quiet_exit: event.target.value })} /></Field></>}
+        {form.mode === "every" && <><Field label="Every (seconds)"><Input required min="1" type="number" value={form.interval_seconds} onChange={(event) => setForm({ ...form, interval_seconds: event.target.value })} /></Field><p className="self-end text-xs text-muted-foreground">A scheduled run that exits 111 publishes nothing and keeps the schedule running.</p></>}
         <div className="sm:col-span-2"><Button disabled={busy} type="submit">{form.mode === "once" ? "Run once" : "Schedule"}</Button></div>
       </form>
     </section>
@@ -194,7 +190,7 @@ export default function AgentScripts() {
       <h2 className="mb-3 text-lg font-semibold">Scripts</h2>
       {scripts.length === 0 ? <p className="text-sm text-muted-foreground">No scripts yet.</p> : <div className="overflow-x-auto rounded-lg border"><table className="w-full text-left text-sm"><thead className="bg-muted/50 text-muted-foreground"><tr><th className="p-2">Script</th><th className="p-2">Mode</th><th className="p-2">State</th><th className="p-2">Next run</th><th className="p-2">Actions</th></tr></thead><tbody>{scripts.map((definition) => {
         const open = expandedScripts.has(definition.id);
-        return <Fragment key={definition.id}><tr className="border-t align-top"><td className="p-2"><Button variant="ghost" className="h-auto px-1 font-medium" aria-expanded={open} aria-controls={`runs-${definition.id}`} onClick={() => void toggleScript(definition)}>{open ? "▾" : "▸"} {definition.name}</Button><div className="max-w-md whitespace-pre-wrap pl-7 text-muted-foreground">{definition.description}</div><div className="max-w-md whitespace-pre-wrap break-words pl-7 text-xs text-muted-foreground"><span className="font-medium text-foreground">Command: </span><code className="font-mono">{definition.command}</code></div></td><td className="p-2">{definition.mode === "every" ? `Every ${definition.interval_seconds}s` : "Once"}{definition.quiet_exit !== undefined && <div className="text-xs text-muted-foreground">quiet exit {definition.quiet_exit}</div>}</td><td className="p-2">{definition.state}<div className="text-xs text-muted-foreground">latest {definition.latest_run?.status ?? "—"}</div></td><td className="p-2 text-xs text-muted-foreground">{when(definition.next_run_at)}</td><td className="flex flex-wrap gap-1 p-2">{definition.state === "active" && <Button size="sm" variant="outline" onClick={() => void cancel(definition.id)}>Cancel</Button>}{(definition.state === "completed" || (definition.mode === "every" && definition.state === "active" && !activeRunStatuses.has(definition.latest_run?.status ?? ""))) && <Button size="sm" variant="outline" onClick={() => void rerun(definition)}>Exec</Button>}{definition.state !== "active" && <Button size="sm" variant="destructive" onClick={() => setRemove(definition)}>Remove</Button>}</td></tr>{open && <tr className="border-t bg-muted/10"><td colSpan={5} className="p-3"><RunList id={`runs-${definition.id}`} runs={runs[definition.id]} expanded={expandedRuns} logs={logs} onToggle={toggleRun} onCancel={cancel} onCopy={copyPath} onDownload={download} /></td></tr>}</Fragment>;
+        return <Fragment key={definition.id}><tr className="border-t align-top"><td className="p-2"><Button variant="ghost" className="h-auto px-1 font-medium" aria-expanded={open} aria-controls={`runs-${definition.id}`} onClick={() => void toggleScript(definition)}>{open ? "▾" : "▸"} {definition.name}</Button><div className="max-w-md whitespace-pre-wrap pl-7 text-muted-foreground">{definition.description}</div><div className="max-w-md whitespace-pre-wrap break-words pl-7 text-xs text-muted-foreground"><span className="font-medium text-foreground">Command: </span><code className="font-mono">{definition.command}</code></div></td><td className="p-2">{definition.mode === "every" ? `Every ${definition.interval_seconds}s` : "Once"}</td><td className="p-2">{definition.state}<div className="text-xs text-muted-foreground">latest {definition.latest_run?.status ?? "—"}</div></td><td className="p-2 text-xs text-muted-foreground">{when(definition.next_run_at)}</td><td className="flex flex-wrap gap-1 p-2">{definition.state === "active" && <Button size="sm" variant="outline" onClick={() => void cancel(definition.id)}>Cancel</Button>}{(definition.state === "completed" || (definition.mode === "every" && definition.state === "active" && !activeRunStatuses.has(definition.latest_run?.status ?? ""))) && <Button size="sm" variant="outline" onClick={() => void rerun(definition)}>Exec</Button>}{definition.state !== "active" && <Button size="sm" variant="destructive" onClick={() => setRemove(definition)}>Remove</Button>}</td></tr>{open && <tr className="border-t bg-muted/10"><td colSpan={5} className="p-3"><RunList id={`runs-${definition.id}`} runs={runs[definition.id]} expanded={expandedRuns} logs={logs} onToggle={toggleRun} onCancel={cancel} onCopy={copyPath} onDownload={download} /></td></tr>}</Fragment>;
       })}</tbody></table></div>}
     </section>
 
