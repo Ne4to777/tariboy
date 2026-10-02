@@ -1,3 +1,23 @@
+## [0.71.2] - 2026-10-02
+
+### Changed
+
+- The unused schema-1 Tariboyfile parser and image builder are removed.
+  Schema-1 sources were already rejected with a migration message, which is
+  unchanged; already-built schema-1 images still run.
+
+### Fixed
+
+- A task whose random key suffix is all digits is no longer renamed after a
+  daemon restart. Legacy numeric keys are rewritten once, on the first start
+  after the upgrade, and that run is recorded.
+- Task search matches text case-insensitively in non-Latin scripts such as
+  Cyrillic.
+- A task opened from a `?task=` link no longer reopens its drawer every few
+  seconds after it is closed.
+
+[0.71.2]: https://github.com/alekzonder/tariboy/compare/v0.71.1...v0.71.2
+
 ## [0.71.1] - 2026-09-28
 
 ### Changed

@@ -4,7 +4,7 @@ name = "tariboy-desktop"
 # internal/version.Version string is injected by build.rs as TARIBOY_VERSION
 # and is what the app compares against a running daemon. `make desktop` keeps
 # both in sync and fails the build if they drift.
-version = "0.71.1"
+version = "0.71.2"
 edition = "2021"
 rust-version = "1.77"
 description = "Tariboy desktop control plane"
