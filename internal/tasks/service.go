@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -24,6 +25,7 @@ type Service struct {
 	goalSignal                               func()
 	workflowResolver                         WorkflowResolver
 	runBaseDir                               string
+	log                                      *slog.Logger
 	workflowIngressEnabled                   atomic.Bool
 	workflowIngressAfterTargetCount          func()
 	workflowActivationAfterWriterReservation func()
@@ -56,6 +58,17 @@ func (s *Service) SetHub(hub *Hub) { s.hub = hub }
 func (s *Service) SetRunBaseDir(dir string) { s.runBaseDir = dir }
 
 func (s *Service) SetGoalSignal(signal func()) { s.goalSignal = signal }
+
+// SetLogger sets where the service logs what it skips instead of failing a
+// whole call, such as a pending script run whose job cannot be built.
+func (s *Service) SetLogger(log *slog.Logger) { s.log = log }
+
+func (s *Service) logger() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
+}
 
 func (s *Service) signal() {
 	if s.hub != nil {
@@ -424,7 +437,7 @@ func (s *Service) GetTask(ctx context.Context, actor Actor, key string) (TaskDet
 	if err != nil {
 		return TaskDetail{}, err
 	}
-	access, err := taskAccess(ctx, s.db, actor, task.ID)
+	access, err := readAccess(ctx, s.db, actor, task.ID)
 	if err != nil {
 		return TaskDetail{}, err
 	}

@@ -17,16 +17,27 @@ func TestQueueSecretSetRouteStoresTheValueAsGivenAndNeverReturnsIt(t *testing.T)
 	if status != http.StatusOK || !env.OK {
 		t.Fatalf("status %d envelope %+v", status, env)
 	}
-	if len(stub.calls) != 2 || stub.calls[0] != "user:customer|queue_secret_set DEV GH_TOKEN "+`"  s3cr3t-token \n"` {
+	// One call: the time comes from the transaction that stored the value.
+	if len(stub.calls) != 1 || stub.calls[0] != "user:customer|queue_secret_set_info DEV GH_TOKEN "+`"  s3cr3t-token \n"` {
 		t.Fatalf("calls = %q", stub.calls)
 	}
-	for _, want := range []string{`"queue":"DEV"`, `"key":"GH_TOKEN"`, `"updated_at":"2026-10-02T00:00:00Z"`} {
+	for _, want := range []string{`"queue":"DEV"`, `"key":"GH_TOKEN"`, `"updated_at":"2026-10-02T00:00:01Z"`} {
 		if !strings.Contains(string(env.Result), want) {
 			t.Fatalf("result %s lacks %s", env.Result, want)
 		}
 	}
 	if strings.Contains(string(env.Result), "s3cr3t") {
 		t.Fatalf("result returns the value: %s", env.Result)
+	}
+}
+
+func TestQueueSecretSetRouteBoundsTheBody(t *testing.T) {
+	stub := &workflowStub{}
+	httpServer := workflowServer(t, stub)
+	status, _ := taskRequest(t, httpServer.Client(), "PUT", httpServer.URL+"/api/task-queues/DEV/secrets/GH_TOKEN",
+		map[string]any{"value": strings.Repeat("x", 600<<10)})
+	if status != http.StatusRequestEntityTooLarge || len(stub.calls) != 0 {
+		t.Fatalf("status %d calls %q", status, stub.calls)
 	}
 }
 

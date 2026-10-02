@@ -67,21 +67,37 @@ func missingQueueSecrets(ctx context.Context, q queryer, queue string, names []s
 // The value is written to the database only: not to an event, a log, or an
 // error.
 func (s *Service) SetQueueSecret(ctx context.Context, actor Actor, queue, key, value string) error {
+	_, err := s.setQueueSecret(ctx, actor, queue, key, value)
+	return err
+}
+
+// SetQueueSecretInfo is SetQueueSecret returning the key and the stored time,
+// read in the transaction that stored the value. It never carries the value.
+func (s *Service) SetQueueSecretInfo(ctx context.Context, actor Actor, queue, key, value string) (QueueSecretInfo, error) {
+	updatedAt, err := s.setQueueSecret(ctx, actor, queue, key, value)
+	if err != nil {
+		return QueueSecretInfo{}, err
+	}
+	return QueueSecretInfo{Key: key, UpdatedAt: updatedAt}, nil
+}
+
+// setQueueSecret stores a queue secret and returns its stored updated_at.
+func (s *Service) setQueueSecret(ctx context.Context, actor Actor, queue, key, value string) (string, error) {
 	if err := s.requireWorkflowAdmin(actor); err != nil {
-		return err
+		return "", err
 	}
 	queue = strings.ToUpper(strings.TrimSpace(queue))
 	if err := validateQueueSecret(key, value); err != nil {
-		return err
+		return "", err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback()
 	revision, err := queueSecretRevision(ctx, tx, queue)
 	if err != nil {
-		return err
+		return "", err
 	}
 	now := s.now()
 	if _, err := tx.ExecContext(ctx, `
@@ -89,13 +105,18 @@ func (s *Service) SetQueueSecret(ctx context.Context, actor Actor, queue, key, v
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(queue_prefix, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
 		queue, key, value, now); err != nil {
-		return err
+		return "", err
+	}
+	var updatedAt string
+	if err := tx.QueryRowContext(ctx, `SELECT updated_at FROM task_queue_secrets WHERE queue_prefix = ? AND key = ?`,
+		queue, key).Scan(&updatedAt); err != nil {
+		return "", err
 	}
 	if _, err := appendQueueEventTx(ctx, tx, Queue{Prefix: queue, Revision: revision},
 		"queue.secret_set", actor, map[string]any{"key": key}, now); err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit()
+	return updatedAt, tx.Commit()
 }
 
 // QueueSecretInfo names a queue secret and when it was last set. It never

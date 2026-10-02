@@ -34,6 +34,22 @@ func requireSecrets(t *testing.T, svc *Service, digest string, names ...string) 
 	}
 }
 
+func TestSetQueueSecretInfoReturnsTheStoredTime(t *testing.T) {
+	ctx := context.Background()
+	svc, actor := workflowFixture(t)
+	info, err := svc.SetQueueSecretInfo(ctx, actor, "dev", "GH_TOKEN", "s3cr3t-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.ListQueueSecrets(ctx, actor, "DEV")
+	if err != nil || len(items) != 1 || info != items[0] || info.UpdatedAt == "" {
+		t.Fatalf("info = %#v; listed %#v, %v", info, items, err)
+	}
+	if _, err := svc.SetQueueSecretInfo(ctx, AgentActor("dev-1"), "DEV", "GH_TOKEN", "x"); ErrorCode(err) != "forbidden" {
+		t.Fatalf("agent: %v", err)
+	}
+}
+
 func TestQueueSecretsSetListRemove(t *testing.T) {
 	ctx := context.Background()
 	svc, actor := workflowFixture(t)

@@ -46,7 +46,7 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 		return WorkflowView{}, err
 	}
 	defer tx.Rollback()
-	task, manifest, err := artifactTaskTx(ctx, tx, actor, key)
+	task, manifest, err := workflowReadTaskTx(ctx, tx, actor, key)
 	if err != nil {
 		return WorkflowView{}, err
 	}

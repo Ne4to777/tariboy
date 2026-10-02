@@ -263,6 +263,31 @@ func TestScriptRunLogRedactsQueueSecrets(t *testing.T) {
 	}
 }
 
+// TestScriptRunLogNeverReturnsTheLead: the tail window reads
+// MaxQueueSecretBytes more than asked for so a secret cut by the window start
+// is still matched. A redaction that shrinks the asked-for part must not pull
+// that lead into the result.
+func TestScriptRunLogNeverReturnsTheLead(t *testing.T) {
+	svc, actor, task, run, path := logFixture(t)
+	ctx := context.Background()
+	secret := strings.Repeat("S", 50)
+	if err := svc.SetQueueSecret(ctx, actor, "DEV", "GH_TOKEN", secret); err != nil {
+		t.Fatal(err)
+	}
+	tail := secret + strings.Repeat("b", 50)
+	content := strings.Repeat("x", 70000) + "LEAKED-LEAD" + tail
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, truncated, err := svc.ScriptRunLog(ctx, actor, task.Key, run.ID, len(tail))
+	if err != nil || !truncated {
+		t.Fatalf("log = %q, %v, %v", text, truncated, err)
+	}
+	if text != "[redacted]"+strings.Repeat("b", 50) {
+		t.Fatalf("text = %q", text)
+	}
+}
+
 func TestAgentActionsForRequestsAndRuns(t *testing.T) {
 	svc, actor, task, run, path := logFixture(t)
 	ctx := context.Background()

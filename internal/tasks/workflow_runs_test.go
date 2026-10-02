@@ -3,7 +3,11 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -940,5 +944,222 @@ func TestScriptRunsAreReadable(t *testing.T) {
 	raw, err := json.Marshal(view)
 	if err != nil || !strings.Contains(string(raw), `"runs":[`) {
 		t.Fatalf("view json = %s, %v", raw, err)
+	}
+}
+
+func TestIsTaskDirKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"DEV-1": true, "a.b": true,
+		"": false, ".": false, "..": false, "a/b": false, `a\b`: false, "/abs": false, "../x": false,
+	} {
+		if got := IsTaskDirKey(key); got != want {
+			t.Errorf("IsTaskDirKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestRunJobNeverMarshalsSecretsOrEnv(t *testing.T) {
+	raw, err := json.Marshal(RunJob{
+		WorkflowEnv:  map[string]string{"REPO": "env-value-1"},
+		QueueSecrets: map[string]string{"GH_TOKEN": "secret-value-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "env-value-1") || strings.Contains(string(raw), "secret-value-1") {
+		t.Fatalf("job json = %s", raw)
+	}
+}
+
+func TestQuietWatchRunsLeaveNoEventAndOnlyTheNewestAreKept(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	ctx := context.Background()
+	at := svc.clock()
+	runOnce := func(verdict string) ScriptRun {
+		t.Helper()
+		if n, err := svc.ScheduleDueWatches(ctx, at); err != nil || n != 1 {
+			t.Fatalf("scheduled = %d, %v", n, err)
+		}
+		run := listRuns(t, svc, actor, task)[0]
+		complete(t, svc, run.ID, RunCompletion{Verdict: verdict, ExitCode: exitCode(111), FinishedAt: at.Format(time.RFC3339Nano)})
+		at = at.Add(5 * time.Minute)
+		return run
+	}
+	failed := runOnce("failure")
+	var quiet []ScriptRun
+	for range workflowViewRuns + 3 {
+		quiet = append(quiet, runOnce("quiet"))
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'workflow.script_run'`, task.ID); n != 1 {
+		t.Fatalf("script_run events = %d; only the failure has one", n)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_script_runs WHERE task_id = ? AND verdict = 'quiet'`, task.ID); n != workflowViewRuns {
+		t.Fatalf("quiet runs kept = %d", n)
+	}
+	for _, gone := range quiet[:3] {
+		if _, err := svc.GetScriptRun(ctx, actor, task.Key, gone.ID); ErrorCode(err) != "run_not_found" {
+			t.Fatalf("old quiet run %d: %v", gone.ID, err)
+		}
+	}
+	if _, err := svc.GetScriptRun(ctx, actor, task.Key, failed.ID); err != nil {
+		t.Fatalf("the failed run was pruned: %v", err)
+	}
+}
+
+func TestPendingRunJobsSkipsARunWhoseJobCannotBeBuilt(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	ctx := context.Background()
+	other := enter(t, svc, mustCreateDev(t, svc, actor, "other").Key, "merge", "approved")
+	if n, err := svc.ScheduleDueWatches(ctx, svc.clock()); err != nil || n != 2 {
+		t.Fatalf("scheduled = %d, %v", n, err)
+	}
+	broken := listRuns(t, svc, actor, task)[0].ID
+	if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = 'missing' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	var logged strings.Builder
+	svc.SetLogger(slog.New(slog.NewTextHandler(&logged, nil)))
+	jobs, err := svc.PendingRunJobs(ctx)
+	if err != nil || len(jobs) != 1 || jobs[0].Run.TaskKey != other.Key {
+		t.Fatalf("jobs = %#v, %v", jobs, err)
+	}
+	if !strings.Contains(logged.String(), "run_id="+strconv.FormatInt(broken, 10)) || !strings.Contains(logged.String(), "err=") {
+		t.Fatalf("log = %q", logged.String())
+	}
+}
+
+func TestCompleteScriptRunNormalizesFinishedAt(t *testing.T) {
+	for given, want := range map[string]string{
+		"2026-07-31T14:00:02+02:00": "2026-07-31T12:00:02Z",
+		"not a time":                "2026-07-31T12:00:00Z",
+		"":                          "2026-07-31T12:00:00Z",
+	} {
+		t.Run(given, func(t *testing.T) {
+			svc, actor, task, _ := runFixture(t)
+			_, first := advanceApprove(t, svc, actor, task)
+			complete(t, svc, first.ID, RunCompletion{Verdict: "reject", FinishedAt: given})
+			got, err := svc.GetScriptRun(context.Background(), actor, task.Key, first.ID)
+			if err != nil || got.FinishedAt != want {
+				t.Fatalf("finished_at = %q, %v; want %q", got.FinishedAt, err, want)
+			}
+		})
+	}
+}
+
+func TestUndeclaredArtifactNameIsBounded(t *testing.T) {
+	svc, actor, task, _ := runFixture(t)
+	request, first := advanceApprove(t, svc, actor, task)
+	name := strings.Repeat("ж", 100) // 200 bytes
+	complete(t, svc, first.ID, RunCompletion{Verdict: "pass", Artifacts: map[string]string{name: "x"}})
+	state, result := requestRow(t, svc, request.ID)
+	cut := strings.Repeat("ж", 32) // 64 bytes
+	if state != "failed" || !strings.Contains(result, cut) || strings.Contains(result, cut+"ж") || !utf8.ValidString(result) {
+		t.Fatalf("request = %s %q", state, result)
+	}
+	failed := eventPayload(t, svc, task, "workflow.transition_failed")
+	if message, _ := failed["message"].(string); !strings.Contains(message, cut) || strings.Contains(message, cut+"ж") {
+		t.Fatalf("event message = %q", message)
+	}
+}
+
+func TestAgentCheckWithoutAnAgentAssignee(t *testing.T) {
+	svc, customer, task, queueRun, _ := logFixture(t)
+	ctx := context.Background()
+	// The customer took the task over before the agent check was created.
+	if _, err := svc.db.Exec(`UPDATE tasks SET assignee = 'user:customer' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	complete(t, svc, queueRun.ID, RunCompletion{Verdict: "pass"})
+	agentRun := listRuns(t, svc, customer, task)[0]
+	if agentRun.RunAs != "agent" || agentRun.Holder != "" || agentRun.State != "pending" {
+		t.Fatalf("agent run = %#v", agentRun)
+	}
+	jobs, err := svc.PendingRunJobs(ctx)
+	if err != nil || len(jobs) != 1 || jobs[0].Run.ID != agentRun.ID || jobs[0].Holder != "" {
+		t.Fatalf("jobs = %#v, %v", jobs, err)
+	}
+	dir := filepath.Join(svc.runBaseDir, "tasks", task.Key, "runs", strconv.FormatInt(agentRun.ID, 10))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	agentPath := filepath.Join(dir, "run.log")
+	if err := os.WriteFile(agentPath, []byte("agent log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setLogPath(t, svc, agentRun.ID, agentPath)
+	if _, _, err := svc.ScriptRunLog(ctx, customer, task.Key, agentRun.ID, 0); err != nil {
+		t.Fatalf("customer: %v", err)
+	}
+	if _, _, err := svc.ScriptRunLog(ctx, AgentActor("reviewer-1"), task.Key, agentRun.ID, 0); ErrorCode(err) != "forbidden" {
+		t.Fatalf("pool holder: %v", err)
+	}
+}
+
+// TestHoldersKeepReadAccessToTheirTask: reviewer-1, a pool member that owns no
+// queue, advances review into the script status "merge" through two checks.
+// The assignee is cleared, yet its holder row lets it read the task's workflow
+// data; it gains no write, and an agent with no holder row still sees nothing.
+func TestHoldersKeepReadAccessToTheirTask(t *testing.T) {
+	svc, customer, task, _ := runFixture(t)
+	ctx := context.Background()
+	def := runDefinition()
+	def.Statuses[1].Transitions[0].To = "merge"
+	rewriteDefinition(t, svc, task, def)
+	request, first := advanceApprove(t, svc, customer, task)
+	complete(t, svc, first.ID, RunCompletion{Verdict: "pass", Artifacts: map[string]string{"summary": "ci ok"}})
+	second := listRuns(t, svc, customer, task)[0]
+	complete(t, svc, second.ID, RunCompletion{Verdict: "pass"})
+	if stored := storedTask(t, svc, task.Key); stored.WorkflowStatus != "merge" || stored.Assignee != "" {
+		t.Fatalf("stored = %#v", stored)
+	}
+
+	reviewer := AgentActor("reviewer-1")
+	if got, err := svc.GetTransitionRequest(ctx, reviewer, task.Key, request.ID); err != nil || got.State != "applied" {
+		t.Fatalf("GetTransitionRequest = %#v, %v", got, err)
+	}
+	if view, err := svc.GetWorkflow(ctx, reviewer, task.Key); err != nil || view.Status != "merge" {
+		t.Fatalf("GetWorkflow = %#v, %v", view, err)
+	}
+	if artifacts, err := svc.ListArtifacts(ctx, reviewer, task.Key); err != nil || len(artifacts) != 1 {
+		t.Fatalf("ListArtifacts = %#v, %v", artifacts, err)
+	}
+	if _, _, err := svc.GetArtifact(ctx, reviewer, task.Key, "summary"); err != nil {
+		t.Fatalf("GetArtifact: %v", err)
+	}
+	if runs, err := svc.ListScriptRuns(ctx, reviewer, task.Key); err != nil || len(runs) != 2 {
+		t.Fatalf("ListScriptRuns = %#v, %v", runs, err)
+	}
+	if _, err := svc.GetScriptRun(ctx, reviewer, task.Key, first.ID); err != nil {
+		t.Fatalf("GetScriptRun: %v", err)
+	}
+	if detail, err := svc.GetTask(ctx, reviewer, task.Key); err != nil || detail.Task.Access == "write" {
+		t.Fatalf("GetTask = %q, %v", detail.Task.Access, err)
+	}
+
+	// Reading is all a holder row gives.
+	if _, err := svc.Advance(ctx, reviewer, task.Key, AdvanceInput{Outcome: "merged"}); err == nil {
+		t.Fatal("a holder advanced a script status")
+	}
+	if _, err := svc.SetArtifact(ctx, reviewer, task.Key, "merge_commit", "abc"); err == nil {
+		t.Fatal("a holder set an artifact")
+	}
+	if _, err := svc.AddComment(ctx, reviewer, task.Key, AddCommentInput{Body: "hi"}); err == nil {
+		t.Fatal("a holder commented")
+	}
+	status := StatusDone
+	if _, err := svc.UpdateTask(ctx, reviewer, task.Key, UpdateTaskInput{Status: &status, Revision: storedTask(t, svc, task.Key).Revision}); err == nil {
+		t.Fatal("a holder changed the status")
+	}
+
+	// dev-2 is a pool member with no holder row and no other access.
+	stranger := AgentActor("dev-2")
+	if _, err := svc.GetWorkflow(ctx, stranger, task.Key); ErrorCode(err) != "not_found" {
+		t.Fatalf("stranger GetWorkflow: %v", err)
+	}
+	if _, err := svc.GetTransitionRequest(ctx, stranger, task.Key, request.ID); ErrorCode(err) != "not_found" {
+		t.Fatalf("stranger GetTransitionRequest: %v", err)
+	}
+	if _, err := svc.GetTask(ctx, stranger, task.Key); ErrorCode(err) != "not_found" {
+		t.Fatalf("stranger GetTask: %v", err)
 	}
 }

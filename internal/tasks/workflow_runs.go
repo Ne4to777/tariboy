@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -64,11 +65,13 @@ type RunJob struct {
 	Outcome         string // requested outcome; checks only
 	Timeout         time.Duration
 	Holder          string // agent name for run_as agent, else ""
-	WorkflowEnv     map[string]string
-	QueueSecrets    map[string]string
-	Snapshot        []byte   // task.json content, no secrets
-	Outcomes        []string // declared outcomes of the status
-	Artifacts       []string // declared artifact names
+	// WorkflowEnv and QueueSecrets reach the process environment only; they are
+	// never marshalled.
+	WorkflowEnv  map[string]string `json:"-"`
+	QueueSecrets map[string]string `json:"-"`
+	Snapshot     []byte            // task.json content, no secrets
+	Outcomes     []string          // declared outcomes of the status
+	Artifacts    []string          // declared artifact names
 }
 
 // RunCompletion is the result of a finished run as the worker reports it.
@@ -133,9 +136,20 @@ func queryScriptRuns(ctx context.Context, q queryer, where string, args ...any) 
 	return out, rows.Err()
 }
 
+// Predicates of the run queries the worker and the readers repeat; each
+// follows scriptRunSelect. A state list repeats the WHERE clause of the partial
+// index idx_task_script_runs_active word for word, which is what lets SQLite
+// use that index.
+const (
+	taskRunsWhere        = ` WHERE r.task_id = ? ORDER BY r.id DESC`
+	pendingRunsWhere     = ` WHERE r.state IN ('pending', 'running') AND r.state = 'pending' ORDER BY r.id`
+	cancelRequestedWhere = ` WHERE r.state IN ('pending', 'running') AND r.state = 'running' AND r.cancel_requested = 1 ORDER BY r.id`
+	runningRunsWhere     = ` WHERE r.state IN ('pending', 'running') AND r.state = 'running' ORDER BY r.id`
+)
+
 // scriptRunsTx returns a task's runs, newest first; limit 0 returns all.
 func scriptRunsTx(ctx context.Context, q queryer, taskID int64, limit int) ([]ScriptRun, error) {
-	where := ` WHERE r.task_id = ? ORDER BY r.id DESC`
+	where := taskRunsWhere
 	args := []any{taskID}
 	if limit > 0 {
 		where += ` LIMIT ?`
@@ -165,10 +179,15 @@ func insertScriptRunTx(ctx context.Context, tx *sql.Tx, taskID, visitID, request
 	return err
 }
 
-// stopVisitScriptsTx stops the scripts of the task's open visit: it clears the
-// watch schedule, cancels pending runs, and asks the worker to kill a running
-// one. Every route that closes a visit calls it first.
-func stopVisitScriptsTx(ctx context.Context, tx *sql.Tx, taskID int64, now string) error {
+// stopVisitScriptsTx stops the scripts of the task's open visit: it cancels
+// the pending transition request with why, clears the watch schedule, cancels
+// pending runs, and asks the worker to kill a running one. Every route that
+// closes a visit calls it first.
+func stopVisitScriptsTx(ctx context.Context, tx *sql.Tx, task Task, why, now string) error {
+	if err := cancelPendingRequestTx(ctx, tx, task, why, now); err != nil {
+		return err
+	}
+	taskID := task.ID
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE task_status_visits SET next_watch_at = '' WHERE task_id = ? AND left_at = ''`, taskID); err != nil {
 		return err
@@ -208,28 +227,44 @@ func watchEvery(status workflowfile.Status) time.Duration {
 	return scriptTimeout(status.Watch.Every, workflowfile.MinWatchEvery)
 }
 
+// maxEchoedNameBytes bounds a name taken from script output that goes into a
+// message or an event.
+const maxEchoedNameBytes = 64
+
 // boundRunMessage cuts message to maxRunMessageBytes on a rune boundary.
 func boundRunMessage(message string) string {
-	if len(message) <= maxRunMessageBytes {
-		return message
+	return cutRunes(message, maxRunMessageBytes)
+}
+
+// cutRunes cuts s to at most n bytes on a rune boundary.
+func cutRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	cut := maxRunMessageBytes
-	for cut > 0 && !utf8.RuneStart(message[cut]) {
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return message[:cut]
+	return s[:cut]
 }
 
 func scriptAuthor(script string) string { return "script:" + script }
+
+// IsTaskDirKey reports whether a task key may name the task's directory under
+// <base-dir>/tasks: a single local path element, and not "." or "..".
+func IsTaskDirKey(key string) bool {
+	return key != "" && key != "." && key != ".." && filepath.IsLocal(key) && !strings.ContainsAny(key, `/\`)
+}
 
 func scriptRunNotFound(id int64) error {
 	return domainError(http.StatusNotFound, "run_not_found", fmt.Sprintf("script run %d not found", id))
 }
 
 // PendingRunJobs returns every pending run, oldest first, with what the worker
-// needs to execute it.
+// needs to execute it. A run whose job cannot be built is logged and skipped,
+// so it does not hold back the others.
 func (s *Service) PendingRunJobs(ctx context.Context) ([]RunJob, error) {
-	runs, err := queryScriptRuns(ctx, s.db, ` WHERE r.state = 'pending' ORDER BY r.id`)
+	runs, err := queryScriptRuns(ctx, s.db, pendingRunsWhere)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +272,12 @@ func (s *Service) PendingRunJobs(ctx context.Context) ([]RunJob, error) {
 	for _, run := range runs {
 		job, err := s.runJob(ctx, run)
 		if err != nil {
-			return nil, fmt.Errorf("script run %d: %w", run.ID, err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			s.logger().Error("skip workflow script run whose job cannot be built",
+				"run_id", run.ID, "task", run.TaskKey, "err", err)
+			continue
 		}
 		jobs = append(jobs, job)
 	}
@@ -324,7 +364,7 @@ func (s *Service) SetScriptRunPID(ctx context.Context, id int64, pid int) error 
 // CancelRequestedRuns lists the running runs whose cancellation was requested;
 // the worker kills them.
 func (s *Service) CancelRequestedRuns(ctx context.Context) ([]ScriptRun, error) {
-	records, err := queryScriptRuns(ctx, s.db, ` WHERE r.state = 'running' AND r.cancel_requested = 1 ORDER BY r.id`)
+	records, err := queryScriptRuns(ctx, s.db, cancelRequestedWhere)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +380,7 @@ func (s *Service) ListScriptRuns(ctx context.Context, actor Actor, key string) (
 	if err := validateActor(actor); err != nil {
 		return nil, err
 	}
-	task, _, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, _, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +392,7 @@ func (s *Service) GetScriptRun(ctx context.Context, actor Actor, key string, id 
 	if err := validateActor(actor); err != nil {
 		return ScriptRun{}, err
 	}
-	task, _, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, _, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return ScriptRun{}, err
 	}
@@ -393,10 +433,13 @@ func (s *Service) CompleteScriptRun(ctx context.Context, id int64, done RunCompl
 		return nil
 	}
 	now := s.now()
-	finishedAt := done.FinishedAt
-	if finishedAt == "" {
-		finishedAt = now
+	// The stored time is always in the service's format; a time the worker
+	// reports that does not parse is replaced by the service clock.
+	finished := s.clock()
+	if parsed, err := time.Parse(time.RFC3339Nano, done.FinishedAt); err == nil {
+		finished = parsed
 	}
+	finishedAt := finished.UTC().Format(time.RFC3339Nano)
 	logPath := done.LogPath
 	if logPath == "" {
 		logPath = run.LogPath
@@ -419,17 +462,24 @@ func (s *Service) CompleteScriptRun(ctx context.Context, id int64, done RunCompl
 	if err != nil {
 		return err
 	}
-	if _, err := appendEventTx(ctx, tx, task, "workflow.script_run", Actor{Principal: workflowActor}, map[string]any{
+	if run.Kind == "watch" && done.Verdict == verdictQuiet {
+		// A quiet watch run says nothing happened: it leaves no event, and only
+		// the newest quiet runs of the visit are kept.
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM task_script_runs
+			WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' AND id NOT IN (
+				SELECT id FROM task_script_runs
+				WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' ORDER BY id DESC LIMIT ?)`,
+			run.visitID, run.visitID, workflowViewRuns); err != nil {
+			return err
+		}
+	} else if _, err := appendEventTx(ctx, tx, task, "workflow.script_run", Actor{Principal: workflowActor}, map[string]any{
 		"run_id": run.ID, "kind": run.Kind, "script": run.Script, "state": state,
 		"verdict": done.Verdict, "exit_code": done.ExitCode,
 	}, now); err != nil {
 		return err
 	}
 	if state == "finished" {
-		finished := s.clock()
-		if parsed, err := time.Parse(time.RFC3339Nano, finishedAt); err == nil {
-			finished = parsed
-		}
 		switch run.Kind {
 		case "check":
 			err = s.finishCheckTx(ctx, tx, &task, run, done.Verdict, done.Artifacts, message, logPath)
@@ -587,12 +637,14 @@ func (s *Service) failRequestTx(ctx context.Context, tx *sql.Tx, task Task, run 
 
 // checkHolder is the agent a check runs as, recorded when the run is created:
 // the task's assignee for a run_as agent check, "" for a queue check. The log
-// of such a run may hold the agent's own secrets.
+// of such a run may hold the agent's own secrets. A run_as agent check of a
+// task no agent holds records no holder; the worker fails it.
 func checkHolder(check workflowfile.Check, assignee string) string {
-	if check.RunAs != workflowfile.RunAsAgent {
+	agent, isAgent := strings.CutPrefix(assignee, "agent:")
+	if check.RunAs != workflowfile.RunAsAgent || !isAgent {
 		return ""
 	}
-	return strings.TrimPrefix(assignee, "agent:")
+	return agent
 }
 
 // checkRunAs is the run mode of a check; queue when it declares none.
@@ -611,7 +663,8 @@ func validateScriptArtifacts(manifest workflowimage.Manifest, artifacts map[stri
 		value := artifacts[name]
 		switch {
 		case !artifactDeclared(manifest, name):
-			return fmt.Errorf("the script returned undeclared artifact %q", name)
+			// The name comes from the script; only a bounded part of it is echoed.
+			return fmt.Errorf("the script returned undeclared artifact %q", cutRunes(name, maxEchoedNameBytes))
 		case value == "" || !utf8.ValidString(value):
 			return fmt.Errorf("the script returned artifact %q that is not non-empty UTF-8 text", name)
 		case len(value) > maxArtifactBytes:
@@ -742,7 +795,7 @@ func (s *Service) failWatchTx(ctx context.Context, tx *sql.Tx, task Task, run sc
 // interrupted, its check request fails, and its watch reschedules now. Pending
 // runs stay pending.
 func (s *Service) RecoverScriptRuns(ctx context.Context) error {
-	runs, err := queryScriptRuns(ctx, s.db, ` WHERE r.state = 'running' ORDER BY r.id`)
+	runs, err := queryScriptRuns(ctx, s.db, runningRunsWhere)
 	if err != nil {
 		return err
 	}

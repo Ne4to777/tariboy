@@ -299,6 +299,7 @@ func Run(ctx context.Context, o Options) error {
 	taskHub := tasks.NewHub(taskService)
 	taskService.SetHub(taskHub)
 	taskService.SetRunBaseDir(p.Base)
+	taskService.SetLogger(log)
 	taskPublisher := tasknotify.New(st.DB, channelBus, time.Now, log)
 	goalReconciler := taskgoal.NewReconciler(taskgoal.ReconcilerConfig{
 		Store: st, Bus: channelBus, Clock: time.Now, Log: log,
@@ -577,6 +578,7 @@ func Run(ctx context.Context, o Options) error {
 	// Nightly database backup, then cleanup and compaction. Drained before
 	// st.Close like the retention runner.
 	maint := maintenance.New(st, filepath.Join(p.Base, "backups", "db"), time.Now, log)
+	maint.TasksDir = filepath.Join(p.Base, "tasks")
 
 	manager := loop.NewManager(loop.ManagerConfig{
 		AgentsDir: p.AgentsDir(), RuntimeDir: p.RuntimeDir(), ShimBin: shimBin,

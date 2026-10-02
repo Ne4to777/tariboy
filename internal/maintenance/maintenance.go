@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/alekzonder/tariboy/internal/store"
+	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
 // Settings is the operator policy, persisted as JSON in daemon_config.
@@ -84,6 +85,11 @@ const (
 )
 
 type Service struct {
+	// TasksDir is <base-dir>/tasks, where each task keeps its files under its
+	// key; the files of a purged task are removed after the purge commits.
+	// Empty leaves task files alone.
+	TasksDir string
+
 	st        *store.Store
 	backupDir string
 	now       func() time.Time
@@ -254,11 +260,11 @@ func older(col string) string {
 // back only that category.
 func (s *Service) cleanup(cutoff string, deleted map[string]int64) error {
 	var errs []error
-	step := func(name string, fn func(tx *sql.Tx) (int64, error)) {
+	step := func(name string, fn func(tx *sql.Tx) (int64, error)) bool {
 		tx, err := s.st.DB.Begin()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
-			return
+			return false
 		}
 		n, err := fn(tx)
 		if err == nil {
@@ -268,9 +274,10 @@ func (s *Service) cleanup(cutoff string, deleted map[string]int64) error {
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
-			return
+			return false
 		}
 		deleted[name] = n
+		return true
 	}
 	simple := func(q string) func(tx *sql.Tx) (int64, error) {
 		return func(tx *sql.Tx) (int64, error) {
@@ -281,7 +288,13 @@ func (s *Service) cleanup(cutoff string, deleted map[string]int64) error {
 			return r.RowsAffected()
 		}
 	}
-	step("tasks", func(tx *sql.Tx) (int64, error) { return purgeTasks(tx, cutoff) })
+	var purged []string
+	if step("tasks", func(tx *sql.Tx) (n int64, err error) {
+		n, purged, err = purgeTasks(tx, cutoff)
+		return n, err
+	}) {
+		errs = append(errs, s.removeTaskFiles(purged))
+	}
 	step("ai_requests", func(tx *sql.Tx) (int64, error) {
 		// A rolling budget sums spend over its own period, which may be
 		// longer than the retention period; keep what it can still count.
@@ -306,9 +319,10 @@ func (s *Service) cleanup(cutoff string, deleted map[string]int64) error {
 }
 
 // purgeTasks removes whole task trees whose every node is done or cancelled
-// before cutoff, together with the rows that reference them. A tree related
-// to a task that is not being removed is kept.
-func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
+// before cutoff, together with the rows that reference them, and returns the
+// keys of the removed tasks. A tree related to a task that is not being
+// removed is kept.
+func purgeTasks(tx *sql.Tx, cutoff string) (int64, []string, error) {
 	stmts := []string{
 		`CREATE TEMP TABLE IF NOT EXISTS purge_tasks(id INTEGER PRIMARY KEY, root INTEGER NOT NULL)`,
 		`DELETE FROM purge_tasks`,
@@ -326,7 +340,7 @@ func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
 			args = append(args, cutoff)
 		}
 		if _, err := tx.Exec(q, args...); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	// Drop trees linked to a kept task until stable: dropping one tree can
@@ -337,11 +351,29 @@ func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
 			JOIN purge_tasks p ON p.id IN (r.source_id, r.target_id)
 			WHERE r.source_id NOT IN (SELECT id FROM purge_tasks) OR r.target_id NOT IN (SELECT id FROM purge_tasks))`)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		if n, _ := r.RowsAffected(); n == 0 {
 			break
 		}
+	}
+	rows, err := tx.Query(`SELECT t.task_key FROM tasks t JOIN purge_tasks p ON p.id = t.id ORDER BY t.id`)
+	if err != nil {
+		return 0, nil, err
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return 0, nil, err
+		}
+		keys = append(keys, key)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, nil, err
 	}
 	const in = ` IN (SELECT id FROM purge_tasks)`
 	for _, q := range []string{
@@ -354,7 +386,7 @@ func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
 		`DELETE FROM task_relations WHERE source_id` + in + ` OR target_id` + in,
 	} {
 		if _, err := tx.Exec(q); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	// parent_id is ON DELETE RESTRICT, which SQLite checks per row, so
@@ -363,14 +395,33 @@ func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
 	for {
 		r, err := tx.Exec(`DELETE FROM tasks WHERE id` + in + ` AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = tasks.id)`)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		n, _ := r.RowsAffected()
 		if n == 0 {
-			return total, nil
+			return total, keys, nil
 		}
 		total += n
 	}
+}
+
+// removeTaskFiles removes the directories of purged tasks. A key that is not a
+// single local path element is refused, never joined into a path.
+func (s *Service) removeTaskFiles(keys []string) error {
+	if s.TasksDir == "" {
+		return nil
+	}
+	var errs []error
+	for _, key := range keys {
+		if !tasks.IsTaskDirKey(key) {
+			s.log.Warn("maintenance keeps the files of a purged task whose key is not a directory name", "task", key)
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.TasksDir, key)); err != nil {
+			errs = append(errs, fmt.Errorf("task files of %s: %w", key, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // purgeMessages removes old messages whose every delivery is acknowledged or

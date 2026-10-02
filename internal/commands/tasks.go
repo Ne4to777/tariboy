@@ -293,24 +293,15 @@ func TaskOperatorCommands() []registry.Command {
 				}
 				return map[string]any{"queue": queue, "cleared": true}, nil
 			}),
-		taskRoute("tasks.queue.secret.set", "PUT", "/api/task-queues/{queue}/secrets/{key}", "Set a queue secret for workflow scripts",
+		withMaxBody(taskRoute("tasks.queue.secret.set", "PUT", "/api/task-queues/{queue}/secrets/{key}", "Set a queue secret for workflow scripts",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				queue, key := stringParam(p, "queue"), stringParam(p, "key")
-				if err := control.SetQueueSecret(ctx, actor, queue, key, rawStringParam(p, "value")); err != nil {
-					return nil, err
-				}
-				items, err := control.ListQueueSecrets(ctx, actor, queue)
+				info, err := control.SetQueueSecretInfo(ctx, actor, queue, key, rawStringParam(p, "value"))
 				if err != nil {
 					return nil, err
 				}
-				updatedAt := ""
-				for _, item := range items {
-					if item.Key == key {
-						updatedAt = item.UpdatedAt
-					}
-				}
-				return map[string]any{"queue": strings.ToUpper(queue), "key": key, "updated_at": updatedAt}, nil
-			}),
+				return map[string]any{"queue": strings.ToUpper(queue), "key": key, "updated_at": info.UpdatedAt}, nil
+			}), maxQueueSecretBody),
 		taskRoute("tasks.queue.secret.ls", "GET", "/api/task-queues/{queue}/secrets", "List the keys of a queue's secrets",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				items, err := control.ListQueueSecrets(ctx, actor, stringParam(p, "queue"))
@@ -328,6 +319,18 @@ func TaskOperatorCommands() []registry.Command {
 }
 
 func taskCommands() []registry.Command { return TaskOperatorCommands() }
+
+// maxQueueSecretBody bounds the body of a queue secret PUT: a 64 KiB value
+// with JSON escaping fits well within it.
+const maxQueueSecretBody = 512 << 10
+
+// withMaxBody sets the request body bound of an HTTP command.
+func withMaxBody(cmd registry.Command, limit int64) registry.Command {
+	route := *cmd.HTTP
+	route.MaxBodyBytes = limit
+	cmd.HTTP = &route
+	return cmd
+}
 
 type taskHandler func(context.Context, registry.TaskControl, tasks.Actor, registry.Params) (any, error)
 

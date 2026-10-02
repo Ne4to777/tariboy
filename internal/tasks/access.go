@@ -140,6 +140,31 @@ func taskAccess(ctx context.Context, q queryer, actor Actor, taskID int64) (stri
 	return visible[taskID], nil
 }
 
+// readAccess is taskAccess for a read. An agent recorded in
+// task_workflow_holders for the task reads it even with no other access, as
+// "context": a holder whose transition moved the task into a script status or
+// to another pool must still see its task and the result of its request. It
+// grants no write; every write checks taskAccess.
+func readAccess(ctx context.Context, q queryer, actor Actor, taskID int64) (string, error) {
+	access, err := taskAccess(ctx, q, actor, taskID)
+	if err != nil || access != "" || actor.IsCustomer {
+		return access, err
+	}
+	agent, ok := strings.CutPrefix(actor.Principal, "agent:")
+	if !ok {
+		return "", nil
+	}
+	var holds bool
+	if err := q.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM task_workflow_holders WHERE task_id = ? AND agent = ?)`, taskID, agent).Scan(&holds); err != nil {
+		return "", err
+	}
+	if holds {
+		return "context", nil
+	}
+	return "", nil
+}
+
 func requireRespond(ctx context.Context, q queryer, actor Actor, task Task) error {
 	access, err := taskAccess(ctx, q, actor, task.ID)
 	if err != nil {

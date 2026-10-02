@@ -9,11 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/alekzonder/tariboy/internal/workflowfile"
 )
 
 const (
@@ -21,10 +22,6 @@ const (
 	defaultRunLogBytes = 64 << 10
 	// maxRunLogBytes is the largest log tail a caller may ask for.
 	maxRunLogBytes = 1 << 20
-	// minRedactedSecret is the shortest queue secret value replaced in a log;
-	// shorter values would blank ordinary words.
-	minRedactedSecret = 6
-	redactedMarker    = "[redacted]"
 )
 
 func runLogUnavailable(id int64) error {
@@ -93,7 +90,7 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 		maxBytes = defaultRunLogBytes
 	}
 	maxBytes = min(maxBytes, maxRunLogBytes)
-	task, _, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, _, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return "", false, err
 	}
@@ -128,7 +125,18 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 	if err != nil {
 		return "", false, err
 	}
-	text := redactSecrets(validUTF8Tail(raw, size > int64(len(raw))), secrets)
+	// A window that starts inside the file reads MaxQueueSecretBytes ahead of
+	// the asked-for tail, so a secret the start would cut is still matched.
+	// Nothing from that lead is returned, however much the redaction shrinks
+	// the tail.
+	lead := 0
+	if size > int64(len(raw)) {
+		lead = max(len(raw)-maxBytes, 0)
+	}
+	text := redactSecretsFrom(string(raw), secretValues(secrets), lead)
+	if size > int64(len(raw)) {
+		text = string(skipPartialRune([]byte(text)))
+	}
 	if len(text) > maxBytes {
 		text = string(cutTail([]byte(text), maxBytes))
 	}
@@ -136,17 +144,20 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 }
 
 // requireRunLogAccess admits the customer, and an agent only when it is the
-// agent a run_as agent run ran as, or, for any other run, a holder of the task.
-// A run as the agent has that agent's own secrets in its environment, which the
-// queue-secret redaction does not cover.
+// agent a run_as agent run ran as, or, for a queue or watch run, a holder of
+// the task. A run as the agent has that agent's own secrets in its
+// environment, which the queue-secret redaction does not cover; one recorded
+// without an agent is the customer's alone.
 func (s *Service) requireRunLogAccess(ctx context.Context, actor Actor, task Task, run ScriptRun) error {
 	if actor.IsCustomer {
 		return nil
 	}
 	allowed := false
-	if run.Holder != "" {
+	switch {
+	case run.Holder != "":
 		allowed = actor.Principal == agentPrincipal(run.Holder)
-	} else {
+	case run.RunAs == workflowfile.RunAsAgent:
+	default:
 		rows, err := s.db.QueryContext(ctx, `SELECT agent FROM task_workflow_holders WHERE task_id = ?`, task.ID)
 		if err != nil {
 			return err
@@ -174,7 +185,7 @@ func (s *Service) requireRunLogAccess(ctx context.Context, actor Actor, task Tas
 // provided logPath names exactly that file under the base directory and no
 // component of it is a symlink.
 func (s *Service) verifiedRunLogPath(key string, id int64, logPath string) (string, error) {
-	if s.runBaseDir == "" || key == "" || !filepath.IsLocal(key) || strings.ContainsAny(key, `/\`) {
+	if s.runBaseDir == "" || !IsTaskDirKey(key) {
 		return "", runLogInvalid(id)
 	}
 	base, err := filepath.Abs(s.runBaseDir)
@@ -220,15 +231,6 @@ func readLogTail(path string, window int) ([]byte, int64, error) {
 	return raw, size, err
 }
 
-// validUTF8Tail drops the bytes of a rune cut by the start of the slice, when
-// cut says the slice starts inside the file.
-func validUTF8Tail(raw []byte, cut bool) string {
-	if cut {
-		raw = skipPartialRune(raw)
-	}
-	return string(raw)
-}
-
 // skipPartialRune drops leading continuation bytes.
 func skipPartialRune(raw []byte) []byte {
 	for len(raw) > 0 && !utf8.RuneStart(raw[0]) {
@@ -243,30 +245,4 @@ func cutTail(raw []byte, n int) []byte {
 		return raw
 	}
 	return skipPartialRune(raw[len(raw)-n:])
-}
-
-// redactSecrets replaces every value of at least minRedactedSecret bytes with
-// the redacted marker, longest first so a value that contains another is
-// replaced whole.
-func redactSecrets(text string, secrets map[string]string) string {
-	var values []string
-	for _, value := range secrets {
-		if len(value) >= minRedactedSecret {
-			values = append(values, value)
-		}
-	}
-	if len(values) == 0 {
-		return text
-	}
-	sort.Slice(values, func(i, j int) bool {
-		if len(values[i]) != len(values[j]) {
-			return len(values[i]) > len(values[j])
-		}
-		return values[i] < values[j]
-	})
-	pairs := make([]string, 0, 2*len(values))
-	for _, value := range values {
-		pairs = append(pairs, value, redactedMarker)
-	}
-	return strings.NewReplacer(pairs...).Replace(text)
 }

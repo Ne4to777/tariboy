@@ -90,6 +90,10 @@ func (s *workflowStub) SetQueueSecret(_ context.Context, a tasks.Actor, queue, k
 	s.record(a, "queue_secret_set %s %s %q", queue, key, value)
 	return s.err
 }
+func (s *workflowStub) SetQueueSecretInfo(_ context.Context, a tasks.Actor, queue, key, value string) (tasks.QueueSecretInfo, error) {
+	s.record(a, "queue_secret_set_info %s %s %q", queue, key, value)
+	return tasks.QueueSecretInfo{Key: key, UpdatedAt: "2026-10-02T00:00:01Z"}, s.err
+}
 func (s *workflowStub) ListQueueSecrets(_ context.Context, a tasks.Actor, queue string) ([]tasks.QueueSecretInfo, error) {
 	s.record(a, "queue_secret_ls %s", queue)
 	return []tasks.QueueSecretInfo{{Key: "GH_TOKEN", UpdatedAt: "2026-10-02T00:00:00Z"}}, s.err

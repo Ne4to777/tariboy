@@ -413,6 +413,39 @@ func TestCancelWorkflowTask(t *testing.T) {
 	}
 }
 
+// TestClosingAVisitCancelsItsPendingRequest closes a visit that has a pending
+// request through every caller of stopVisitScriptsTx.
+func TestClosingAVisitCancelsItsPendingRequest(t *testing.T) {
+	for name, closeVisit := range map[string]func(*Service, Actor, Task) error{
+		"enter a status": func(svc *Service, _ Actor, task Task) error {
+			enter(t, svc, task.Key, "approval", "ask")
+			return nil
+		},
+		"move": func(svc *Service, actor Actor, task Task) error {
+			_, err := svc.MoveWorkflow(context.Background(), actor, task.Key, "approval", "back")
+			return err
+		},
+		"cancel": func(svc *Service, actor Actor, task Task) error {
+			_, err := svc.CancelWorkflowTask(context.Background(), actor, task.Key)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, actor, task := requestFixture(t)
+			pending := insertPendingRequest(t, svc, task)
+			if err := closeVisit(svc, actor, task); err != nil {
+				t.Fatal(err)
+			}
+			if state := requestState(t, svc, pending); state != "cancelled" {
+				t.Fatalf("request = %s", state)
+			}
+			if n := countRows(t, svc, `SELECT COUNT(*) FROM task_transition_requests WHERE task_id = ? AND state = 'pending'`, task.ID); n != 0 {
+				t.Fatalf("pending requests = %d", n)
+			}
+		})
+	}
+}
+
 func TestAdvanceByAgentsThatDoNotOwnTheStatus(t *testing.T) {
 	svc, _, task := requestFixture(t)
 	ctx := context.Background()

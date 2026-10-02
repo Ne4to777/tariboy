@@ -60,7 +60,7 @@ func (s *Service) ListArtifacts(ctx context.Context, actor Actor, key string) ([
 	if err := validateActor(actor); err != nil {
 		return nil, err
 	}
-	task, _, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, _, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (s *Service) GetArtifact(ctx context.Context, actor Actor, key, name string
 	if err := validateActor(actor); err != nil {
 		return Artifact{}, nil, err
 	}
-	task, manifest, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, manifest, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return Artifact{}, nil, err
 	}
@@ -129,18 +129,33 @@ func (s *Service) GetArtifact(ctx context.Context, actor Actor, key, name string
 	return history[0], history, nil
 }
 
-// artifactTaskTx loads the task and its manifest for an actor that may read
-// the task. A flexible task has no artifacts.
-func artifactTaskTx(ctx context.Context, q interface {
+// taskQueryer reads tasks in or out of a transaction.
+type taskQueryer interface {
 	queryer
 	QueryRow(query string, args ...any) *sql.Row
-}, actor Actor, key string) (Task, workflowimage.Manifest, error) {
+}
+
+// artifactTaskTx loads the task and its manifest for an actor that may see
+// the task through taskAccess; the actions that change a workflow task start
+// here and then check their own rights. A flexible task has no artifacts.
+func artifactTaskTx(ctx context.Context, q taskQueryer, actor Actor, key string) (Task, workflowimage.Manifest, error) {
+	return workflowTaskTx(ctx, q, actor, key, taskAccess)
+}
+
+// workflowReadTaskTx is artifactTaskTx for the reads of a workflow task, which
+// also admit an agent recorded as a holder of the task (readAccess).
+func workflowReadTaskTx(ctx context.Context, q taskQueryer, actor Actor, key string) (Task, workflowimage.Manifest, error) {
+	return workflowTaskTx(ctx, q, actor, key, readAccess)
+}
+
+func workflowTaskTx(ctx context.Context, q taskQueryer, actor Actor, key string,
+	accessOf func(context.Context, queryer, Actor, int64) (string, error)) (Task, workflowimage.Manifest, error) {
 	key = strings.TrimSpace(key)
 	task, err := taskByKey(q, key)
 	if err != nil {
 		return Task{}, workflowimage.Manifest{}, err
 	}
-	access, err := taskAccess(ctx, q, actor, task.ID)
+	access, err := accessOf(ctx, q, actor, task.ID)
 	if err != nil {
 		return Task{}, workflowimage.Manifest{}, err
 	}

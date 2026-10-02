@@ -140,6 +140,7 @@ type TaskControl interface {
 	GetQueueWorkflow(context.Context, tasks.Actor, string) (tasks.QueueWorkflow, error)
 	ClearQueueWorkflow(context.Context, tasks.Actor, string, int64) error
 	SetQueueSecret(context.Context, tasks.Actor, string, string, string) error
+	SetQueueSecretInfo(context.Context, tasks.Actor, string, string, string) (tasks.QueueSecretInfo, error)
 	ListQueueSecrets(context.Context, tasks.Actor, string) ([]tasks.QueueSecretInfo, error)
 	RemoveQueueSecret(context.Context, tasks.Actor, string, string) error
 }

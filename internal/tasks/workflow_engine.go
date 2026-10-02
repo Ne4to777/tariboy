@@ -76,7 +76,7 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 		`SELECT COALESCE(MAX(sequence), 0) FROM task_status_visits WHERE task_id = ?`, task.ID).Scan(&last); err != nil {
 		return err
 	}
-	if err := stopVisitScriptsTx(ctx, tx, task.ID, now); err != nil {
+	if err := stopVisitScriptsTx(ctx, tx, *task, "the task entered status "+statusID, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `

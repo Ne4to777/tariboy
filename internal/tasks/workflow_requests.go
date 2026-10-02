@@ -204,7 +204,7 @@ func (s *Service) GetTransitionRequest(ctx context.Context, actor Actor, key str
 	if err := validateActor(actor); err != nil {
 		return TransitionRequest{}, err
 	}
-	task, manifest, err := artifactTaskTx(ctx, s.db, actor, key)
+	task, manifest, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return TransitionRequest{}, err
 	}
@@ -322,15 +322,12 @@ func (s *Service) CancelWorkflowTask(ctx context.Context, actor Actor, key strin
 	if err := guardRevisionTx(ctx, tx, task); err != nil {
 		return Task{}, err
 	}
-	if err := stopVisitScriptsTx(ctx, tx, task.ID, now); err != nil {
+	if err := stopVisitScriptsTx(ctx, tx, task, "task cancelled by "+actor.Principal, now); err != nil {
 		return Task{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE task_status_visits SET left_at = ?, outcome = '', message = 'cancelled'
 		WHERE task_id = ? AND left_at = ''`, now, task.ID); err != nil {
-		return Task{}, err
-	}
-	if err := cancelPendingRequestTx(ctx, tx, task, "task cancelled by "+actor.Principal, now); err != nil {
 		return Task{}, err
 	}
 	// The current assignee is the holder whose questions the cancel makes moot.

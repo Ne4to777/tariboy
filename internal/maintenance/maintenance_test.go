@@ -275,6 +275,43 @@ func TestCleanupDeletesWorkflowRowsOfClosedTaskTrees(t *testing.T) {
 	}
 }
 
+func TestCleanupRemovesTheFilesOfPurgedTasks(t *testing.T) {
+	svc, st, _ := open(t)
+	db := st.DB
+	base := t.TempDir()
+	svc.TasksDir = filepath.Join(base, "tasks")
+	addTask(t, db, 1, nil, "done", 100)
+	addTask(t, db, 2, nil, "in_progress", 0)
+	addTask(t, db, 3, nil, "done", 100)
+	// A key that is not a single path element is never used as a directory.
+	exec(t, db, `UPDATE tasks SET task_key = '..' WHERE id = 3`)
+	for _, key := range []string{"T-b", "T-c"} {
+		if err := os.MkdirAll(filepath.Join(svc.TasksDir, key, "runs", "1"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(base, "keep.txt")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Run()
+	if err != nil || res.Error != "" {
+		t.Fatalf("run: %+v %v", res, err)
+	}
+	if taskExists(t, db, 1) || taskExists(t, db, 3) || !taskExists(t, db, 2) {
+		t.Fatalf("tasks after cleanup: 1=%v 2=%v 3=%v", taskExists(t, db, 1), taskExists(t, db, 2), taskExists(t, db, 3))
+	}
+	if _, err := os.Stat(filepath.Join(svc.TasksDir, "T-b")); !os.IsNotExist(err) {
+		t.Fatalf("purged task directory: %v", err)
+	}
+	for _, kept := range []string{filepath.Join(svc.TasksDir, "T-c", "runs", "1"), keep} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("%s: %v", kept, err)
+		}
+	}
+}
+
 func TestCleanupAIRequestsMessagesAndEvents(t *testing.T) {
 	svc, st, _ := open(t)
 	db := st.DB
