@@ -101,6 +101,7 @@ func TestTaskScanFillsWorkflowFieldsAndWaitingOn(t *testing.T) {
 	}{
 		{"pool without holder", StatusOpen, "build", "", ""},
 		{"pool with holder", StatusInProgress, "build", "", ""},
+		{"pool holder question", StatusWaitCustomer, "build", "", WaitingOnCustomer},
 		{"customer", StatusWaitCustomer, "approve", "", WaitingOnCustomer},
 		{"script", StatusWaitCustomer, "verify", "", WaitingOnScript},
 		{"paused", StatusWaitCustomer, "approve", "operator hold", WaitingOnPause},

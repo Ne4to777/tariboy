@@ -89,7 +89,8 @@ func finishWorkflowFields(t *Task, ownerKind string) {
 	switch {
 	case t.WorkflowPausedReason != "":
 		t.WaitingOn = WaitingOnPause
-	case ownerKind == workflowfile.OwnerCustomer:
+	case ownerKind == workflowfile.OwnerCustomer, ownerKind == workflowfile.OwnerPool:
+		// In a pool status the holder's question to the customer is the wait.
 		t.WaitingOn = WaitingOnCustomer
 	case ownerKind == workflowfile.OwnerScript:
 		t.WaitingOn = WaitingOnScript

@@ -110,6 +110,15 @@ func (s *Service) AddComment(ctx context.Context, actor Actor, key string, in Ad
 	// A workflow task waiting on its customer status, a script, or a pause keeps
 	// its category; only its holder's question in a pool status moves it.
 	workflowWaiting := task.WorkflowDigest != "" && task.WaitingOn != ""
+	if workflowWaiting && task.WaitingOn == WaitingOnCustomer {
+		// The holder's own question in a pool status waits on the customer too,
+		// and its answer moves the category back.
+		pool, err := inPoolStatusTx(ctx, tx, task)
+		if err != nil {
+			return CommentResult{}, err
+		}
+		workflowWaiting = !pool
+	}
 	switch {
 	case workflowWaiting:
 	case assignedAgentQuestion:

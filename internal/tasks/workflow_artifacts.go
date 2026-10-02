@@ -64,12 +64,18 @@ func (s *Service) ListArtifacts(ctx context.Context, actor Actor, key string) ([
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	return currentArtifactsTx(ctx, s.db, task.ID)
+}
+
+// currentArtifactsTx returns the current value of every artifact set on a
+// task, sorted by name.
+func currentArtifactsTx(ctx context.Context, q queryer, taskID int64) ([]Artifact, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT a.id, a.name, a.value, a.author, a.created_at
 		FROM task_artifacts a
 		WHERE a.task_id = ? AND a.id = (
 			SELECT MAX(b.id) FROM task_artifacts b WHERE b.task_id = a.task_id AND b.name = a.name)
-		ORDER BY a.name`, task.ID)
+		ORDER BY a.name`, taskID)
 	if err != nil {
 		return nil, err
 	}
