@@ -231,20 +231,6 @@ func TestAdvanceRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A transition with checks is refused and writes nothing.
-	enter(t, svc, task.Key, "review", "ready")
-	before := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ?`, task.ID)
-	reviewer := AgentActor("reviewer-1")
-	if _, err := svc.Advance(ctx, reviewer, task.Key, AdvanceInput{Outcome: "approve"}); ErrorCode(err) != "checks_unavailable" || ErrorStatus(err) != 409 {
-		t.Fatalf("checks: %v", err)
-	}
-	if after := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ?`, task.ID); after != before {
-		t.Fatalf("events %d -> %d", before, after)
-	}
-	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_transition_requests WHERE task_id = ?`, task.ID); n != 0 {
-		t.Fatalf("requests = %d", n)
-	}
-
 	// Nobody advances a script status.
 	enter(t, svc, task.Key, "merge", "approved")
 	if _, err := svc.Advance(ctx, actor, task.Key, AdvanceInput{Outcome: "merged"}); ErrorCode(err) != "not_holder" {

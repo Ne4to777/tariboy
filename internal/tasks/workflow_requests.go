@@ -26,8 +26,9 @@ type AdvanceInput struct {
 
 // Advance declares an outcome for the current status. A pool status accepts
 // it from the holder; a customer status from the customer. A transition
-// without checks applies in this call. A transition with checks is refused
-// with checks_unavailable until the scripts plan lands.
+// without checks applies in this call. A transition with checks is recorded
+// as a pending request with a pending run of its first check, and applies when
+// the last check passes.
 func (s *Service) Advance(ctx context.Context, actor Actor, key string, in AdvanceInput) (TransitionRequest, error) {
 	if err := validateActor(actor); err != nil {
 		return TransitionRequest{}, err
@@ -95,13 +96,20 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 		return TransitionRequest{}, domainError(http.StatusConflict, "transition_pending",
 			"another transition request of "+task.Key+" is still running")
 	}
-	// Checks run scripts, which a later plan adds. Until then a transition that
-	// declares checks is refused here, before anything is written.
+	// Runs of one task never overlap: a run cancelled when the task left its
+	// previous status may still be stopping.
 	if len(transition.Checks) > 0 {
-		return TransitionRequest{}, domainError(http.StatusConflict, "checks_unavailable",
-			"outcome "+in.Outcome+" declares checks, and script checks are not available in this build")
+		var active bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM task_script_runs WHERE task_id = ? AND state IN ('pending', 'running'))`,
+			task.ID).Scan(&active); err != nil {
+			return TransitionRequest{}, err
+		}
+		if active {
+			return TransitionRequest{}, domainError(http.StatusConflict, "script_running",
+				"a script run of "+task.Key+" is still stopping; retry the request shortly")
+		}
 	}
-
 	now := s.now()
 	if err := guardRevisionTx(ctx, tx, task); err != nil {
 		return TransitionRequest{}, err
@@ -124,10 +132,26 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	}
 	request := TransitionRequest{ID: id, TaskKey: task.Key, Outcome: in.Outcome, Message: in.Message,
 		Actor: actor.Principal, State: "applied", CreatedAt: now, FinishedAt: now}
+	if len(transition.Checks) > 0 {
+		request.State, request.FinishedAt = "pending", ""
+	}
 	if _, err := appendEventTx(ctx, tx, task, "workflow.transition_requested", actor, map[string]any{
 		"request_id": id, "status": status.ID, "outcome": in.Outcome, "actor": actor.Principal, "state": request.State,
 	}, now); err != nil {
 		return TransitionRequest{}, err
+	}
+	// A transition with checks stays pending; the worker runs the first check
+	// and CompleteScriptRun moves the request on.
+	if len(transition.Checks) > 0 {
+		check := transition.Checks[0]
+		if err := insertScriptRunTx(ctx, tx, task.ID, visitID, id, "check", check.Script, checkRunAs(check), 0, now); err != nil {
+			return TransitionRequest{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return TransitionRequest{}, err
+		}
+		s.signal()
+		return request, nil
 	}
 	if err := s.applyTransitionTx(ctx, tx, &task, manifest, id, transition, actor.Principal, in.Message); err != nil {
 		return TransitionRequest{}, err
@@ -240,6 +264,9 @@ func (s *Service) CancelWorkflowTask(ctx context.Context, actor Actor, key strin
 	}
 	now := s.now()
 	if err := guardRevisionTx(ctx, tx, task); err != nil {
+		return Task{}, err
+	}
+	if err := stopVisitScriptsTx(ctx, tx, task.ID, now); err != nil {
 		return Task{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `

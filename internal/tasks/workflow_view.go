@@ -33,6 +33,7 @@ type WorkflowView struct {
 	Artifacts        []Artifact         `json:"artifacts"`
 	Visits           []StatusVisit      `json:"visits"`
 	LastRequest      *TransitionRequest `json:"last_request,omitempty"`
+	Runs             []ScriptRun        `json:"runs"` // the most recent script runs, newest first
 }
 
 // GetWorkflow returns the workflow view of a task the actor may read.
@@ -81,6 +82,9 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 		}
 	}
 	if view.Visits, err = statusVisitsTx(ctx, tx, task.ID); err != nil {
+		return WorkflowView{}, err
+	}
+	if view.Runs, err = scriptRunsTx(ctx, tx, task.ID, workflowViewRuns); err != nil {
 		return WorkflowView{}, err
 	}
 	var last TransitionRequest

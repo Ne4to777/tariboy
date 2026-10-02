@@ -183,7 +183,7 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 			t.Errorf("openapi lacks %s %s", method, path)
 		}
 	}
-	for _, name := range []string{"WorkflowView", "OutcomeView", "TransitionRequest", "Artifact", "StatusVisit", "QueueWorkflow"} {
+	for _, name := range []string{"WorkflowView", "OutcomeView", "TransitionRequest", "Artifact", "StatusVisit", "QueueWorkflow", "ScriptRun"} {
 		if doc.Components.Schemas[name] == nil {
 			t.Errorf("openapi lacks schema %s", name)
 		}

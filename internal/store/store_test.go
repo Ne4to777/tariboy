@@ -110,6 +110,44 @@ func TestOpenCreatesWorkflowEngineSchema(t *testing.T) {
 	}
 }
 
+func TestOpenCreatesScriptRunSchema(t *testing.T) {
+	s := open(t)
+	requireTable(t, s.DB, "task_script_runs")
+	requireColumn(t, s.DB, "task_status_visits", "next_watch_at")
+	exec := func(query string, args ...any) error {
+		_, err := s.DB.Exec(query, args...)
+		return err
+	}
+	for _, query := range []string{
+		`INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('DEV', 'Dev', 'now', 'now')`,
+		`INSERT INTO tasks(task_key, queue_prefix, title, author, customer, created_at, updated_at) VALUES ('DEV-1', 'DEV', 'one', 'user:c', 'user:c', 'now', 'now')`,
+		`INSERT INTO task_status_visits(task_id, sequence, status_id, entered_at, entered_by) VALUES (1, 1, 'merge', 'now', 'system')`,
+	} {
+		if err := exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var next string
+	if err := s.DB.QueryRow(`SELECT next_watch_at FROM task_status_visits WHERE id = 1`).Scan(&next); err != nil || next != "" {
+		t.Fatalf("next_watch_at = %q, %v", next, err)
+	}
+	run := `INSERT INTO task_script_runs(task_id, visit_id, kind, script, run_as, state, created_at) VALUES (1, 1, ?, 'w.sh', ?, ?, 'now')`
+	if err := exec(run, "watch", "queue", "pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(run, "watch", "queue", "running"); err == nil {
+		t.Fatal("a second active run for one task was accepted")
+	}
+	if err := exec(run, "watch", "queue", "finished"); err != nil {
+		t.Fatalf("a finished run beside an active one was refused: %v", err)
+	}
+	for _, bad := range [][]any{{"other", "queue", "finished"}, {"check", "shell", "finished"}, {"check", "queue", "bogus"}} {
+		if err := exec(run, bad...); err == nil {
+			t.Fatalf("run %v was accepted", bad)
+		}
+	}
+}
+
 func TestOpenRemovesJudgeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remove-judge.db")
 	db := createDatabaseBeforeMigration(t, path, "0043_remove_judge.sql")

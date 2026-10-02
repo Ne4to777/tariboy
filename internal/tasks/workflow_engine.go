@@ -76,14 +76,22 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 		`SELECT COALESCE(MAX(sequence), 0) FROM task_status_visits WHERE task_id = ?`, task.ID).Scan(&last); err != nil {
 		return err
 	}
+	if err := stopVisitScriptsTx(ctx, tx, task.ID, now); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE task_status_visits SET left_at = ?, outcome = ?, message = ?
 		WHERE task_id = ? AND left_at = ''`, now, outcome, message, task.ID); err != nil {
 		return err
 	}
+	// A script status runs its watch at once after it is entered.
+	nextWatch := ""
+	if !next.Terminal && next.Owner.Kind == workflowfile.OwnerScript && next.Watch != nil {
+		nextWatch = watchTime(s.clock())
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO task_status_visits(task_id, sequence, status_id, entered_at, entered_by)
-		VALUES (?, ?, ?, ?, ?)`, task.ID, last+1, statusID, now, via); err != nil {
+		INSERT INTO task_status_visits(task_id, sequence, status_id, entered_at, entered_by, next_watch_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, task.ID, last+1, statusID, now, via, nextWatch); err != nil {
 		return err
 	}
 
