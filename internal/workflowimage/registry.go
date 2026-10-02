@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/alekzonder/tariboy/internal/workflowfile"
@@ -76,11 +78,14 @@ func (r *Registry) Publish(src *workflowfile.File, now time.Time) (Manifest, boo
 }
 
 // rollback undoes a publication that created content: tags return to their
-// earlier state and the new content is deleted. The caller holds mu.
+// earlier state, and only then is the new content deleted. When the tags
+// cannot be restored the content stays, so no tag names missing content. The
+// caller holds mu.
 func (r *Registry) rollback(m Manifest, before []tagState) error {
-	tagErr := r.Store.restoreTags(m.Name, before)
-	rmErr := removeAll(r.Store.ContentDir(m.Name, m.Digest))
-	if err := errors.Join(tagErr, rmErr); err != nil {
+	if err := r.Store.restoreTags(m.Name, before); err != nil {
+		return fmt.Errorf("roll back workflow image %s %s: restore tags, keeping content: %w", m.Name, m.Version, err)
+	}
+	if err := removeAll(r.Store.ContentDir(m.Name, m.Digest)); err != nil {
 		return fmt.Errorf("roll back workflow image %s %s: %w", m.Name, m.Version, err)
 	}
 	return nil
@@ -103,31 +108,63 @@ func (r *Registry) Get(digest string) (Manifest, error) {
 	return m, nil
 }
 
-// Remove removes a tag; when the content goes, it removes the row too.
-func (r *Registry) Remove(name, tag string) error {
+// Remove removes a tag and returns the digest it named. When it was the last
+// tag of that digest, the content and its row go too, and contentRemoved is
+// true. The row is deleted in a transaction that commits only after the disk
+// step succeeded, so a failure never leaves a row without content or content
+// without a row; a failed commit after the disk step is healed by Reconcile.
+func (r *Registry) Remove(name, tag string) (digest string, contentRemoved bool, err error) {
 	if err := checkName("name", name); err != nil {
-		return err
+		return "", false, err
 	}
 	if err := checkName("tag", tag); err != nil {
-		return err
+		return "", false, err
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	digest, contentRemoved, err := r.Store.removeTagLocked(name, tag)
+	tx, err := r.DB.Begin()
 	if err != nil {
-		return err
+		return "", false, err
 	}
-	if contentRemoved {
-		if _, err := r.DB.Exec(`DELETE FROM task_workflow_images WHERE digest = ?`, digest); err != nil {
-			return fmt.Errorf("delete workflow image record %s: %w", digest, err)
+	defer func() { _ = tx.Rollback() }() // a no-op after Commit
+	digest, err = r.Store.readTag(name, tag)
+	if err != nil {
+		return "", false, err
+	}
+	tags, err := r.Store.Tags(name, digest)
+	if err != nil {
+		return "", false, err
+	}
+	last := true
+	for _, other := range tags {
+		if other != tag {
+			last = false
 		}
 	}
-	return nil
+	if last {
+		if _, err := tx.Exec(`DELETE FROM task_workflow_images WHERE digest = ?`, digest); err != nil {
+			return "", false, fmt.Errorf("delete workflow image record %s: %w", digest, err)
+		}
+	}
+	if _, contentRemoved, err = r.Store.removeTagLocked(name, tag); err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return digest, contentRemoved, fmt.Errorf("delete workflow image record %s: %w", digest, err)
+	}
+	return digest, contentRemoved, nil
 }
 
-// Reconcile inserts rows for stored content that has none. Called at daemon
-// start so a crash between the two writes heals. It never deletes rows.
+// Reconcile makes the rows match the stored content. It deletes rows whose
+// content directory no longer exists and inserts rows for tagged content that
+// has none. Called at daemon start so a crash between a disk write and its
+// row heals. It never deletes a row whose content exists.
 func (r *Registry) Reconcile() error {
+	mu.Lock()
+	defer mu.Unlock()
+	if err := r.pruneOrphans(); err != nil {
+		return err
+	}
 	listed, err := r.Store.List()
 	if err != nil {
 		return err
@@ -135,6 +172,43 @@ func (r *Registry) Reconcile() error {
 	for _, l := range listed {
 		if err := r.insert(l.Manifest); err != nil {
 			return fmt.Errorf("record workflow image %s %s: %w", l.Name, l.Version, err)
+		}
+	}
+	return nil
+}
+
+// pruneOrphans deletes rows whose content directory is missing. A row whose
+// name or digest is not a valid path component is left alone, as is one whose
+// directory cannot be checked for any reason other than absence.
+func (r *Registry) pruneOrphans() error {
+	rows, err := r.DB.Query(`SELECT digest, name FROM task_workflow_images`)
+	if err != nil {
+		return err
+	}
+	var orphans []string
+	for rows.Next() {
+		var digest, name string
+		if err := rows.Scan(&digest, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		dir := r.Store.ContentDir(name, digest)
+		if dir == "" {
+			continue
+		}
+		if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+			orphans = append(orphans, digest)
+		} else if err != nil {
+			rows.Close()
+			return fmt.Errorf("check workflow image content %s %s: %w", name, digest, err)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, digest := range orphans {
+		if _, err := r.DB.Exec(`DELETE FROM task_workflow_images WHERE digest = ?`, digest); err != nil {
+			return fmt.Errorf("delete workflow image record %s: %w", digest, err)
 		}
 	}
 	return nil

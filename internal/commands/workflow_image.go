@@ -3,7 +3,6 @@ package commands
 import (
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -220,18 +219,10 @@ func workflowRm() registry.Command {
 				return nil, err
 			}
 			name, tag := str(p, "name"), str(p, "tag")
-			digest, err := reg.Store.Resolve(name, tag)
+			// Registry.Remove deletes the content and its row with the last tag.
+			_, contentRemoved, err := reg.Remove(name, tag)
 			if err != nil {
 				return nil, workflowImageError(err)
-			}
-			if err := reg.Remove(name, tag); err != nil {
-				return nil, workflowImageError(err)
-			}
-			// Registry.Remove deletes the content with the last tag.
-			contentRemoved := false
-			if dir := reg.Store.ContentDir(name, digest); dir != "" {
-				_, statErr := os.Lstat(dir)
-				contentRemoved = errors.Is(statErr, os.ErrNotExist)
 			}
 			return map[string]any{"name": name, "tag": tag, "removed": true, "content_removed": contentRemoved}, nil
 		},

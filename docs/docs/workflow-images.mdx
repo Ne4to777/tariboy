@@ -269,9 +269,11 @@ reused only after its content is gone: every tag that named it is removed,
 which deletes the content and its database row.
 
 The manifest of every published digest is also recorded in the
-`task_workflow_images` table of the daemon's SQLite database. The daemon
-inserts any missing row for stored content at startup, so a crash between the
-two writes heals. See [State model](/docs/architecture/state-model).
+`task_workflow_images` table of the daemon's SQLite database. Removing the
+last tag of a digest deletes its row in a transaction that commits only after
+the content is deleted. At startup the daemon inserts any missing row for
+stored content and deletes any row whose content is gone, so a crash between a
+disk write and its row heals. See [State model](/docs/architecture/state-model).
 
 ## Commands
 

@@ -531,8 +531,38 @@ func TestPublishRollsBackFirstTagWhenSecondFails(t *testing.T) {
 	if d, err := s.Resolve("demo", "0.1.0"); err != nil || d != a.Digest {
 		t.Fatalf("0.1.0 = %q, %v", d, err)
 	}
-	if entries, _ := os.ReadDir(filepath.Join(s.Dir, "demo", "refs")); len(entries) != 1 {
-		t.Fatalf("refs = %v", entries)
+	// The tags were restored, so the new content is gone.
+	if entries, _ := os.ReadDir(filepath.Join(s.Dir, "demo", "refs")); len(entries) != 1 || entries[0].Name() != a.Digest {
+		t.Fatalf("refs = %v, want only %s", entries, a.Digest)
+	}
+}
+
+func TestPublishKeepsContentWhenTagRestoreFails(t *testing.T) {
+	skipRoot(t)
+	s := newStore(t)
+	a := publish(t, s, writeSource(t, "0.1.0"))
+	tags := filepath.Join(s.Dir, "demo", "tags")
+	// The version tag is written; then the tags directory turns read-only, so
+	// both the latest write and the restore of the version tag fail.
+	beforeTagWrite = func(tag string) {
+		if tag == "latest" {
+			_ = os.Chmod(tags, 0o500)
+		}
+	}
+	t.Cleanup(func() {
+		beforeTagWrite = func(string) {}
+		_ = os.Chmod(tags, 0o700)
+	})
+	_, _, err := s.Publish(writeSource(t, "0.2.0"), t0)
+	if err == nil || !strings.Contains(err.Error(), "restore tags") {
+		t.Fatalf("Publish = %v, want a tag restore error", err)
+	}
+	d, err := s.Resolve("demo", "0.2.0")
+	if err != nil || d == a.Digest {
+		t.Fatalf("0.2.0 = %q, %v; want the unrestored new digest", d, err)
+	}
+	if _, err := s.Inspect("demo", d); err != nil {
+		t.Fatalf("0.2.0 names %s, whose content is gone: %v", d, err)
 	}
 }
 

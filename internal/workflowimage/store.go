@@ -36,6 +36,10 @@ var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // mu serializes publication and removal across every Store in the process.
 var mu sync.Mutex
 
+// beforeTagWrite runs before moveTags writes each tag. Tests replace it to
+// inject failures between tag writes.
+var beforeTagWrite = func(tag string) {}
+
 // Store is the on-disk store of workflow images. Dir is <base-dir>/workflows.
 //
 //	<Dir>/<name>/refs/<digest>/  copied source tree plus manifest.json
@@ -326,8 +330,12 @@ func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, 
 	}
 
 	if err := s.moveTags(name, digest, version, latestTag); err != nil {
-		if created {
-			removeAll(s.ContentDir(name, digest))
+		// Delete new content only when the tags are back as they were; a tag
+		// that could not be restored still names it.
+		if created && !errors.Is(err, errRestoreTags) {
+			if rmErr := removeAll(s.ContentDir(name, digest)); rmErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove new content: %w", rmErr))
+			}
 		}
 		return Manifest{}, false, err
 	}
@@ -428,14 +436,19 @@ func (s *Store) install(m Manifest, files []sourceFile) (err error) {
 	return os.Rename(tmp, s.ContentDir(m.Name, m.Digest))
 }
 
+// errRestoreTags marks a moveTags failure whose rollback also failed, so some
+// tags may still name the new digest.
+var errRestoreTags = errors.New("restore tags")
+
 // moveTags points every tag at digest. If one fails it puts the earlier tags
-// back as they were.
+// back as they were; when that also fails the error matches errRestoreTags.
 func (s *Store) moveTags(name, digest string, tags ...string) error {
 	if err := os.MkdirAll(s.tagsDir(name), 0o700); err != nil {
 		return err
 	}
 	var done []tagState
 	for _, tag := range tags {
+		beforeTagWrite(tag)
 		old, err := s.readTag(name, tag)
 		had := err == nil
 		if err == nil || errors.Is(err, ErrNotFound) {
@@ -443,7 +456,7 @@ func (s *Store) moveTags(name, digest string, tags ...string) error {
 		}
 		if err != nil {
 			if rerr := s.restoreTags(name, done); rerr != nil {
-				err = errors.Join(err, fmt.Errorf("restore tags: %w", rerr))
+				err = errors.Join(err, fmt.Errorf("%w: %w", errRestoreTags, rerr))
 			}
 			return err
 		}

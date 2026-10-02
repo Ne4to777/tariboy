@@ -268,8 +268,10 @@ Workflow images live on disk under `<base-dir>/workflows/<name>/`. Content is
 addressed by SHA-256 digest in `refs/<digest>/`, and tags are pointer files in
 `tags/` that hold a digest. The `task_workflow_images` table records the
 manifest of each published digest, so a manifest can be read from SQLite
-without touching the filesystem. The daemon reconciles missing rows from the
-stored content at startup. See [Workflow images](/docs/workflow-images).
+without touching the filesystem; a unique index on name and version keeps one
+digest per published version. The daemon reconciles the table with the stored
+content at startup: it inserts missing rows and deletes rows whose content is
+gone. See [Workflow images](/docs/workflow-images).
 
 Directories left under `<base-dir>/store/versions/` by an older release are
 untouched legacy data. Current daemons neither read nor refresh them.

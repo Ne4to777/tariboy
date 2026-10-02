@@ -69,6 +69,17 @@ func TestRegistryRollbackFailureIsReported(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "insert refused") || !strings.Contains(err.Error(), "roll back") {
 		t.Fatalf("err = %v, want the insert error joined with a rollback error", err)
 	}
+	// The tags could not be restored and still name the new digest, so its
+	// content must still be there.
+	for _, tag := range []string{"1.1.0", "latest"} {
+		d, err := r.Store.Resolve("demo", tag)
+		if err != nil {
+			t.Fatalf("%s: %v", tag, err)
+		}
+		if _, err := r.Store.Inspect("demo", d); err != nil {
+			t.Fatalf("%s names %s, whose content is gone: %v", tag, d, err)
+		}
+	}
 }
 
 func TestRegistryConcurrentPublish(t *testing.T) {
@@ -242,14 +253,16 @@ func TestRegistryRemoveDeletesRowOnlyWithContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Remove("demo", "latest"); err != nil {
-		t.Fatal(err)
+	d, removed, err := r.Remove("demo", "latest")
+	if err != nil || removed || d != m.Digest {
+		t.Fatalf("Remove latest = %q, %v, %v", d, removed, err)
 	}
 	if n := rowCount(t, db); n != 1 {
 		t.Fatalf("rows after removing latest = %d, want 1", n)
 	}
-	if err := r.Remove("demo", "1.0.0"); err != nil {
-		t.Fatal(err)
+	d, removed, err = r.Remove("demo", "1.0.0")
+	if err != nil || !removed || d != m.Digest {
+		t.Fatalf("Remove 1.0.0 = %q, %v, %v", d, removed, err)
 	}
 	if n := rowCount(t, db); n != 0 {
 		t.Fatalf("rows after removing content = %d, want 0", n)
@@ -257,8 +270,118 @@ func TestRegistryRemoveDeletesRowOnlyWithContent(t *testing.T) {
 	if _, err := r.Get(m.Digest); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get after remove: %v", err)
 	}
-	if err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrNotFound) {
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("remove unknown tag: %v", err)
+	}
+}
+
+// A failed row delete must leave the disk untouched, so no row outlives its
+// content and no content loses its row.
+func TestRegistryRemoveRowFailureKeepsContent(t *testing.T) {
+	r, db := newRegistry(t)
+	m, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Remove("demo", "latest"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_delete BEFORE DELETE ON task_workflow_images BEGIN SELECT RAISE(ABORT, 'delete refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Remove("demo", "1.0.0"); err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the delete error", err)
+	}
+	if d, err := r.Store.Resolve("demo", "1.0.0"); err != nil || d != m.Digest {
+		t.Fatalf("1.0.0 tag = %q, %v", d, err)
+	}
+	if _, err := r.Store.Inspect("demo", m.Digest); err != nil {
+		t.Fatalf("content: %v", err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+}
+
+// A failed disk removal rolls the row delete back.
+func TestRegistryRemoveDiskFailureKeepsRow(t *testing.T) {
+	skipRoot(t)
+	r, db := newRegistry(t)
+	m, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Remove("demo", "latest"); err != nil {
+		t.Fatal(err)
+	}
+	tags := r.Store.tagsDir("demo")
+	if err := os.Chmod(tags, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tags, 0o700) })
+	if _, removed, err := r.Remove("demo", "1.0.0"); err == nil || removed {
+		t.Fatalf("Remove = %v, %v; want a disk error", removed, err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+	if _, err := r.Get(m.Digest); err != nil {
+		t.Fatalf("row: %v", err)
+	}
+}
+
+func TestRegistryReconcilePrunesRowsWithoutContent(t *testing.T) {
+	r, db := newRegistry(t)
+	gone, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, _, err := r.Publish(writeSource(t, "2.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Content and its tag deleted by hand, as a crash between the disk step
+	// and the row delete would leave them.
+	if err := os.Remove(r.Store.tagPath("demo", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAll(r.Store.ContentDir("demo", gone.Digest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Get(gone.Digest); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orphan row survived: %v", err)
+	}
+	if _, err := r.Get(kept.Digest); err != nil {
+		t.Fatalf("row with content was pruned: %v", err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+}
+
+// Reconcile keeps the row of content that no tag names any more.
+func TestRegistryReconcileKeepsUntaggedContentRow(t *testing.T) {
+	r, db := newRegistry(t)
+	m, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"1.0.0", "latest"} {
+		if err := os.Remove(r.Store.tagPath("demo", tag)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Get(m.Digest); err != nil {
+		t.Fatalf("row was pruned although its content exists: %v", err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
 	}
 }
 
@@ -268,7 +391,7 @@ func TestRegistryVersionImmutableAfterTagRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Remove("demo", "1.0.0"); err != nil {
+	if _, _, err := r.Remove("demo", "1.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	changed := writeSource(t, "1.0.0")
@@ -298,8 +421,8 @@ func TestRegistryVersionImmutableAfterTagRemoval(t *testing.T) {
 
 	// Once the last tag is gone, the content and its row are gone, and the
 	// version may be published again with other content.
-	if err := r.Remove("demo", "latest"); err != nil {
-		t.Fatal(err)
+	if _, removed, err := r.Remove("demo", "latest"); err != nil || !removed {
+		t.Fatalf("Remove latest = %v, %v", removed, err)
 	}
 	if n := rowCount(t, db); n != 0 {
 		t.Fatalf("rows after removing latest = %d, want 0", n)
