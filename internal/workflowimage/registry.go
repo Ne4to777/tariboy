@@ -158,31 +158,64 @@ func (r *Registry) Remove(name, tag string) (digest string, contentRemoved bool,
 	return digest, contentRemoved, nil
 }
 
-// requireUnused returns ErrInUse when a queue is bound to the digest or a
-// task that is not finished is pinned to it. A table that does not exist in
-// this database means nothing uses the image through it; any other error is
-// returned.
-func requireUnused(tx *sql.Tx, digest string) error {
-	for _, q := range []struct{ table, query, what string }{
-		{"task_queue_workflows", `SELECT COUNT(*) FROM task_queue_workflows WHERE workflow_digest = ?`, "a queue is bound to it"},
-		{"tasks", `SELECT COUNT(*) FROM tasks WHERE workflow_digest = ? AND status NOT IN ('done', 'cancelled')`, "a task still uses it"},
-	} {
-		var present int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, q.table).Scan(&present); err != nil {
-			return err
-		}
-		if present == 0 {
-			continue
-		}
+// rowQueryer is what imageUse needs from a *sql.DB or a *sql.Tx.
+type rowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// imageUse counts what holds a digest: the queues bound to it, and the open
+// and the closed tasks pinned to it. A table that does not exist in this
+// database means nothing uses the image through it.
+func imageUse(q rowQueryer, digest string) (queues, open, closed int, err error) {
+	present := func(table string) (bool, error) {
 		var n int
-		if err := tx.QueryRow(q.query, digest).Scan(&n); err != nil {
-			return fmt.Errorf("check workflow image use %s: %w", digest, err)
-		}
-		if n > 0 {
-			return fmt.Errorf("%w: %s", ErrInUse, q.what)
+		err := q.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n)
+		return n > 0, err
+	}
+	if ok, err := present("task_queue_workflows"); err != nil {
+		return 0, 0, 0, err
+	} else if ok {
+		if err := q.QueryRow(`SELECT COUNT(*) FROM task_queue_workflows WHERE workflow_digest = ?`, digest).Scan(&queues); err != nil {
+			return 0, 0, 0, fmt.Errorf("check workflow image use %s: %w", digest, err)
 		}
 	}
+	if ok, err := present("tasks"); err != nil {
+		return 0, 0, 0, err
+	} else if ok {
+		if err := q.QueryRow(`
+			SELECT COALESCE(SUM(status NOT IN ('done', 'cancelled')), 0), COALESCE(SUM(status IN ('done', 'cancelled')), 0)
+			FROM tasks WHERE workflow_digest = ?`, digest).Scan(&open, &closed); err != nil {
+			return 0, 0, 0, fmt.Errorf("check workflow image use %s: %w", digest, err)
+		}
+	}
+	return queues, open, closed, nil
+}
+
+// requireUnused returns ErrInUse when a queue is bound to the digest or any
+// task, open or closed, is pinned to it: a closed task still reads its
+// workflow and artifacts through the image. Task retention removes closed task
+// trees, which frees the image later.
+func requireUnused(tx *sql.Tx, digest string) error {
+	queues, open, closed, err := imageUse(tx, digest)
+	switch {
+	case err != nil:
+		return err
+	case queues > 0:
+		return fmt.Errorf("%w: %s bound to it", ErrInUse, plural(queues, "queue is", "queues are"))
+	case open > 0:
+		return fmt.Errorf("%w: %s pinned to it", ErrInUse, plural(open, "open task is", "open tasks are"))
+	case closed > 0:
+		return fmt.Errorf("%w: only %s pinned to it; task retention frees it once they are removed",
+			ErrInUse, plural(closed, "closed task is", "closed tasks are"))
+	}
 	return nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // Reconcile makes the rows match the stored content. It deletes rows whose
@@ -209,7 +242,8 @@ func (r *Registry) Reconcile() error {
 
 // pruneOrphans deletes rows whose content directory is missing. A row whose
 // name or digest is not a valid path component is left alone, as is one whose
-// directory cannot be checked for any reason other than absence.
+// directory cannot be checked for any reason other than absence, and one whose
+// digest a queue is bound to or any task is pinned to.
 func (r *Registry) pruneOrphans() error {
 	rows, err := r.DB.Query(`SELECT digest, name FROM task_workflow_images`)
 	if err != nil {
@@ -237,6 +271,13 @@ func (r *Registry) pruneOrphans() error {
 		return err
 	}
 	for _, digest := range orphans {
+		queues, open, closed, err := imageUse(r.DB, digest)
+		if err != nil {
+			return err
+		}
+		if queues+open+closed > 0 {
+			continue
+		}
 		if _, err := r.DB.Exec(`DELETE FROM task_workflow_images WHERE digest = ?`, digest); err != nil {
 			return fmt.Errorf("delete workflow image record %s: %w", digest, err)
 		}

@@ -502,8 +502,8 @@ func TestRegistryRemoveRefusesImageInUse(t *testing.T) {
 	if _, removed, err := r.Remove("demo", "latest"); err != nil || removed {
 		t.Fatalf("Remove latest = %v, %v", removed, err)
 	}
-	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) {
-		t.Fatalf("Remove bound image: %v, want ErrInUse", err)
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) || !strings.Contains(err.Error(), "queue") {
+		t.Fatalf("Remove bound image: %v, want ErrInUse naming the queue binding", err)
 	}
 	if n := rowCount(t, db); n != 1 {
 		t.Fatalf("rows = %d, want 1", n)
@@ -515,14 +515,59 @@ func TestRegistryRemoveRefusesImageInUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTask(t, db, m.Digest, "in_progress")
-	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) {
-		t.Fatalf("Remove image used by a live task: %v, want ErrInUse", err)
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) || !strings.Contains(err.Error(), "1 open task") {
+		t.Fatalf("Remove image used by a live task: %v, want ErrInUse naming 1 open task", err)
 	}
+	// A closed task still reads its workflow through the pinned digest.
 	if _, err := db.Exec(`UPDATE tasks SET status = 'done'`); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := r.Remove("demo", "1.0.0"); !errors.Is(err, ErrInUse) || !strings.Contains(err.Error(), "1 closed task") {
+		t.Fatalf("Remove image pinned by a closed task: %v, want ErrInUse naming 1 closed task", err)
+	}
+	if n := rowCount(t, db); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+	// Retention deletes the closed task tree, which frees the image.
+	if _, err := db.Exec(`DELETE FROM tasks`); err != nil {
+		t.Fatal(err)
+	}
 	if _, removed, err := r.Remove("demo", "1.0.0"); err != nil || !removed {
-		t.Fatalf("Remove image used only by a finished task = %v, %v", removed, err)
+		t.Fatalf("Remove image once no task pins it = %v, %v", removed, err)
+	}
+}
+
+// Reconcile keeps the row of missing content while a task pins its digest or
+// a queue is bound to it, so a pinned task can still read its workflow.
+func TestRegistryReconcileKeepsPinnedRowsWithoutContent(t *testing.T) {
+	for _, pin := range []string{"task", "queue"} {
+		t.Run(pin, func(t *testing.T) {
+			r, db := newRegistry(t)
+			m, _, err := r.Publish(writeSource(t, "1.0.0"), t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedQueue(t, db)
+			if pin == "task" {
+				seedTask(t, db, m.Digest, "done")
+			} else if _, err := db.Exec(`INSERT INTO task_queue_workflows(queue_prefix, workflow_digest, updated_at) VALUES ('DEV', ?, 'n')`, m.Digest); err != nil {
+				t.Fatal(err)
+			}
+			for _, tag := range []string{"1.0.0", "latest"} {
+				if err := os.Remove(r.Store.tagPath("demo", tag)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := removeAll(r.Store.ContentDir("demo", m.Digest)); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Get(m.Digest); err != nil {
+				t.Fatalf("pinned row was pruned: %v", err)
+			}
+		})
 	}
 }
 

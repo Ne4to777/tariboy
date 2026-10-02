@@ -18,8 +18,8 @@ var (
 	ErrNotFound         = errors.New("workflow image not found")
 	ErrVersionPublished = errors.New("workflow version is already published with different content")
 	ErrInvalid          = errors.New("workflow source is invalid")
-	// ErrInUse means a queue is bound to the image or a task that is not
-	// finished is pinned to it.
+	// ErrInUse means a queue is bound to the image or a task, open or closed,
+	// is pinned to it.
 	ErrInUse = errors.New("workflow image is in use")
 )
 

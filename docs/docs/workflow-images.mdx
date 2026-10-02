@@ -274,8 +274,8 @@ The manifest of every published digest is also recorded in the
 `task_workflow_images` table of the daemon's SQLite database. Removing the
 last tag of a digest deletes its row in a transaction that commits only after
 the content is deleted. At startup the daemon inserts any missing row for
-stored content and deletes any row whose content is gone, so a crash between a
-disk write and its row heals. See [State model](/docs/architecture/state-model).
+stored content and deletes any row whose content is gone, unless a queue binds
+or a task pins its digest, so a crash between a disk write and its row heals. See [State model](/docs/architecture/state-model).
 
 ## Commands
 
@@ -306,10 +306,13 @@ tariboy workflow version update major|minor|patch [--path DIR]
 | `workflow rm NAME TAG` | `DELETE /api/workflow-images/{name}/{tag}` | `name`, `tag`, `removed`, and `content_removed`. Removing the last tag that names a digest also deletes its content and database row. |
 
 Removing the last tag that names a digest is refused with `workflow_in_use`
-(HTTP 409) while a queue is bound to that digest or a task that is not `done`
-or `cancelled` is pinned to it. Removing one of several tags is not guarded,
-because the content stays and tasks keep running from it. Unbind the queue
-(`ttasks queue workflow clear`) and finish or cancel its tasks first.
+(HTTP 409) while a queue is bound to that digest or any task, open or closed,
+is pinned to it; the error says which holds it and how many. Removing one of
+several tags is not guarded, because the content stays and tasks keep running
+from it. Unbind the queue (`ttasks queue workflow clear`) and finish or cancel
+its tasks first. A closed task keeps reading its workflow and artifacts through
+the image, so the image stays until nightly task retention removes the closed
+task trees that pin it.
 
 `workflow version get` and `workflow version update` read and rewrite the local
 `workflow_version`, default to the current directory, and need no daemon.
@@ -322,7 +325,7 @@ Errors:
 | --- | --- |
 | `workflow_invalid` | The manifest failed validation or could not be parsed, or the source breaks a source limit. Validation failures carry the error list in `error.details.errors`. |
 | `workflow_version_published` | The `workflow_version` is already published with different content. |
-| `workflow_in_use` | `workflow rm` would delete a digest that a queue binds or an unfinished task pins. |
+| `workflow_in_use` | `workflow rm` would delete a digest that a queue binds or any task, open or closed, pins. |
 | `not_found` | No workflow image has that name and tag or digest. |
 | `bad_source` | Both a Store selector and `--path` were given. |
 | `missing_path` | Neither a Store selector nor `--path` was given. |
