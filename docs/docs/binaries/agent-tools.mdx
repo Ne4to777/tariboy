@@ -89,7 +89,7 @@ iteration. Queue one run, or create a fixed-delay recurring definition:
 
 ```bash
 scripts/scripts.sh run health --description "Check service health" -- curl -fsS http://localhost:8080/health
-scripts/scripts.sh schedule poll --every 60 --quiet-exit 2 -- ./bin/poll-queue
+scripts/scripts.sh schedule poll --every 60 -- ./bin/poll-queue
 scripts/scripts.sh ls
 scripts/scripts.sh runs scr-agent-...
 scripts/scripts.sh logs srun-agent-...
@@ -100,12 +100,15 @@ scripts/scripts.sh rm scr-agent-...
 ```
 
 Each run's combined stdout and stderr is kept in its own agent scripts log. Exit
-`0` records success; every nonzero exit, including `2`, records failure. Both
-deliver `script.result` by default so the next iteration can act. The message
-carries script/run IDs, name, mode, status, optional exit code, and the absolute
+`0` records success; every other exit, including `2`, records failure. Both
+deliver `script.result` so the next iteration can act. The message carries
+script/run IDs, name, mode, status, optional exit code, and the absolute
 `log_path`, without embedding stdout or stderr. Read that file when the result
 details are needed.
 
-Only an explicit recurring `--quiet-exit CODE` suppresses a matching result.
-The run and log remain visible. Recurring runs start once immediately, wait the
-configured delay after completion, and never overlap.
+The one exception is the quiet exit code `111`, available to the script as
+`TARIBOY_QUIET_EXIT`: a recurring run that exits with it publishes nothing and
+keeps its schedule. The run and log remain visible. Recurring runs start once
+immediately, wait the configured delay after completion, and never overlap. The
+`--quiet-exit CODE` flag is deprecated; see
+[scripts](/docs/plugins/built-in/scripts#results-and-exit-codes).
