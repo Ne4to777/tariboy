@@ -37,6 +37,9 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          WHERE waiting.task_id = t.id
            AND waiting.expected_principal = t.customer
            AND waiting.resolved_at = ''
+           -- The workflow's own wait (a customer status) hands the task to the
+           -- customer; it is not the holder's question and earns no grace.
+           AND waiting.requesting_principal <> 'system:workflow'
          ORDER BY waiting.requested_at, waiting.id
          LIMIT 1
        ), '')

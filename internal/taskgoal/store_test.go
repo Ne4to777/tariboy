@@ -366,6 +366,40 @@ func TestReconcileAgentAppliesCustomerWaitBoundary(t *testing.T) {
 	}
 }
 
+func TestReconcileAgentReleasesTaskWaitingOnWorkflowCustomerStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		workflow  bool
+		requester string
+		wantKey   string
+	}{
+		{name: "workflow_status_wait_releases", workflow: true, requester: "system:workflow"},
+		{name: "workflow_holder_question_keeps_grace", workflow: true, requester: "agent:worker", wantKey: "T-1"},
+		{name: "flexible_question_keeps_grace", requester: "agent:worker", wantKey: "T-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := goalStore(t, goalNow)
+			seedTask(t, s, "T-1", "agent:worker", "P1", "in_progress", "2026-09-01T00:00:00Z")
+			if tt.workflow {
+				execGoalSQL(t, s, `INSERT INTO task_workflow_images(digest,name,version,manifest,built_at) VALUES ('d1','flow','1.0.0','{}','now')`)
+				execGoalSQL(t, s, `UPDATE tasks SET workflow_digest='d1', workflow_status='build' WHERE task_key='T-1'`)
+			}
+			if goal, err := s.ReconcileAgent("worker", goalNow); err != nil || goal.TaskKey != "T-1" {
+				t.Fatalf("initial goal=%#v err=%v", goal, err)
+			}
+			updateTask(t, s, "T-1", "status", "wait_customer")
+			seedCustomerWaitBy(t, s, "T-1", tt.requester, goalNow.Add(-time.Second), false)
+
+			goal, err := s.ReconcileAgent("worker", goalNow)
+			if err != nil || goal.TaskKey != tt.wantKey || goal.Waiting != (tt.wantKey != "") {
+				t.Fatalf("goal=%#v err=%v, want key %q", goal, err, tt.wantKey)
+			}
+			assertStoredGoal(t, s, tt.wantKey)
+		})
+	}
+}
+
 func TestRepeatedCustomerQuestionKeepsOldestWaitGraceBoundary(t *testing.T) {
 	base := openGoalStore(t)
 	goals := NewStore(base)
@@ -496,12 +530,18 @@ func seedTask(t *testing.T, s *Store, key, assignee, priority, status, createdAt
 
 func seedCustomerWait(t *testing.T, s *Store, key string, requestedAt time.Time, answered bool) {
 	t.Helper()
+	seedCustomerWaitBy(t, s, key, "agent:worker", requestedAt, answered)
+}
+
+// seedCustomerWaitBy seeds a question to the customer asked by requester.
+func seedCustomerWaitBy(t *testing.T, s *Store, key, requester string, requestedAt time.Time, answered bool) {
+	t.Helper()
 	var taskID int64
 	if err := s.db.QueryRow(`SELECT id FROM tasks WHERE task_key=?`, key).Scan(&taskID); err != nil {
 		t.Fatal(err)
 	}
 	result, err := s.db.Exec(`INSERT INTO task_comments(task_id,author,body,created_at,updated_at) VALUES (?,?,?,?,?)`,
-		taskID, "agent:worker", "question", requestedAt.Format(time.RFC3339Nano), requestedAt.Format(time.RFC3339Nano))
+		taskID, requester, "question", requestedAt.Format(time.RFC3339Nano), requestedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +556,7 @@ func seedCustomerWait(t *testing.T, s *Store, key string, requestedAt time.Time,
 		resolvingCommentID = commentID
 	}
 	if _, err := s.db.Exec(`INSERT INTO task_waiting_for(task_id,expected_principal,requesting_principal,requesting_comment_id,requested_at,resolving_comment_id,resolved_at) VALUES (?,?,?,?,?,?,?)`,
-		taskID, "user:customer", "agent:worker", commentID, requestedAt.Format(time.RFC3339Nano), resolvingCommentID, resolvedAt); err != nil {
+		taskID, "user:customer", requester, commentID, requestedAt.Format(time.RFC3339Nano), resolvingCommentID, resolvedAt); err != nil {
 		t.Fatal(err)
 	}
 }
