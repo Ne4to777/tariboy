@@ -406,6 +406,9 @@ contains "$VC" "\"name\":\"e2e-flow\"" || fail "the former holder cannot read it
 
 # --- pauses and resumes ---------------------------------------------------
 # qa (pool builders) and probe (script) of the fixture carry limits of 2.
+# This proves the rejected_requests and script_failures pauses end to end; the
+# idle_iterations and holder_unavailable pauses are owned by the unit tests in
+# internal/tasks (workflow_stall_test.go) and internal/loop (iteration_end_test.go).
 paused_reason() { op workflow get "$1" --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("paused_reason",""))'; }
 is_paused() { [ "$(paused_reason "$1")" = "$2" ]; }
 not_paused() { [ -z "$(paused_reason "$1")" ]; }
@@ -490,7 +493,7 @@ contains "$BAD" invalid_decision || fail "want invalid_decision from the route: 
 capture op workflow resume "$KEY" --decision continue
 [ "$CODE" -ne 0 ] && contains "$ERR$OUT" workflow_not_paused || fail "want workflow_not_paused: code=$CODE $ERR $OUT"
 capture as_agent builder workflow resume "$KEY_P" --decision continue
-[ "$CODE" -ne 0 ] || fail "an agent resumed a paused task: $OUT"
+[ "$CODE" -ne 0 ] && contains "$ERR" 'tasks: unknown command "workflow resume"' || fail "an agent was not refused resume: code=$CODE $OUT $ERR"
 is_paused "$KEY_P" rejected_requests || fail "the refused resumes changed the pause"
 
 step "continue resumes with the same holder and zeroed counters, and the holder can advance again"
@@ -539,6 +542,7 @@ wait_for 20 "the task to reach $OTHER (it was $FIRST)" holder_is "$KEY_R" "$OTHE
 [ "$(task_field "$KEY_R" task.category)" = in_progress ] || fail "category after release to $OTHER: $(op show "$KEY_R" --json)"
 [ "$(db "SELECT agent||'|'||released FROM task_workflow_holders WHERE task_id=(SELECT id FROM tasks WHERE task_key='$KEY_R') AND pool='builders'")" = "$OTHER|0" ] \
   || fail "the holder row was not replaced by $OTHER"
+op cancel "$KEY_R" >/dev/null || fail "cancel of $KEY_R failed"
 
 step "script failures pause a watch status; continue restarts the watch"
 KEY_W="$(op create --queue E2E --title "pause by script failures" --json | field key)"
