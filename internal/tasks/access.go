@@ -77,31 +77,6 @@ func visibleTaskIDs(ctx context.Context, q queryer, actor Actor) (map[int64]stri
 			SELECT id, 2 FROM writeable
 			UNION
 			SELECT id, 1 FROM respondable
-			UNION
-			-- Workflow tasks do not use the legacy assignee field. A pool member
-			-- needs read/respond access to claimable work, and an assignment owner
-			-- or require_all recipient retains that access as task history.
-			SELECT t.id, 1
-			FROM tasks t
-			JOIN task_status_executions se ON se.task_id = t.id
-			JOIN task_requirement_executions re ON re.status_execution_id = se.id
-			JOIN task_assignments a ON a.requirement_execution_id = re.id
-			WHERE a.lease_owner = ? OR a.agent = ? OR (
-				re.state = 'pending'
-				AND (se.state = 'active' OR re.requirement_id GLOB '__question:*')
-				AND (
-					(a.state = 'leased' AND a.lease_owner = ?)
-					OR (
-						a.state = 'claimable' AND (
-							(re.dispatch = 'require_all' AND a.agent = ?)
-							OR (re.dispatch = 'claim_one' AND EXISTS (
-								SELECT 1 FROM json_each(re.pool_snapshot) member
-								WHERE member.value = ?
-							))
-						)
-					)
-				)
-			)
 		),
 		visible(id, access_rank) AS (
 			SELECT id, access_rank FROM direct
@@ -114,8 +89,7 @@ func visibleTaskIDs(ctx context.Context, q queryer, actor Actor) (map[int64]stri
 		SELECT id, MAX(access_rank)
 		FROM visible
 		GROUP BY id`,
-		actor.Principal, actor.Principal, agent, agent, agent, actor.Principal,
-		actor.Principal, agent, actor.Principal, agent, agent)
+		actor.Principal, actor.Principal, agent, agent, agent, actor.Principal)
 	if err != nil {
 		return nil, err
 	}

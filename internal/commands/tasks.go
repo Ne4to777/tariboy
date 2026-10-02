@@ -192,40 +192,6 @@ func TaskOperatorCommands() []registry.Command {
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.MarkNotification(ctx, actor, stringParam(p, "id"), "dismiss")
 			}),
-		taskRoute("tasks.workflows.create", "POST", "/api/workflows", "Create or update a workflow draft",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				var definition tasks.WorkflowDefinition
-				if err := decodeTaskParam(p, "definition", &definition); err != nil {
-					return nil, err
-				}
-				return control.CreateWorkflowDraft(ctx, actor, definition)
-			}),
-		taskRoute("tasks.workflows.versions", "GET", "/api/workflows/{name}/versions", "List workflow versions",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListWorkflowVersions(ctx, actor, stringParam(p, "name"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflows.get", "GET", "/api/workflows/{name}/versions/{version}", "Inspect a workflow version",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.GetWorkflowVersion(ctx, actor, stringParam(p, "name"), int(int64Param(p, "version")))
-			}),
-		taskRoute("tasks.workflows.validate", "POST", "/api/workflows/{name}/versions/{version}/validate", "Validate a workflow version",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ValidateWorkflowVersion(ctx, actor, stringParam(p, "name"), int(int64Param(p, "version")))
-				return map[string]any{"items": items, "count": len(items), "valid": err == nil && len(items) == 0}, err
-			}),
-		taskRoute("tasks.workflows.publish", "POST", "/api/workflows/{name}/versions/{version}/publish", "Publish an immutable workflow version",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.PublishWorkflowVersion(ctx, actor, stringParam(p, "name"), int(int64Param(p, "version")))
-			}),
-		taskRoute("tasks.queue.workflow.set", "PUT", "/api/task-queues/{queue}/workflow", "Activate a published workflow for a queue",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.ActivateQueueWorkflow(ctx, actor, stringParam(p, "queue"), int64Param(p, "workflow_version_id"), int64Param(p, "revision"), stringParam(p, "idempotency_key"))
-			}),
-		taskRoute("tasks.queue.workflow.get", "GET", "/api/task-queues/{queue}/workflow", "Inspect a queue workflow binding",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.GetQueueWorkflow(ctx, actor, stringParam(p, "queue"))
-			}),
 		taskRoute("tasks.queue.pool.set", "PATCH", "/api/task-queues/{queue}/pools/{pool}", "Bind agents to a logical workflow pool",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.RebindAgentPool(ctx, actor, stringParam(p, "queue"), stringParam(p, "pool"), stringSliceParam(p, "agents"), int64Param(p, "revision"), stringParam(p, "idempotency_key"))
@@ -255,54 +221,6 @@ func TaskOperatorCommands() []registry.Command {
 					return nil, err
 				}
 				return map[string]any{"deleted": true, "id": id}, nil
-			}),
-		taskRoute("tasks.workflow.get", "GET", "/api/tasks/{key}/workflow", "Inspect workflow state for a task",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.GetWorkflowExecution(ctx, actor, stringParam(p, "key"))
-			}),
-		taskRoute("tasks.workflow.packets", "GET", "/api/tasks/{key}/work-packets", "List workflow work packets",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListWorkPackets(ctx, actor, stringParam(p, "key"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflow.assignments", "GET", "/api/tasks/{key}/assignments", "List workflow assignments",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListWorkflowAssignments(ctx, actor, stringParam(p, "key"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflow.artifacts", "GET", "/api/tasks/{key}/artifacts", "List workflow artifacts",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListArtifacts(ctx, actor, stringParam(p, "key"), stringParam(p, "assignment_id"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflow.artifact.get", "GET", "/api/tasks/{key}/artifacts/{id}", "Inspect a workflow artifact",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.GetArtifact(ctx, actor, stringParam(p, "key"), stringParam(p, "assignment_id"), int64Param(p, "id"))
-			}),
-		taskRoute("tasks.workflow.questions", "GET", "/api/tasks/{key}/questions", "List workflow questions",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListWorkflowQuestions(ctx, actor, stringParam(p, "key"), stringParam(p, "assignment_id"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflow.question.get", "GET", "/api/tasks/{key}/questions/{id}", "Inspect a workflow question",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				return control.GetWorkflowQuestion(ctx, actor, stringParam(p, "key"), int64Param(p, "id"))
-			}),
-		taskRoute("tasks.workflow.subscriptions", "GET", "/api/tasks/{key}/subscriptions", "List workflow subscriptions",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				items, err := control.ListTaskWorkflowSubscriptions(ctx, actor, stringParam(p, "key"), stringParam(p, "assignment_id"))
-				return map[string]any{"items": items, "count": len(items)}, err
-			}),
-		taskRoute("tasks.workflow.events", "GET", "/api/tasks/{key}/workflow-events", "Replay workflow events",
-			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
-				all, err := control.ListEvents(ctx, actor, stringParam(p, "key"), int64Param(p, "after"), int(int64Param(p, "limit")))
-				items := make([]tasks.Event, 0, len(all))
-				for _, event := range all {
-					if strings.HasPrefix(event.Kind, "workflow.") {
-						items = append(items, event)
-					}
-				}
-				return map[string]any{"items": items, "count": len(items)}, err
 			}),
 	}
 }
@@ -412,25 +330,13 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "bundle", Type: registry.JSONObject, Required: true,
 			Help:   "Bundle returned by tasks.export on the source daemon",
 			Schema: map[string]any{"type": "object"}}}
-	case "tasks.workflows.create":
-		return []registry.Arg{{Name: "definition", Type: registry.JSONObject, Required: true, Help: "Versioned workflow definition as JSON", Schema: schemaRef("WorkflowDefinition")}}
-	case "tasks.queue.workflow.set":
-		return workflowMutationArgs(registry.Arg{Name: "workflow_version_id", Type: registry.Int, Required: true, Help: "Published workflow version id"})
 	case "tasks.queue.pool.set":
-		return workflowMutationArgs(registry.Arg{Name: "agents", Required: true, Help: "Explicit agent names", Schema: map[string]any{"type": "array", "items": map[string]any{"type": "string"}}})
+		return poolMutationArgs(registry.Arg{Name: "agents", Required: true, Help: "Explicit agent names", Schema: map[string]any{"type": "array", "items": map[string]any{"type": "string"}}})
 	case "tasks.queue.trigger.create":
 		return []registry.Arg{{Name: "pattern", Required: true, Help: "Allowed channel pattern"}, {Name: "correlation_key", Help: "Correlation selector"}, {Name: "action", Required: true, Help: "Declared workflow trigger action"}}
-	case "tasks.workflows.get", "tasks.workflows.validate", "tasks.workflows.publish":
-		return []registry.Arg{{Name: "version", Type: registry.Int, Required: true, Help: "Workflow version"}}
-	case "tasks.workflow.artifact.get":
-		return []registry.Arg{{Name: "id", Type: registry.Int, Required: true, Help: "Resource id"}, {Name: "assignment_id", Help: "Optional assignment scope"}}
-	case "tasks.queue.trigger.delete", "tasks.workflow.question.get":
+	case "tasks.queue.trigger.delete":
 		return []registry.Arg{{Name: "id", Type: registry.Int, Required: true, Help: "Resource id"}}
-	case "tasks.workflow.artifacts", "tasks.workflow.questions":
-		return []registry.Arg{{Name: "assignment_id", Help: "Optional assignment scope"}}
-	case "tasks.workflow.subscriptions":
-		return []registry.Arg{{Name: "assignment_id", Required: true, Help: "Assignment id"}}
-	case "tasks.events", "tasks.workflow.events":
+	case "tasks.events":
 		return []registry.Arg{{Name: "after", Type: registry.Int, Help: "Resume after sequence"}, {Name: "limit", Type: registry.Int, Help: "Maximum events"}}
 	default:
 		return nil
@@ -439,14 +345,6 @@ func taskHTTPArgs(path string) []registry.Arg {
 
 func taskHTTPResultSchema(path string) map[string]any {
 	switch path {
-	case "tasks.workflows.create", "tasks.workflows.get", "tasks.workflows.publish":
-		return schemaRef("WorkflowVersion")
-	case "tasks.workflows.versions":
-		return listSchema("WorkflowVersion")
-	case "tasks.workflows.validate":
-		return schemaRef("WorkflowValidationResult")
-	case "tasks.queue.workflow.set", "tasks.queue.workflow.get":
-		return schemaRef("QueueWorkflowBinding")
 	case "tasks.queue.pool.set", "tasks.queue.pool.get":
 		return schemaRef("AgentPool")
 	case "tasks.queue.pool.list":
@@ -455,31 +353,13 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return schemaRef("QueueWorkflowTrigger")
 	case "tasks.queue.trigger.list":
 		return listSchema("QueueWorkflowTrigger")
-	case "tasks.workflow.get":
-		return schemaRef("WorkflowExecutionView")
-	case "tasks.workflow.packets":
-		return listSchema("WorkPacket")
-	case "tasks.workflow.assignments":
-		return listSchema("Assignment")
-	case "tasks.workflow.artifacts":
-		return listSchema("Artifact")
-	case "tasks.workflow.artifact.get":
-		return schemaRef("Artifact")
-	case "tasks.workflow.questions":
-		return listSchema("WorkflowQuestion")
-	case "tasks.workflow.question.get":
-		return schemaRef("WorkflowQuestion")
-	case "tasks.workflow.subscriptions":
-		return listSchema("WorkflowSubscription")
-	case "tasks.workflow.events":
-		return listSchema("TaskEvent")
 	default:
 		return map[string]any{"type": "object"}
 	}
 }
 
-func workflowMutationArgs(primary registry.Arg) []registry.Arg {
-	return []registry.Arg{primary, {Name: "revision", Type: registry.Int, Required: true, Help: "Expected current revision (zero for first binding)"}, {Name: "idempotency_key", Required: true, Help: "Stable retry key"}}
+func poolMutationArgs(primary registry.Arg) []registry.Arg {
+	return []registry.Arg{primary, {Name: "revision", Type: registry.Int, Required: true, Help: "Expected current revision (zero for a new pool)"}, {Name: "idempotency_key", Required: true, Help: "Stable retry key"}}
 }
 
 func stringParam(p registry.Params, key string) string {

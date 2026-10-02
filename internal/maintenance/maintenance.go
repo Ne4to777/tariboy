@@ -344,19 +344,7 @@ func purgeTasks(tx *sql.Tx, cutoff string) (int64, error) {
 		}
 	}
 	const in = ` IN (SELECT id FROM purge_tasks)`
-	const assignments = `(SELECT a.id FROM task_assignments a
-		JOIN task_requirement_executions re ON re.id = a.requirement_execution_id
-		JOIN task_status_executions se ON se.id = re.status_execution_id WHERE se.task_id` + in + `)`
 	for _, q := range []string{
-		`DELETE FROM task_workflow_holds WHERE task_id` + in,
-		`DELETE FROM task_observations WHERE task_id` + in,
-		`DELETE FROM task_workflow_questions WHERE task_id` + in,
-		`DELETE FROM task_workflow_subscriptions WHERE task_id` + in,
-		`DELETE FROM task_workflow_outbox WHERE task_id` + in + ` OR assignment_id IN ` + assignments,
-		`DELETE FROM task_artifacts WHERE task_id` + in,
-		`DELETE FROM task_assignments WHERE id IN ` + assignments,
-		`DELETE FROM task_requirement_executions WHERE status_execution_id IN (SELECT id FROM task_status_executions WHERE task_id` + in + `)`,
-		`DELETE FROM task_status_executions WHERE task_id` + in,
 		`DELETE FROM task_waiting_for WHERE task_id` + in,
 		`DELETE FROM task_comments WHERE task_id` + in,
 		`DELETE FROM task_notification_state WHERE notification_id IN (SELECT o.notification_id FROM task_notification_outbox o

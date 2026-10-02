@@ -69,71 +69,53 @@ func TestComposeImportYesUploadsThenAppliesPreview(t *testing.T) {
 	}
 }
 
-func TestComposeStatusPrintsWorkflowAndPoolDrift(t *testing.T) {
+func TestComposeStatusPrintsPoolDrift(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`name: development
-version: 1
-initial_status: work
-statuses:
-  - id: work
-    requirements:
-      - {id: implement, pool: developers, dispatch: claim_one, outcomes: [completed]}
-    transitions: [{to: done}]
-  - {id: done, terminal: true, requirements: [], transitions: []}
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	composePath := filepath.Join(dir, "tariboy-compose.yaml")
 	if err := os.WriteFile(composePath, []byte(`version: 1
-workflows:
-  development: {source: ./workflow.yaml}
 task_queues:
   DEV:
     name: Development
-    workflow: development
     pools: {developers: [dev]}
 agents:
   dev: {image: basic:latest}
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fc := newWorkflowComposeCaller()
+	fc := newTaskQueueComposeCaller()
 	fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest", "cwd": dir}
 	fc.queues["DEV"] = tasks.Queue{Prefix: "DEV", Name: "Development", Revision: 1}
-	fc.bindings["DEV"] = tasks.QueueWorkflowBinding{Queue: "DEV", WorkflowName: "development", WorkflowVersion: 2, Revision: 1}
 	fc.pools["DEV"] = map[string]tasks.AgentPool{"developers": {Queue: "DEV", Name: "developers", Agents: []string{"other"}, Revision: 1}}
 	var out strings.Builder
 	var errOut strings.Builder
 	if code := Main(context.Background(), fc, "", []string{"status", "-f", composePath}, &out, &errOut); code != 0 {
 		t.Fatalf("Main code=%d stderr=%s", code, errOut.String())
 	}
-	if got := out.String(); !strings.Contains(got, "workflow drift") || !strings.Contains(got, "pool developers drift") {
+	if got := out.String(); !strings.Contains(got, "pool developers drift") {
 		t.Fatalf("status output:\n%s", got)
 	}
 }
 
-func TestLifecycleCommandsDoNotLoadMissingWorkflowSource(t *testing.T) {
-	for _, verb := range []string{"build", "down", "stop", "kill", "rm", "logs"} {
+func TestComposeRejectsRemovedWorkflowsKey(t *testing.T) {
+	for _, verb := range []string{"up", "status", "down"} {
 		t.Run(verb, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "tariboy-compose.yaml")
 			if err := os.WriteFile(path, []byte(`version: 1
 workflows:
-  development: {source: ./missing-workflow.yaml}
+  development: {source: ./workflow.yaml}
 agents:
   dev: {image: basic:latest}
 `), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			fc := newFake()
-			fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest"}
 			var errOut strings.Builder
-			args := []string{verb, "-f", path}
-			if verb == "rm" {
-				args = append(args, "dev")
+			if code := Main(context.Background(), fc, "", []string{verb, "-f", path}, io.Discard, &errOut); code == 0 || !strings.Contains(errOut.String(), "workflows") {
+				t.Fatalf("%s code=%d stderr=%s; want a failure naming workflows", verb, code, errOut.String())
 			}
-			if code := Main(context.Background(), fc, "", args, io.Discard, &errOut); code != 0 {
-				t.Fatalf("%s code=%d stderr=%s", verb, code, errOut.String())
+			if len(fc.calls) != 0 {
+				t.Fatalf("%s called the daemon after a rejected file: %v", verb, fc.calls)
 			}
 		})
 	}

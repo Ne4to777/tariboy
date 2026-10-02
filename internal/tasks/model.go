@@ -146,10 +146,6 @@ type Task struct {
 	Assignee          string   `json:"assignee"`
 	ManualBlockReason string   `json:"manual_block_reason"`
 	Blocked           bool     `json:"blocked"`
-	WorkflowVersionID int64    `json:"workflow_version_id,omitempty"`
-	WorkflowVersion   string   `json:"workflow_version,omitempty"`
-	WorkflowStatus    string   `json:"workflow_status,omitempty"`
-	WorkflowRevision  int64    `json:"workflow_revision,omitempty"`
 	Revision          int64    `json:"revision"`
 	CreatedAt         string   `json:"created_at"`
 	StartedAt         string   `json:"started_at"`

@@ -17,10 +17,6 @@ import (
 )
 
 func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut bool, stdout, stderr io.Writer) int {
-	if strings.HasPrefix(parsed.action, "work_") || strings.HasPrefix(parsed.action, "artifact_") || strings.HasPrefix(parsed.action, "observe_") || parsed.action == "workflow_ask" || parsed.action == "workflow_answer" || parsed.action == "questions" {
-		fmt.Fprintln(stderr, "tasks: leased workflow execution requires agent mode")
-		return 2
-	}
 	method, route := "", ""
 	body := parsed.payload
 	key, _ := body["key"].(string)
@@ -172,13 +168,12 @@ func runReady(parsed request, caller Caller, jsonOut bool, stdout, stderr io.Wri
 				Assignee          string `json:"assignee"`
 				ManualBlockReason string `json:"manual_block_reason"`
 				Blocked           bool   `json:"blocked"`
-				WorkflowVersionID int64  `json:"workflow_version_id"`
 			}
 			if err := json.Unmarshal(rawTask, &task); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
-			if task.Status == "open" && task.Assignee == "" && task.ManualBlockReason == "" && !task.Blocked && task.WorkflowVersionID == 0 {
+			if task.Status == "open" && task.Assignee == "" && task.ManualBlockReason == "" && !task.Blocked {
 				ready = append(ready, rawTask)
 				if len(ready) == limit {
 					result, _ := json.Marshal(ready)
@@ -224,7 +219,7 @@ func isOperatorCommand(args []string) bool {
 	return len(args) > 0 && operatorRoots[args[0]]
 }
 
-var operatorRoots = map[string]bool{"queue": true, "workflows": true, "workflow": true, "events": true, "principals": true, "notifications": true}
+var operatorRoots = map[string]bool{"queue": true, "events": true, "principals": true, "notifications": true}
 
 func runOperatorCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	resolved, err := paths.Resolve(getenv)
@@ -274,18 +269,7 @@ func runHelpJSON(ctx context.Context, stdout, stderr io.Writer) int {
 }
 
 func sharedHelpPath(action string) []string {
-	switch {
-	case strings.HasPrefix(action, "work_"):
-		return []string{"work", strings.TrimPrefix(action, "work_")}
-	case strings.HasPrefix(action, "artifact_"):
-		return []string{"artifacts", strings.TrimPrefix(action, "artifact_")}
-	case strings.HasPrefix(action, "observe_"):
-		return []string{"observe", strings.TrimPrefix(action, "observe_")}
-	case action == "workflow_ask" || action == "workflow_answer":
-		return nil
-	default:
-		return []string{action}
-	}
+	return []string{action}
 }
 
 func insertSharedHelp(tree map[string]any, path []string, flags map[string]bool, help commandHelp) {

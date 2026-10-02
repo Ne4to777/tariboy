@@ -97,64 +97,6 @@ func TestReadyClaimUsesQueueOwnershipAndIsAtomic(t *testing.T) {
 	}
 }
 
-func TestReadyAndClaimReadyExcludeManagedTasksButKeepLegacyTasks(t *testing.T) {
-	svc := newTestService(t)
-	ctx := context.Background()
-	operator := CustomerActor("customer")
-	if _, err := svc.CreateQueue(ctx, operator, CreateQueueInput{
-		Prefix: "MIXED", Name: "Mixed", Owners: []string{"alice"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := svc.CreateTask(ctx, operator, CreateTaskInput{Queue: "MIXED", Title: "legacy"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, agent := range []string{"alice", "worker"} {
-		if _, err := svc.db.Exec(`INSERT INTO agents(name, image_ref, image_digest) VALUES (?, 'basic:latest', 'digest')`, agent); err != nil {
-			t.Fatal(err)
-		}
-	}
-	definition := claimOneDefinition()
-	definition.Name = "mixed"
-	if _, err := svc.RebindAgentPool(ctx, operator, "MIXED", "developers", []string{"worker"}, 0, "mixed-pool"); err != nil {
-		t.Fatal(err)
-	}
-	draft, err := svc.CreateWorkflowDraft(ctx, operator, definition)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published, err := svc.PublishWorkflowVersion(ctx, operator, draft.Name, draft.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ActivateQueueWorkflow(ctx, operator, "MIXED", published.ID, 0, "mixed-activate"); err != nil {
-		t.Fatal(err)
-	}
-	managed, err := svc.CreateTask(ctx, operator, CreateTaskInput{Queue: "MIXED", Title: "managed"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ready, err := svc.Ready(ctx, AgentActor("alice"), ReadyFilter{Queue: "MIXED"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ready) != 1 || ready[0].Key != legacy.Key {
-		t.Fatalf("ready = %#v; want only legacy %s (not managed %s)", ready, legacy.Key, managed.Key)
-	}
-	claimed, err := svc.ClaimReady(ctx, AgentActor("alice"), ReadyFilter{Queue: "MIXED"}, "mixed-claim")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claimed.Key != legacy.Key || claimed.WorkflowVersionID != 0 {
-		t.Fatalf("claimed ready = %#v; want legacy task", claimed)
-	}
-	if _, err := svc.ClaimReady(ctx, AgentActor("alice"), ReadyFilter{Queue: "MIXED"}, "mixed-none"); ErrorCode(err) != "no_ready_task" {
-		t.Fatalf("claim after legacy exhausted error = %v; want no_ready_task", err)
-	}
-}
-
 func TestMoveRejectsHiddenParentAndBeforeTargets(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()

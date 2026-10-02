@@ -1009,12 +1009,6 @@ func (m *Manager) newToolsAPIServer(ag agent.Agent, l agentdir.Layout) *agentapi
 			body["iteration_id"] = m.currentIterationID(agName)
 			return m.cfg.Tasks.AgentAction(context.Background(), tasks.AgentActor(agName), action, body)
 		},
-		WorkflowPermissions: func() (tasks.ActiveWorkflowPermissionSet, error) {
-			if m.cfg.Tasks == nil {
-				return tasks.ActiveWorkflowPermissionSet{}, nil
-			}
-			return m.cfg.Tasks.ActiveWorkflowPermissions(context.Background(), agName, m.currentIterationID(agName))
-		},
 		Inbox: func(status string, limit int, before string) ([]bus.InboxItem, error) {
 			if m.cfg.Bus == nil {
 				return nil, nil

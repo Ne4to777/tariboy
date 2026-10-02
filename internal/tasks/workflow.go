@@ -46,10 +46,6 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 	if err := requireWrite(ctx, tx, actor, task); err != nil {
 		return Task{}, err
 	}
-	if task.WorkflowVersionID != 0 &&
-		(in.Status != nil || in.Assignee != nil || in.ManualBlockReason != nil) {
-		return Task{}, workflowManagedError()
-	}
 	if in.Revision <= 0 || in.Revision != task.Revision {
 		return Task{}, &Error{Status: http.StatusConflict, Code: "revision_conflict",
 			Msg: "task was changed by another actor", Data: map[string]any{
@@ -160,9 +156,6 @@ func (s *Service) CompleteTask(ctx context.Context, actor Actor, key string, in 
 	}
 	if err := requireWrite(ctx, tx, actor, task); err != nil {
 		return Task{}, err
-	}
-	if task.WorkflowVersionID != 0 {
-		return Task{}, workflowManagedError()
 	}
 	if in.Revision <= 0 || in.Revision != task.Revision {
 		return Task{}, &Error{Status: http.StatusConflict, Code: "revision_conflict",
@@ -398,9 +391,6 @@ func (s *Service) ClaimTask(ctx context.Context, actor Actor, key string, revisi
 	if err != nil {
 		return Task{}, err
 	}
-	if detail.Task.WorkflowVersionID != 0 {
-		return Task{}, workflowManagedError()
-	}
 	if detail.Task.Blocked {
 		return Task{}, domainError(http.StatusConflict, "task_blocked", "blocked task cannot be claimed")
 	}
@@ -415,6 +405,8 @@ func (s *Service) ClaimTask(ctx context.Context, actor Actor, key string, revisi
 	})
 }
 
+// workflowManagedError has no caller while no task has a workflow; the
+// workflow image engine refuses flexible-task writes on its tasks with it.
 func workflowManagedError() error {
 	return domainError(http.StatusConflict, "workflow_managed",
 		"task lifecycle is managed by its workflow")

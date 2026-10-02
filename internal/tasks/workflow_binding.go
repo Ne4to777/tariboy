@@ -4,147 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
 )
 
-const queueWorkflowSelect = `
-SELECT qw.queue_prefix, qw.workflow_version_id, w.name, w.version,
-       qw.revision, qw.bound_by, qw.bound_at
-FROM task_queue_workflows qw
-JOIN task_workflow_versions w ON w.id = qw.workflow_version_id`
-
-func (s *Service) ActivateQueueWorkflow(
-	ctx context.Context,
-	actor Actor,
-	queue string,
-	versionID int64,
-	revision int64,
-	idempotencyKey string,
-) (QueueWorkflowBinding, error) {
-	if err := s.requireWorkflowAdmin(actor); err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	queue = strings.ToUpper(strings.TrimSpace(queue))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	defer tx.Rollback()
-	if replayed, ok, err := readTaskIdempotency[QueueWorkflowBinding](
-		ctx, tx, actor.Principal, "activate_queue_workflow", idempotencyKey,
-	); err != nil {
-		return QueueWorkflowBinding{}, err
-	} else if ok {
-		return replayed, nil
-	}
-	if err := requireQueueExists(ctx, tx, queue); err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	workflow, err := workflowVersionByID(ctx, tx, versionID)
-	if err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	if workflow.State != "published" {
-		return QueueWorkflowBinding{}, domainError(
-			http.StatusConflict, "workflow_not_published", "only published workflow versions can be activated",
-		)
-	}
-	missing, err := missingWorkflowPools(ctx, tx, queue, workflow.Definition)
-	if err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	if len(missing) != 0 {
-		return QueueWorkflowBinding{}, &Error{
-			Status: http.StatusConflict, Code: "workflow_pool_empty",
-			Msg:  "every logical workflow pool must have at least one agent",
-			Data: map[string]any{"missing_pools": missing},
-		}
-	}
-
-	current, found, err := queueWorkflowByPrefix(ctx, tx, queue)
-	if err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	now := s.now()
-	nextRevision := int64(1)
-	if found {
-		if revision <= 0 || revision != current.Revision {
-			return QueueWorkflowBinding{}, bindingRevisionConflict(current)
-		}
-		result, err := tx.ExecContext(ctx, `
-			UPDATE task_queue_workflows
-			SET workflow_version_id = ?, bound_by = ?, bound_at = ?, revision = revision + 1
-			WHERE queue_prefix = ? AND revision = ?`,
-			workflow.ID, actor.Principal, now, queue, revision)
-		if err != nil {
-			return QueueWorkflowBinding{}, err
-		}
-		if affected, err := result.RowsAffected(); err != nil {
-			return QueueWorkflowBinding{}, err
-		} else if affected != 1 {
-			fresh, _, loadErr := queueWorkflowByPrefix(ctx, tx, queue)
-			if loadErr != nil {
-				return QueueWorkflowBinding{}, loadErr
-			}
-			return QueueWorkflowBinding{}, bindingRevisionConflict(fresh)
-		}
-		nextRevision = current.Revision + 1
-	} else {
-		if revision != 0 {
-			return QueueWorkflowBinding{}, bindingRevisionConflict(QueueWorkflowBinding{Queue: queue})
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO task_queue_workflows(
-				queue_prefix, workflow_version_id, bound_by, bound_at, revision
-			) VALUES (?, ?, ?, ?, 1)`, queue, workflow.ID, actor.Principal, now); err != nil {
-			return QueueWorkflowBinding{}, err
-		}
-	}
-	binding := QueueWorkflowBinding{
-		Queue: queue, WorkflowVersionID: workflow.ID, WorkflowName: workflow.Name,
-		WorkflowVersion: workflow.Version, Revision: nextRevision,
-		BoundBy: actor.Principal, BoundAt: now,
-	}
-	if _, err := appendQueueEventTx(ctx, tx, Queue{Prefix: queue, Revision: nextRevision},
-		"task.queue_workflow_activated", actor, map[string]any{
-			"workflow_version_id": workflow.ID,
-			"workflow":            workflow.Name + "@" + workflowVersionString(workflow.Version),
-		}, now); err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	if err := writeTaskIdempotency(
-		ctx, tx, actor.Principal, "activate_queue_workflow", idempotencyKey, binding, now,
-	); err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	s.signal()
-	return binding, nil
+// AgentPool is a named, ordered set of agents scoped to one queue.
+type AgentPool struct {
+	ID        int64    `json:"id"`
+	Queue     string   `json:"queue"`
+	Name      string   `json:"name"`
+	Agents    []string `json:"agents"`
+	Revision  int64    `json:"revision"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
-func (s *Service) GetQueueWorkflow(ctx context.Context, actor Actor, queue string) (QueueWorkflowBinding, error) {
-	if err := s.requireWorkflowAdmin(actor); err != nil {
-		return QueueWorkflowBinding{}, err
+func (s *Service) requireWorkflowAdmin(actor Actor) error {
+	if err := validateActor(actor); err != nil {
+		return err
 	}
-	queue = strings.ToUpper(strings.TrimSpace(queue))
-	if err := requireQueueExists(ctx, s.db, queue); err != nil {
-		return QueueWorkflowBinding{}, err
+	if !actor.IsCustomer || actor.Principal != userPrincipal(s.customer) {
+		return domainError(http.StatusForbidden, "forbidden", "only the daemon customer can administer workflows")
 	}
-	binding, found, err := queueWorkflowByPrefix(ctx, s.db, queue)
-	if err != nil {
-		return QueueWorkflowBinding{}, err
-	}
-	if !found {
-		return QueueWorkflowBinding{}, &Error{
-			Status: http.StatusNotFound, Code: "queue_workflow_not_found",
-			Msg: "queue has no active workflow", Data: map[string]any{"queue": queue},
-		}
-	}
-	return binding, nil
+	return nil
 }
 
 func (s *Service) RebindAgentPool(
@@ -183,22 +64,6 @@ func (s *Service) RebindAgentPool(
 	if err := requireAgentsExist(ctx, tx, agents); err != nil {
 		return AgentPool{}, err
 	}
-	if len(agents) == 0 {
-		workflow, active, err := activeWorkflowForQueue(ctx, tx, queue)
-		if err != nil {
-			return AgentPool{}, err
-		}
-		if active {
-			if _, referenced := referencedWorkflowPools(workflow.Definition)[poolName]; referenced {
-				return AgentPool{}, &Error{
-					Status: http.StatusConflict, Code: "workflow_pool_empty",
-					Msg:  "an active workflow pool must have at least one agent",
-					Data: map[string]any{"pool": poolName},
-				}
-			}
-		}
-	}
-
 	current, found, err := agentPoolByName(ctx, tx, queue, poolName)
 	if err != nil {
 		return AgentPool{}, err
@@ -321,31 +186,6 @@ func (s *Service) ListAgentPools(ctx context.Context, actor Actor, queue string)
 	return items, nil
 }
 
-func initializeWorkflowTaskTx(
-	ctx context.Context,
-	tx *sql.Tx,
-	task Task,
-	workflow WorkflowVersion,
-	now string,
-) error {
-	var initial WorkflowStatus
-	found := false
-	for _, status := range workflow.Definition.Statuses {
-		if status.ID == workflow.Definition.InitialStatus {
-			initial, found = status, true
-			break
-		}
-	}
-	if !found {
-		return domainError(http.StatusConflict, "workflow_invalid", "workflow initial status is missing")
-	}
-	_, err := materializeStatusTx(ctx, tx, task, workflow, initial, 1, now)
-	if _, persisted := persistedWorkflowDomain(err); persisted {
-		return nil
-	}
-	return err
-}
-
 func requireQueueExists(ctx context.Context, q queryer, queue string) error {
 	var exists int
 	if err := q.QueryRowContext(ctx, `SELECT 1 FROM task_queues WHERE prefix = ?`, queue).Scan(&exists); err != nil {
@@ -371,40 +211,6 @@ func requireAgentsExist(ctx context.Context, q queryer, agents []string) error {
 		}
 	}
 	return nil
-}
-
-func queueWorkflowByPrefix(ctx context.Context, q queryer, queue string) (QueueWorkflowBinding, bool, error) {
-	var binding QueueWorkflowBinding
-	err := q.QueryRowContext(ctx, queueWorkflowSelect+` WHERE qw.queue_prefix = ?`, queue).Scan(
-		&binding.Queue, &binding.WorkflowVersionID, &binding.WorkflowName, &binding.WorkflowVersion,
-		&binding.Revision, &binding.BoundBy, &binding.BoundAt,
-	)
-	if err == sql.ErrNoRows {
-		return QueueWorkflowBinding{}, false, nil
-	}
-	return binding, err == nil, err
-}
-
-func activeWorkflowForQueue(ctx context.Context, q queryer, queue string) (WorkflowVersion, bool, error) {
-	var versionID int64
-	err := q.QueryRowContext(ctx, `
-		SELECT workflow_version_id FROM task_queue_workflows WHERE queue_prefix = ?`, queue).Scan(&versionID)
-	if err == sql.ErrNoRows {
-		return WorkflowVersion{}, false, nil
-	}
-	if err != nil {
-		return WorkflowVersion{}, false, err
-	}
-	workflow, err := workflowVersionByID(ctx, q, versionID)
-	if err != nil {
-		return WorkflowVersion{}, false, err
-	}
-	if workflow.State != "published" {
-		return WorkflowVersion{}, false, domainError(
-			http.StatusConflict, "workflow_not_published", "active queue workflow is not published",
-		)
-	}
-	return workflow, true, nil
 }
 
 func agentPoolByName(ctx context.Context, q queryer, queue string, name string) (AgentPool, bool, error) {
@@ -441,44 +247,8 @@ func agentPoolByName(ctx context.Context, q queryer, queue string, name string) 
 	return pool, true, nil
 }
 
-func missingWorkflowPools(ctx context.Context, q queryer, queue string, definition WorkflowDefinition) ([]string, error) {
-	missing := make([]string, 0)
-	for pool := range referencedWorkflowPools(definition) {
-		binding, found, err := agentPoolByName(ctx, q, queue, pool)
-		if err != nil {
-			return nil, err
-		}
-		if !found || len(binding.Agents) == 0 {
-			missing = append(missing, pool)
-		}
-	}
-	sort.Strings(missing)
-	return missing, nil
-}
-
-func referencedWorkflowPools(definition WorkflowDefinition) map[string]struct{} {
-	pools := make(map[string]struct{})
-	for _, status := range definition.Statuses {
-		for _, requirement := range status.Requirements {
-			pools[requirement.Pool] = struct{}{}
-		}
-	}
-	if definition.Questions.RouteTo != "" {
-		pools[definition.Questions.RouteTo] = struct{}{}
-	}
-	return pools
-}
-
 func normalizePoolAgents(agents []string) []string {
 	return normalizeOwners(agents)
-}
-
-func bindingRevisionConflict(current QueueWorkflowBinding) error {
-	return &Error{
-		Status: http.StatusConflict, Code: "revision_conflict",
-		Msg:  "queue workflow binding was changed by another actor",
-		Data: map[string]any{"current_revision": current.Revision, "current": current},
-	}
 }
 
 func poolRevisionConflict(current AgentPool) error {
@@ -487,8 +257,4 @@ func poolRevisionConflict(current AgentPool) error {
 		Msg:  "agent pool was changed by another actor",
 		Data: map[string]any{"current_revision": current.Revision, "current": current},
 	}
-}
-
-func workflowVersionString(version int) string {
-	return strconv.Itoa(version)
 }

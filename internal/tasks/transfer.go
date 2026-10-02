@@ -71,7 +71,7 @@ WITH RECURSIVE subtree(id) AS (
 )
 SELECT t.id, t.task_key, COALESCE(p.task_key, ''), t.queue_prefix, t.priority, t.title,
        t.description, t.status, t.pull_request, t.author, t.customer, t.group_name,
-       t.assignee, t.manual_block_reason, t.workflow_version_id,
+       t.assignee, t.manual_block_reason,
        t.created_at, t.started_at, t.updated_at, t.completed_at
 FROM tasks t
 JOIN subtree s ON s.id = t.id
@@ -100,20 +100,12 @@ func (s *Service) ExportTask(ctx context.Context, actor Actor, key string) (Tran
 	byID := map[int64]int{}
 	for rows.Next() {
 		var id int64
-		var workflowVersion sql.NullInt64
 		var item TransferTask
 		if err := rows.Scan(&id, &item.Key, &item.ParentKey, &item.Queue, &item.Priority, &item.Title,
 			&item.Description, &item.Status, &item.PullRequest, &item.Author, &item.Customer,
-			&item.Group, &item.Assignee, &item.ManualBlockReason, &workflowVersion,
+			&item.Group, &item.Assignee, &item.ManualBlockReason,
 			&item.CreatedAt, &item.StartedAt, &item.UpdatedAt, &item.CompletedAt); err != nil {
 			return TransferBundle{}, err
-		}
-		// Workflow execution state (assignments, leases, requirement history) is
-		// daemon-local runtime, so a managed task cannot be moved without
-		// silently dropping the execution it is in the middle of.
-		if workflowVersion.Valid && workflowVersion.Int64 != 0 {
-			return TransferBundle{}, domainError(http.StatusBadRequest, "transfer_managed_task",
-				"a task in a managed queue cannot be transferred")
 		}
 		if item.Key == task.Key {
 			item.ParentKey = ""
@@ -216,12 +208,6 @@ func (s *Service) ImportTask(ctx context.Context, actor Actor, bundle TransferBu
 	if exists == 0 {
 		return Task{}, domainError(http.StatusNotFound, "queue_not_found",
 			"this daemon has no queue "+queue)
-	}
-	if _, managed, err := activeWorkflowForQueue(ctx, tx, queue); err != nil {
-		return Task{}, err
-	} else if managed {
-		return Task{}, domainError(http.StatusBadRequest, "transfer_managed_queue",
-			"queue "+queue+" runs a workflow and cannot receive a transferred task")
 	}
 	now := s.now()
 	ids := map[string]int64{}

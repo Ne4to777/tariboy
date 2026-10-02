@@ -6,15 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alekzonder/tariboy/internal/tasks"
+	"gopkg.in/yaml.v3"
 )
-
-func workflowDefinitionForComposeTest() tasks.WorkflowDefinition {
-	return tasks.WorkflowDefinition{Name: "development", Version: 1, InitialStatus: "work", Statuses: []tasks.WorkflowStatus{
-		{ID: "work", Requirements: []tasks.WorkflowRequirement{{ID: "implement", Pool: "developers", Dispatch: "claim_one", Outcomes: []string{"completed"}}}, Transitions: []tasks.WorkflowTransition{{To: "done"}}},
-		{ID: "done", Terminal: true, Requirements: []tasks.WorkflowRequirement{}, Transitions: []tasks.WorkflowTransition{}},
-	}}
-}
 
 const goodYAML = `
 version: 1
@@ -40,46 +33,18 @@ agents:
     group: research-team
 `
 
-func TestLoadWorkflowSourceRelativeToComposeFile(t *testing.T) {
+func TestLoadTaskQueuesWithPools(t *testing.T) {
 	dir := t.TempDir()
-	workflow := `name: development
-version: 1
-initial_status: work
-statuses:
-  - id: work
-    requirements:
-      - id: implement
-        pool: developers
-        dispatch: claim_one
-        outcomes: [completed]
-    transitions:
-      - to: done
-  - id: done
-    terminal: true
-    requirements: []
-    transitions: []
-`
-	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(workflow), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	compose := `version: 1
-workflows:
-  development:
-    source: ./workflow.yaml
 task_queues:
   DEV:
     name: Development
-    workflow: development
     pools:
-      managers: [dev-ng-manager]
       developers: [dev-ng-developer]
       reviewers: [dev-ng-reviewer]
-      qa: [dev-ng-qa]
 agents:
-  dev-ng-manager: {image: basic:latest}
   dev-ng-developer: {image: basic:latest}
   dev-ng-reviewer: {image: basic:latest}
-  dev-ng-qa: {image: basic:latest}
 `
 	path := filepath.Join(dir, "tariboy-compose.yaml")
 	if err := os.WriteFile(path, []byte(compose), 0o600); err != nil {
@@ -89,26 +54,57 @@ agents:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := f.Workflows["development"].Definition.Name; got != "development" {
-		t.Fatalf("workflow name = %q", got)
+	if got := f.TaskQueues["DEV"].Pools["developers"]; len(got) != 1 || got[0] != "dev-ng-developer" {
+		t.Fatalf("developers pool = %#v", got)
 	}
 	if err := f.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 }
 
-func TestTaskQueueValidationRejectsUnknownWorkflowAndEmptyRequiredPool(t *testing.T) {
-	f := File{Version: 1, TaskQueues: map[string]TaskQueueSpec{
-		"DEV": {Name: "Development", Workflow: "missing"},
-	}}
-	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "unknown workflow") {
-		t.Fatalf("unknown workflow error = %v", err)
+func TestParseRejectsRemovedWorkflowKeysByName(t *testing.T) {
+	for _, tc := range []struct{ name, yaml, key string }{
+		{"top-level workflows", "version: 1\nworkflows:\n  development: {source: ./workflow.yaml}\n", "workflows"},
+		{"queue workflow", "version: 1\ntask_queues:\n  DEV: {name: Development, workflow: development}\n", "task_queues.DEV.workflow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.key) || !strings.Contains(err.Error(), "no longer supported") {
+				t.Fatalf("removed key error = %v; want it to name %s", err, tc.key)
+			}
+		})
 	}
+}
 
-	f.Workflows = map[string]WorkflowSpec{"development": {Source: "workflow.yaml", Definition: workflowDefinitionForComposeTest()}}
-	f.TaskQueues["DEV"] = TaskQueueSpec{Name: "Development", Workflow: "development", Pools: map[string][]string{"developers": {}}}
-	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "developers") {
-		t.Fatalf("empty pool error = %v", err)
+// Team exports written before the removal always carried an empty workflows
+// map; it declares nothing, so those archives stay importable.
+func TestParseAcceptsEmptyRemovedWorkflowKeys(t *testing.T) {
+	for _, doc := range []string{
+		"version: 1\nworkflows: {}\ntask_queues: {}\n",
+		"version: 1\nworkflows:\n",
+		"version: 1\ntask_queues:\n  DEV: {name: Development, workflow: \"\"}\n",
+	} {
+		if _, err := Parse([]byte(doc)); err != nil {
+			t.Errorf("Parse(%q) = %v; want accepted", doc, err)
+		}
+	}
+	out, err := yaml.Marshal(File{Version: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "workflow") {
+		t.Fatalf("marshaled compose file mentions workflows:\n%s", out)
+	}
+}
+
+func TestTaskQueueValidationRequiresNameAndDeclaredPoolAgents(t *testing.T) {
+	f := File{Version: 1, TaskQueues: map[string]TaskQueueSpec{"DEV": {}}}
+	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("missing name error = %v", err)
+	}
+	f.TaskQueues["DEV"] = TaskQueueSpec{Name: "Development", Pools: map[string][]string{"developers": {"ghost"}}}
+	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("undeclared agent error = %v", err)
 	}
 }
 
@@ -143,40 +139,9 @@ agents:
 	}
 }
 
-func TestLoadWorkflowRejectsUnknownFieldWithSourcePath(t *testing.T) {
-	for _, tc := range []struct{ name, content string }{
-		{"workflow.yaml", "name: development\nversion: 1\ninitial_status: work\nstatues: []\n"},
-		{"workflow.json", `{"name":"development","version":1,"initial_status":"work","statues":[]}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			workflowPath := filepath.Join(dir, tc.name)
-			if err := os.WriteFile(workflowPath, []byte(tc.content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			composePath := filepath.Join(dir, "tariboy-compose.yaml")
-			compose := "version: 1\nworkflows:\n  development: {source: ./" + tc.name + "}\n"
-			if err := os.WriteFile(composePath, []byte(compose), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			_, _, err := Load(composePath)
-			if err == nil || !strings.Contains(err.Error(), tc.name) || !strings.Contains(err.Error(), "statues") {
-				t.Fatalf("unknown workflow field error = %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateRejectsUnsafeWorkflowAndPoolRouteSegments(t *testing.T) {
+func TestValidateRejectsUnsafePoolRouteSegments(t *testing.T) {
 	for _, bad := range []string{"bad/name", "bad?name", "bad#name", "bad:name", "разработка"} {
-		f := File{Version: 1, Workflows: map[string]WorkflowSpec{"development": {Source: "workflow.yaml", Definition: workflowDefinitionForComposeTest()}}}
-		def := f.Workflows["development"]
-		def.Definition.Name = bad
-		f.Workflows["development"] = def
-		if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "workflow") {
-			t.Errorf("workflow name %q error = %v", bad, err)
-		}
-		f = File{Version: 1, Agents: map[string]AgentSpec{"dev": {Image: "basic:latest"}}, Workflows: map[string]WorkflowSpec{"development": {Source: "workflow.yaml", Definition: workflowDefinitionForComposeTest()}}, TaskQueues: map[string]TaskQueueSpec{"DEV": {Name: "Development", Workflow: "development", Pools: map[string][]string{bad: {"dev"}, "developers": {"dev"}}}}}
+		f := File{Version: 1, Agents: map[string]AgentSpec{"dev": {Image: "basic:latest"}}, TaskQueues: map[string]TaskQueueSpec{"DEV": {Name: "Development", Pools: map[string][]string{bad: {"dev"}, "developers": {"dev"}}}}}
 		if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "pool") {
 			t.Errorf("pool name %q error = %v", bad, err)
 		}

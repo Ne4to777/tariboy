@@ -121,16 +121,23 @@ func TestAgentGoalsMigrationPreservesTasksAndAddsReleaseFields(t *testing.T) {
 	}
 	defer upgraded.Close()
 
-	var status, pullRequest, workflowStatus string
-	var workflowVersionID, workflowRevision int64
+	var status, pullRequest string
 	if err := upgraded.DB.QueryRow(`
-		SELECT status,pull_request,workflow_version_id,workflow_status,workflow_revision
-		FROM tasks WHERE task_key='TEST-1'`,
-	).Scan(&status, &pullRequest, &workflowVersionID, &workflowStatus, &workflowRevision); err != nil {
+		SELECT status,pull_request FROM tasks WHERE task_key='TEST-1'`,
+	).Scan(&status, &pullRequest); err != nil {
 		t.Fatal(err)
 	}
-	if status != "open" || pullRequest != "" || workflowVersionID != 1 || workflowStatus != "build" || workflowRevision != 4 {
-		t.Fatalf("migrated task = %q %q %d %q %d", status, pullRequest, workflowVersionID, workflowStatus, workflowRevision)
+	if status != "open" || pullRequest != "" {
+		t.Fatalf("migrated task = %q %q", status, pullRequest)
+	}
+	// 0054 later removes the workflow engine; its event proves 0037 carried
+	// the workflow columns through the tasks rebuild.
+	var workflowStatus string
+	if err := upgraded.DB.QueryRow(`
+		SELECT json_extract(payload,'$.workflow_status') FROM task_events
+		WHERE task_id=1 AND kind='workflow.removed'`,
+	).Scan(&workflowStatus); err != nil || workflowStatus != "build" {
+		t.Fatalf("workflow.removed status = %q, %v", workflowStatus, err)
 	}
 	var eventTaskID int64
 	if err := upgraded.DB.QueryRow(`SELECT task_id FROM task_events WHERE event_id='event-1'`).Scan(&eventTaskID); err != nil || eventTaskID != 1 {
@@ -279,16 +286,11 @@ func TestPricingMigrationAddsSourcesAndGroupSnapshot(t *testing.T) {
 	}
 }
 
-func TestTaskWorkflowMigrationCreatesWorkflowTablesAndTaskColumns(t *testing.T) {
+func TestTaskWorkflowMigrationKeepsPoolsTriggersAndTaskColumns(t *testing.T) {
 	s := open(t)
 	for _, table := range []string{
-		"task_workflow_versions", "task_queue_workflows", "task_agent_pools",
-		"task_agent_pool_members", "task_status_executions",
-		"task_requirement_executions", "task_assignments", "task_artifacts",
-		"task_workflow_questions", "task_workflow_holds", "task_observations",
-		"task_workflow_subscriptions", "task_queue_workflow_triggers",
-		"task_workflow_outbox",
-		"task_workflow_ingress_state",
+		"task_workflow_versions", "task_agent_pools", "task_agent_pool_members",
+		"task_queue_workflow_triggers", "task_workflow_ingress_state",
 		"task_workflow_message_sequence",
 	} {
 		requireTable(t, s.DB, table)
@@ -296,11 +298,105 @@ func TestTaskWorkflowMigrationCreatesWorkflowTablesAndTaskColumns(t *testing.T) 
 	for _, column := range []string{"workflow_version_id", "workflow_status", "workflow_revision"} {
 		requireColumn(t, s.DB, "tasks", column)
 	}
-	requireColumn(t, s.DB, "task_assignments", "lease_iteration")
 	requireColumn(t, s.DB, "task_queue_workflow_triggers", "created_after_sequence")
-	requireColumn(t, s.DB, "task_workflow_subscriptions", "created_after_sequence")
 	requireColumn(t, s.DB, "task_queue_workflow_triggers", "activation_sequence_set")
-	requireColumn(t, s.DB, "task_workflow_subscriptions", "activation_sequence_set")
+}
+
+func TestWorkflowEngineRemovalMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow-engine-removal.db")
+	legacy := openBeforeMigration(t, path, "0054_drop_task_workflow_engine.sql")
+	const now = "2026-10-01T00:00:00Z"
+	if _, err := legacy.DB.Exec(`
+		INSERT INTO agents(name,image_ref) VALUES ('worker','basic:latest');
+		INSERT INTO task_queues(prefix,name,created_at,updated_at) VALUES ('DEV','Dev',?1,?1);
+		INSERT INTO task_workflow_versions(id,name,version,definition,state,created_at,updated_at,published_at)
+		VALUES (1,'dev',1,'{}','published',?1,?1,?1);
+		INSERT INTO task_queue_workflows(queue_prefix,workflow_version_id,bound_by,bound_at) VALUES ('DEV',1,'user:op',?1);
+		INSERT INTO tasks(id,task_key,queue_prefix,title,author,customer,status,created_at,updated_at,
+			workflow_version_id,workflow_status,workflow_revision)
+		VALUES (1,'DEV-1','DEV','work','user:op','user:op','in_progress',?1,?1,1,'implement',3);
+		INSERT INTO tasks(id,task_key,queue_prefix,title,author,customer,status,created_at,updated_at)
+		VALUES (2,'DEV-2','DEV','flexible','user:op','user:op','open',?1,?1);
+		INSERT INTO task_agent_pools(id,queue_prefix,name,created_at,updated_at) VALUES (1,'DEV','builders',?1,?1);
+		INSERT INTO task_agent_pool_members(pool_id,agent,position) VALUES (1,'worker',0);
+		INSERT INTO task_status_executions(id,task_id,workflow_version_id,status_id,sequence,task_revision,created_at)
+		VALUES (1,1,1,'implement',1,1,?1);
+		INSERT INTO task_requirement_executions(id,status_execution_id,requirement_id,pool_id,dispatch,created_at)
+		VALUES (1,1,'code',1,'claim_one',?1);
+		INSERT INTO task_assignments(id,requirement_execution_id,agent,attempt,state,created_at,updated_at)
+		VALUES (1,1,'worker',1,'leased',?1,?1);
+		INSERT INTO task_artifacts(task_id,assignment_id,name,type,created_by,created_at,updated_at)
+		VALUES (1,1,'plan','markdown','agent:worker',?1,?1);
+		INSERT INTO task_workflow_questions(id,task_id,assignment_id,question,context,blocking_scope,created_at)
+		VALUES (1,1,1,'why','ctx','assignment',?1);
+		INSERT INTO task_workflow_holds(task_id,assignment_id,question_id,scope,created_at) VALUES (1,1,1,'assignment',?1);
+		INSERT INTO task_workflow_subscriptions(id,task_id,assignment_id,pattern,created_by,created_at)
+		VALUES (1,1,1,'metrics:api','agent:worker',?1);
+		INSERT INTO task_observations(task_id,subscription_id,assignment_id,kind,observed_at) VALUES (1,1,1,'alert',?1);
+		INSERT INTO task_workflow_outbox(wake_id,task_id,assignment_id,kind,next_attempt_at) VALUES ('wake-1',1,1,'workflow.assignment_ready',?1);
+		INSERT INTO task_queue_workflow_triggers(queue_prefix,pattern,action,enabled,created_by,created_at,updated_at)
+		VALUES ('DEV','issue-provider:*','create_task',1,'user:op',?1,?1);`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	var status string
+	var versionID, workflowStatus, workflowRevision sql.NullString
+	if err := s.DB.QueryRow(`SELECT status,workflow_version_id,workflow_status,workflow_revision FROM tasks WHERE id=1`).
+		Scan(&status, &versionID, &workflowStatus, &workflowRevision); err != nil {
+		t.Fatal(err)
+	}
+	if status != "in_progress" || versionID.Valid || workflowStatus.Valid || workflowRevision.Valid {
+		t.Fatalf("migrated task status=%q workflow=%v/%v/%v; want in_progress and NULL workflow columns",
+			status, versionID, workflowStatus, workflowRevision)
+	}
+	var removedStatus string
+	if err := s.DB.QueryRow(`SELECT json_extract(payload,'$.workflow_status') FROM task_events WHERE task_id=1 AND kind='workflow.removed'`).
+		Scan(&removedStatus); err != nil || removedStatus != "implement" {
+		t.Fatalf("workflow.removed event status=%q err=%v; want implement", removedStatus, err)
+	}
+	var flexibleEvents int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM task_events WHERE task_id=2 AND kind='workflow.removed'`).Scan(&flexibleEvents); err != nil || flexibleEvents != 0 {
+		t.Fatalf("flexible task workflow.removed events=%d err=%v; want 0", flexibleEvents, err)
+	}
+	for _, table := range []string{
+		"task_observations", "task_workflow_subscriptions", "task_workflow_holds",
+		"task_workflow_questions", "task_artifacts", "task_assignments",
+		"task_requirement_executions", "task_status_executions", "task_queue_workflows",
+		"task_workflow_outbox",
+	} {
+		var count int
+		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("dropped table %q still exists", table)
+		}
+	}
+	requireTable(t, s.DB, "task_workflow_versions")
+	for table, want := range map[string]int{
+		"task_workflow_versions":         0,
+		"task_agent_pools":               1,
+		"task_agent_pool_members":        1,
+		"task_queue_workflow_triggers":   1,
+		"task_workflow_ingress_state":    1,
+		"task_workflow_message_sequence": 0,
+	} {
+		var count int
+		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Errorf("%s rows = %d; want %d", table, count, want)
+		}
+	}
 }
 
 func TestWorkflowActivationSequenceMigrationPreservesLegacyTargets(t *testing.T) {
@@ -323,115 +419,6 @@ func TestWorkflowActivationSequenceMigrationPreservesLegacyTargets(t *testing.T)
 	var sequenceSet bool
 	if err := upgraded.DB.QueryRow(`SELECT created_after_sequence,activation_sequence_set FROM task_queue_workflow_triggers`).Scan(&watermark, &sequenceSet); err != nil || watermark != 0 || sequenceSet {
 		t.Fatalf("legacy trigger watermark/set=%d/%v err=%v; want 0/false", watermark, sequenceSet, err)
-	}
-}
-
-func TestTaskWorkflowAssignmentAgentIsNullableButStillReferencesAgents(t *testing.T) {
-	s := open(t)
-	rows, err := s.DB.Query(`PRAGMA table_info(task_assignments)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var foundAgent, agentNotNull bool
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, columnType string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			t.Fatal(err)
-		}
-		if name == "agent" {
-			foundAgent, agentNotNull = true, notNull != 0
-		}
-	}
-	if !foundAgent || agentNotNull {
-		t.Fatalf("task_assignments.agent found/not-null = %v/%v; want true/false", foundAgent, agentNotNull)
-	}
-
-	foreignKeys, err := s.DB.Query(`PRAGMA foreign_key_list(task_assignments)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer foreignKeys.Close()
-	var agentReference bool
-	for foreignKeys.Next() {
-		var id, sequence int
-		var table, from, to, onUpdate, onDelete, match string
-		if err := foreignKeys.Scan(&id, &sequence, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
-			t.Fatal(err)
-		}
-		agentReference = agentReference || (table == "agents" && from == "agent" && to == "name")
-	}
-	if !agentReference {
-		t.Fatal("task_assignments.agent no longer references agents(name)")
-	}
-}
-
-func TestTaskWorkflowOwnerlessAssignmentTokenIsUniquePerAttempt(t *testing.T) {
-	s := open(t)
-	now := "2026-08-07T00:00:00Z"
-	if _, err := s.DB.Exec(`
-		INSERT INTO task_queues(prefix, name, created_at, updated_at)
-		VALUES ('FLOW', 'Flow', ?, ?)`, now, now); err != nil {
-		t.Fatal(err)
-	}
-	workflow, err := s.DB.Exec(`
-		INSERT INTO task_workflow_versions(name, version, definition, state, created_at, updated_at)
-		VALUES ('flow', 1, '{}', 'draft', ?, ?)`, now, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflowID, err := workflow.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, err := s.DB.Exec(`
-		INSERT INTO tasks(
-			task_key, queue_prefix, position, priority, title, author, customer,
-			workflow_version_id, workflow_status, workflow_revision, created_at, updated_at
-		) VALUES ('FLOW-1', 'FLOW', 0, 'P2', 'flow', 'user:test', 'user:test', ?, 'work', 1, ?, ?)`,
-		workflowID, now, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskID, err := task.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	execution, err := s.DB.Exec(`
-		INSERT INTO task_status_executions(
-			task_id, workflow_version_id, status_id, sequence, state, task_revision, created_at
-		) VALUES (?, ?, 'work', 1, 'active', 1, ?)`, taskID, workflowID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	executionID, err := execution.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirement, err := s.DB.Exec(`
-		INSERT INTO task_requirement_executions(
-			status_execution_id, requirement_id, dispatch, pool_snapshot, state, created_at
-		) VALUES (?, 'work', 'claim_one', '[]', 'pending', ?)`, executionID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirementID, err := requirement.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB.Exec(`
-		INSERT INTO task_assignments(
-			requirement_execution_id, agent, attempt, state, revision, created_at, updated_at
-		) VALUES (?, NULL, 1, 'claimable', 1, ?, ?)`, requirementID, now, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.DB.Exec(`
-		INSERT INTO task_assignments(
-			requirement_execution_id, agent, attempt, state, revision, created_at, updated_at
-		) VALUES (?, NULL, 1, 'claimable', 1, ?, ?)`, requirementID, now, now); err == nil {
-		t.Fatal("duplicate ownerless assignment token insert succeeded")
 	}
 }
 
@@ -723,7 +710,11 @@ func TestTaskAssignmentIterationMigrationUpgradesApplied0026(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	requireColumn(t, upgraded.DB, "task_assignments", "lease_iteration")
+	// 0054 drops task_assignments later; the upgrade must still apply 0027 once.
+	var applied int
+	if err := upgraded.DB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name='0027_task_assignment_iteration.sql'`).Scan(&applied); err != nil || applied != 1 {
+		t.Fatalf("0027 records=%d err=%v", applied, err)
+	}
 }
 
 func TestTaskAssignmentIterationMigrationAcceptsIntermediate0026Column(t *testing.T) {
@@ -752,7 +743,6 @@ func TestTaskAssignmentIterationMigrationAcceptsIntermediate0026Column(t *testin
 		t.Fatal(err)
 	}
 	defer upgraded.Close()
-	requireColumn(t, upgraded.DB, "task_assignments", "lease_iteration")
 	var applied int
 	if err := upgraded.DB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name='0027_task_assignment_iteration.sql'`).Scan(&applied); err != nil || applied != 1 {
 		t.Fatalf("0027 records=%d err=%v", applied, err)
@@ -760,10 +750,6 @@ func TestTaskAssignmentIterationMigrationAcceptsIntermediate0026Column(t *testin
 	value, ok, err := upgraded.ConfigGet("migration-marker")
 	if err != nil || !ok || value != "preserved" {
 		t.Fatalf("preserved value=%q ok=%v err=%v", value, ok, err)
-	}
-	var iteration string
-	if err := upgraded.DB.QueryRow(`SELECT lease_iteration FROM task_assignments WHERE id=1`).Scan(&iteration); err != nil || iteration != "iter-preserved" {
-		t.Fatalf("lease iteration=%q err=%v", iteration, err)
 	}
 }
 

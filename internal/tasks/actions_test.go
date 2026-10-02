@@ -3,7 +3,6 @@ package tasks
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func TestAgentActionBindsAuthorAndEnforcesQueueAccess(t *testing.T) {
@@ -37,108 +36,6 @@ func TestAgentActionBindsAuthorAndEnforcesQueueAccess(t *testing.T) {
 	}
 	if task := owned.(Task); task.Assignee != "agent:alice" || task.Group != "team" {
 		t.Fatalf("owner create assignee/group = %q/%q; want agent:alice/team", task.Assignee, task.Group)
-	}
-}
-
-func TestAgentWorkflowActionsBindLeaseOwner(t *testing.T) {
-	svc, _, assignment := packetWorkflowTask(t)
-	ctx := context.Background()
-	alice := AgentActor("dev-a")
-	claimedAny, err := svc.AgentAction(ctx, alice, "work_show", map[string]any{
-		"assignment_id": assignmentID(assignment), "actor": "agent:forged",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	packet := claimedAny.(WorkPacket)
-	if packet.Assignment.LeaseOwner != "agent:dev-a" {
-		t.Fatalf("lease owner = %q", packet.Assignment.LeaseOwner)
-	}
-	if _, err := svc.AgentAction(ctx, AgentActor("other"), "work_show", map[string]any{"assignment_id": assignmentID(assignment)}); ErrorCode(err) != "assignment_not_owned" {
-		t.Fatalf("spoofed work show error = %v", err)
-	}
-}
-
-func TestActiveWorkflowPermissionsFollowAuthenticatedLease(t *testing.T) {
-	svc, _, assignment := packetWorkflowTask(t)
-	got, err := svc.ActiveWorkflowPermissions(context.Background(), "dev-a", "iter-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Managed || got.AssignmentID != assignment.ID || len(got.Tools) != 2 || len(got.ChannelPatterns) != 1 {
-		t.Fatalf("permissions=%#v", got)
-	}
-	other, err := svc.ActiveWorkflowPermissions(context.Background(), "other", "iter-1")
-	if err != nil || other.Managed {
-		t.Fatalf("other permissions=%#v err=%v", other, err)
-	}
-	outside, err := svc.ActiveWorkflowPermissions(context.Background(), "dev-a", "")
-	if err != nil || outside.Managed {
-		t.Fatalf("outside permissions=%#v err=%v", outside, err)
-	}
-	deadline, _ := time.Parse(time.RFC3339Nano, assignment.LeaseExpiresAt)
-	svc.clock = func() time.Time { return deadline.Add(time.Nanosecond) }
-	expired, err := svc.ActiveWorkflowPermissions(context.Background(), "dev-a", "iter-1")
-	if err != nil || expired.Managed {
-		t.Fatalf("expired permissions=%#v err=%v", expired, err)
-	}
-}
-
-func TestActiveWorkflowPermissionsAreBoundToExactIteration(t *testing.T) {
-	svc, _, first := packetWorkflowTask(t)
-	if got, err := svc.ActiveWorkflowPermissions(context.Background(), "dev-a", "iter-other"); err != nil || got.Managed {
-		t.Fatalf("unrelated iteration=%#v err=%v", got, err)
-	}
-	operator := CustomerActor("customer")
-	secondTask, err := svc.CreateTask(context.Background(), operator, CreateTaskInput{Queue: "DEV", Title: "second"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	work, err := svc.NextWork(context.Background(), AgentActor("dev-a"), "DEV", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var second Assignment
-	for _, item := range work {
-		if item.ID != first.ID && item.State == AssignmentClaimable {
-			second = item
-		}
-	}
-	if second.ID == 0 {
-		t.Fatalf("second work not found: %#v", work)
-	}
-	second, err = svc.ClaimAssignment(context.Background(), AgentActor("dev-a"), assignmentID(second), ClaimAssignmentInput{TaskRevision: secondTask.WorkflowRevision, AssignmentRevision: second.Revision, IdempotencyKey: "claim-second-iteration", IterationID: "iter-2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for iteration, want := range map[string]int64{"iter-1": first.ID, "iter-2": second.ID} {
-		got, err := svc.ActiveWorkflowPermissions(context.Background(), "dev-a", iteration)
-		if err != nil || !got.Managed || got.AssignmentID != want {
-			t.Fatalf("%s permissions=%#v err=%v", iteration, got, err)
-		}
-	}
-}
-
-func TestAgentWorkNextClaimsAndReturnsPacket(t *testing.T) {
-	svc, _, _ := runtimeWorkflowTask(t, claimOneDefinition(), map[string][]string{"developers": {"dev-a"}})
-	body := map[string]any{"queue": "DEV", "idempotency_key": "next-1", "iteration_id": "iter-next"}
-	result, err := svc.AgentAction(context.Background(), AgentActor("dev-a"), "work_next", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	packet, ok := result.(WorkPacket)
-	if !ok || packet.Assignment.State != AssignmentLeased || packet.Assignment.LeaseOwner != "agent:dev-a" {
-		t.Fatalf("packet=%#v", result)
-	}
-	if _, err := svc.CompleteAssignment(context.Background(), AgentActor("dev-a"), assignmentID(packet.Assignment), CompleteAssignmentInput{TaskRevision: packet.TaskRevision, AssignmentRevision: packet.Assignment.Revision, Outcome: packet.AllowedOutcomes[0], IdempotencyKey: "complete-next"}); err != nil {
-		t.Fatal(err)
-	}
-	replayed, err := svc.AgentAction(context.Background(), AgentActor("dev-a"), "work_next", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := replayed.(WorkPacket); got.Assignment.ID != packet.Assignment.ID || got.Assignment.State != AssignmentLeased {
-		t.Fatalf("unstable replay=%#v", got)
 	}
 }
 

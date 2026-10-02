@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekzonder/tariboy/internal/client"
 	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
@@ -210,7 +209,7 @@ func (r *Runner) Up(f File) error {
 	if err := r.applyBudgets(f); err != nil {
 		return err
 	}
-	return r.convergeTaskWorkflows(f)
+	return r.convergeTaskQueues(f)
 }
 
 func (r *Runner) convergeGoal(name string, a AgentSpec, cur map[string]any) error {
@@ -246,55 +245,12 @@ func (r *Runner) convergeGoal(name string, a AgentSpec, cur map[string]any) erro
 	return nil
 }
 
-// convergeTaskWorkflows drives only the typed native Tasks REST commands, whose
+// convergeTaskQueues drives only the typed native Tasks REST commands, whose
 // daemon handlers are backed by registry.TaskControl. Compose never reaches
-// into task persistence directly. Pools are bound before activation because an
-// activation is transactionally rejected while a referenced pool is empty.
-func (r *Runner) convergeTaskWorkflows(f File) error {
-	if len(f.Workflows) == 0 && len(f.TaskQueues) == 0 {
+// into task persistence directly.
+func (r *Runner) convergeTaskQueues(f File) error {
+	if len(f.TaskQueues) == 0 {
 		return nil
-	}
-	liveWorkflows := map[string]tasks.WorkflowVersion{}
-	for _, alias := range sortedKeys(f.Workflows) {
-		spec := f.Workflows[alias]
-		desired := tasks.CanonicalWorkflowDefinition(spec.Definition)
-		if desired.Name == "" {
-			return fmt.Errorf("workflow %s source is not loaded", alias)
-		}
-		versions, err := r.listWorkflowVersions(desired.Name)
-		if err != nil {
-			return fmt.Errorf("list workflow %s: %w", alias, err)
-		}
-		var current tasks.WorkflowVersion
-		for _, version := range versions {
-			if version.Version == desired.Version {
-				current = version
-				break
-			}
-		}
-		if current.ID == 0 || current.State == "draft" {
-			r.logf("publishing workflow %s@%d", desired.Name, desired.Version)
-			raw, err := r.call.Call("POST", "/api/workflows", map[string]any{"definition": desired})
-			if err != nil {
-				return fmt.Errorf("create workflow %s: %w", alias, err)
-			}
-			if err := json.Unmarshal(raw, &current); err != nil {
-				return err
-			}
-			if _, err := r.call.Call("POST", fmt.Sprintf("/api/workflows/%s/versions/%d/validate", desired.Name, desired.Version), map[string]any{}); err != nil {
-				return fmt.Errorf("validate workflow %s: %w", alias, err)
-			}
-			raw, err = r.call.Call("POST", fmt.Sprintf("/api/workflows/%s/versions/%d/publish", desired.Name, desired.Version), map[string]any{})
-			if err != nil {
-				return fmt.Errorf("publish workflow %s: %w", alias, err)
-			}
-			if err := json.Unmarshal(raw, &current); err != nil {
-				return err
-			}
-		} else if !reflect.DeepEqual(tasks.CanonicalWorkflowDefinition(current.Definition), desired) {
-			return fmt.Errorf("workflow %s@%d definition differs from the published immutable version; version bump required", desired.Name, desired.Version)
-		}
-		liveWorkflows[alias] = current
 	}
 	queues, err := r.listTaskQueues()
 	if err != nil {
@@ -341,21 +297,6 @@ func (r *Runner) convergeTaskWorkflows(f File) error {
 				return fmt.Errorf("bind pool %s/%s: %w", prefix, poolName, err)
 			}
 		}
-		workflow := liveWorkflows[want.Workflow]
-		binding, found, err := r.getTaskQueueWorkflow(prefix)
-		if err != nil {
-			return err
-		}
-		if !found || binding.WorkflowVersionID != workflow.ID {
-			revision := int64(0)
-			if found {
-				revision = binding.Revision
-			}
-			r.logf("activating workflow %s@%d for task queue %s", workflow.Name, workflow.Version, prefix)
-			if _, err := r.call.Call("PUT", "/api/task-queues/"+prefix+"/workflow", map[string]any{"workflow_version_id": workflow.ID, "revision": revision, "idempotency_key": composeIdempotency("workflow", prefix, workflow.Name, workflow.Version, revision)}); err != nil {
-				return fmt.Errorf("activate workflow for %s: %w", prefix, err)
-			}
-		}
 	}
 	return nil
 }
@@ -369,17 +310,6 @@ func composeIdempotency(parts ...any) string {
 	return fmt.Sprintf("compose:%x", sum[:])
 }
 
-func (r *Runner) listWorkflowVersions(name string) ([]tasks.WorkflowVersion, error) {
-	raw, err := r.call.Call("GET", "/api/workflows/"+name+"/versions", map[string]string{})
-	if err != nil {
-		return nil, err
-	}
-	var env struct {
-		Items []tasks.WorkflowVersion `json:"items"`
-	}
-	err = json.Unmarshal(raw, &env)
-	return env.Items, err
-}
 func (r *Runner) listTaskQueues() (map[string]tasks.Queue, error) {
 	raw, err := r.call.Call("GET", "/api/task-queues", map[string]string{})
 	if err != nil {
@@ -413,20 +343,6 @@ func (r *Runner) listTaskPools(queue string) (map[string]tasks.AgentPool, error)
 		out[pool.Name] = pool
 	}
 	return out, nil
-}
-func (r *Runner) getTaskQueueWorkflow(queue string) (tasks.QueueWorkflowBinding, bool, error) {
-	raw, err := r.call.Call("GET", "/api/task-queues/"+queue+"/workflow", map[string]string{})
-	if err != nil {
-		if apiErr, ok := err.(*client.APIError); ok && apiErr.Code == "queue_workflow_not_found" {
-			return tasks.QueueWorkflowBinding{}, false, nil
-		}
-		return tasks.QueueWorkflowBinding{}, false, err
-	}
-	var binding tasks.QueueWorkflowBinding
-	if err := json.Unmarshal(raw, &binding); err != nil {
-		return binding, false, err
-	}
-	return binding, true, nil
 }
 
 // convergeSubscriptions ensures every subscription the file declares for an
@@ -906,30 +822,6 @@ func (r *Runner) Status(f File) error {
 		}
 	}
 	liveQueues := map[string]tasks.Queue{}
-	for _, alias := range sortedKeys(f.Workflows) {
-		desired := tasks.CanonicalWorkflowDefinition(f.Workflows[alias].Definition)
-		versions, err := r.listWorkflowVersions(desired.Name)
-		if err != nil {
-			return fmt.Errorf("status workflow %s: %w", desired.Name, err)
-		}
-		var published tasks.WorkflowVersion
-		for _, version := range versions {
-			if version.Version == desired.Version {
-				published = version
-				break
-			}
-		}
-		if published.ID == 0 {
-			r.logf("workflow %-14s MISSING (want=%s@%d)", alias, desired.Name, desired.Version)
-			drift++
-		} else if published.State != "published" {
-			r.logf("workflow %-14s state drift: have=%s want=published; publish required", alias, published.State)
-			drift++
-		} else if !reflect.DeepEqual(tasks.CanonicalWorkflowDefinition(published.Definition), desired) {
-			r.logf("workflow %-14s definition drift: %s@%d is immutable; version bump required", alias, desired.Name, desired.Version)
-			drift++
-		}
-	}
 	if len(f.TaskQueues) != 0 {
 		liveQueues, err = r.listTaskQueues()
 		if err != nil {
@@ -947,20 +839,6 @@ func (r *Runner) Status(f File) error {
 		if liveQueue.Name != want.Name {
 			r.logf("task queue %-10s name drift: have=%s want=%s", prefix, liveQueue.Name, want.Name)
 			drift++
-		}
-		binding, found, err := r.getTaskQueueWorkflow(prefix)
-		if err != nil {
-			return fmt.Errorf("status task queue %s workflow: %w", prefix, err)
-		}
-		definition := tasks.CanonicalWorkflowDefinition(f.Workflows[want.Workflow].Definition)
-		if !found {
-			r.logf("task queue %-10s workflow MISSING (want=%s@%d)", prefix, definition.Name, definition.Version)
-			drift++
-		} else if binding.WorkflowName != definition.Name || binding.WorkflowVersion != definition.Version {
-			r.logf("task queue %-10s workflow drift: have=%s@%d want=%s@%d", prefix, binding.WorkflowName, binding.WorkflowVersion, definition.Name, definition.Version)
-			drift++
-		} else {
-			r.logf("task queue %-10s workflow ok (%s@%d)", prefix, definition.Name, definition.Version)
 		}
 		pools, err := r.listTaskPools(prefix)
 		if err != nil {

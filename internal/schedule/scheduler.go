@@ -97,31 +97,7 @@ func scheduleGuard(sch Schedule) func(*sql.Tx, time.Time) error {
 		if live == 0 {
 			return bus.ErrPublishGuardDenied
 		}
-		return workflowLeaseGuard(sch.Agent)(tx, now)
-	}
-}
-
-func workflowLeaseGuard(agent string) func(*sql.Tx, time.Time) error {
-	return func(tx *sql.Tx, now time.Time) error {
-		rows, err := tx.Query(`SELECT lease_expires_at FROM task_assignments WHERE state='leased' AND lease_owner=?`, "agent:"+agent)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var raw string
-			if err := rows.Scan(&raw); err != nil {
-				return err
-			}
-			deadline, err := time.Parse(time.RFC3339Nano, raw)
-			if err != nil {
-				return err
-			}
-			if deadline.After(now.UTC()) {
-				return bus.ErrPublishGuardDenied
-			}
-		}
-		return rows.Err()
+		return nil
 	}
 }
 

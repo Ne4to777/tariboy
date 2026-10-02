@@ -88,10 +88,6 @@ type Options struct {
 	UserPathResolver UserPathResolver
 }
 
-type workflowQuestionReconciler interface {
-	ReconcileWorkflowQuestions(context.Context) (int, error)
-}
-
 type workflowObservationReconciler interface {
 	ReconcileWorkflowObservations(context.Context, int) (int, error)
 }
@@ -113,7 +109,6 @@ func (s *workflowIngressSignal) Signal() {
 
 func (s *workflowIngressSignal) C() <-chan struct{} { return s.ch }
 
-const workflowQuestionReconcileInterval = time.Minute
 const workflowObservationReconcileInterval = 5 * time.Second
 
 func runWorkflowObservationReconciler(ctx context.Context, reconciler workflowObservationReconciler, signals <-chan struct{}, interval time.Duration, log *slog.Logger) {
@@ -140,25 +135,6 @@ func runWorkflowObservationReconciler(ctx context.Context, reconciler workflowOb
 			return
 		case <-signals:
 			reconcile()
-		case <-ticker.C:
-			reconcile()
-		}
-	}
-}
-
-func runWorkflowQuestionReconciler(ctx context.Context, reconciler workflowQuestionReconciler, interval time.Duration, log *slog.Logger) {
-	reconcile := func() {
-		if _, err := reconciler.ReconcileWorkflowQuestions(ctx); err != nil && ctx.Err() == nil {
-			log.Warn("workflow question reconciliation", "err", err)
-		}
-	}
-	reconcile()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
 		case <-ticker.C:
 			reconcile()
 		}
@@ -700,7 +676,7 @@ func Run(ctx context.Context, o Options) error {
 	// their final flush/refresh before the store closes.
 	gctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Add(12)
+	wg.Add(11)
 	scheduler := schedule.NewScheduler(schedStore, channelBus, log, time.Now, time.After)
 	go func() {
 		defer wg.Done()
@@ -729,10 +705,6 @@ func Run(ctx context.Context, o Options) error {
 	go func() {
 		defer wg.Done()
 		scriptPublisher.Run(gctx)
-	}()
-	go func() {
-		defer wg.Done()
-		runWorkflowQuestionReconciler(gctx, taskService, workflowQuestionReconcileInterval, log)
 	}()
 	go func() {
 		defer wg.Done()

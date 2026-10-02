@@ -246,7 +246,6 @@ func readyWith(ctx context.Context, q queryer, actor Actor, filter ReadyFilter) 
 	}
 	query, args := addVisibleClause(taskSelect+`
 		WHERE t.status = 'open' AND t.assignee = '' AND t.manual_block_reason = ''
-		  AND t.workflow_version_id IS NULL
 		  AND NOT EXISTS (
 			SELECT 1 FROM task_relations r
 			JOIN tasks blocker ON blocker.id = r.source_id
@@ -323,8 +322,7 @@ func (s *Service) ClaimReady(ctx context.Context, actor Actor, filter ReadyFilte
 	result, err := tx.ExecContext(ctx, `
 		UPDATE tasks
 		SET assignee = ?, status = 'in_progress', revision = revision + 1, updated_at = ?
-		WHERE id = ? AND status = 'open' AND assignee = ''
-		  AND workflow_version_id IS NULL`,
+		WHERE id = ? AND status = 'open' AND assignee = ''`,
 		actor.Principal, now, task.ID)
 	if err != nil {
 		return Task{}, err

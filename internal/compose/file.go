@@ -15,32 +15,30 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/alekzonder/tariboy/internal/agent"
-	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
 var taskQueuePrefixRE = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
-var workflowRouteSegmentRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+var poolRouteSegmentRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // File is a parsed tariboy-compose.yaml (spec §5.1).
 type File struct {
-	Version               int                      `yaml:"version"`
-	Images                map[string]ImageSpec     `yaml:"images"`
-	Groups                map[string]GroupSpec     `yaml:"groups"`
-	Agents                map[string]AgentSpec     `yaml:"agents"`
-	Workflows             map[string]WorkflowSpec  `yaml:"workflows"`
-	TaskQueues            map[string]TaskQueueSpec `yaml:"task_queues"`
-	workflowSourcesLoaded bool
-}
-
-type WorkflowSpec struct {
-	Source     string                   `yaml:"source"`
-	Definition tasks.WorkflowDefinition `yaml:"-"`
+	Version    int                      `yaml:"version"`
+	Images     map[string]ImageSpec     `yaml:"images"`
+	Groups     map[string]GroupSpec     `yaml:"groups"`
+	Agents     map[string]AgentSpec     `yaml:"agents"`
+	TaskQueues map[string]TaskQueueSpec `yaml:"task_queues"`
+	// RemovedWorkflows captures the top-level workflows: map of the removed
+	// task workflow engine so Parse can reject it by name. An empty map is
+	// accepted: team exports before the removal always wrote "workflows: {}".
+	RemovedWorkflows yaml.Node `yaml:"workflows,omitempty"`
 }
 
 type TaskQueueSpec struct {
-	Name     string              `yaml:"name"`
-	Workflow string              `yaml:"workflow"`
-	Pools    map[string][]string `yaml:"pools"`
+	Name  string              `yaml:"name"`
+	Pools map[string][]string `yaml:"pools"`
+	// RemovedWorkflow captures the workflow: key of the removed task workflow
+	// engine so Parse can reject it by name.
+	RemovedWorkflow yaml.Node `yaml:"workflow,omitempty"`
 }
 
 type ImageSpec struct {
@@ -284,7 +282,30 @@ func Parse(b []byte) (File, error) {
 		}
 		return File{}, fmt.Errorf("parse compose file: %w", err)
 	}
+	if declaresValue(f.RemovedWorkflows) {
+		return File{}, fmt.Errorf("parse compose file: the top-level workflows key is no longer supported: the task workflow engine was removed")
+	}
+	for _, prefix := range sortedKeys(f.TaskQueues) {
+		if declaresValue(f.TaskQueues[prefix].RemovedWorkflow) {
+			return File{}, fmt.Errorf("parse compose file: task_queues.%s.workflow is no longer supported: the task workflow engine was removed", prefix)
+		}
+	}
 	return f, nil
+}
+
+// declaresValue reports whether a captured YAML value says anything: an absent
+// key, null, an empty string, and an empty map or list do not.
+func declaresValue(n yaml.Node) bool {
+	switch n.Kind {
+	case 0:
+		return false
+	case yaml.ScalarNode:
+		return n.Tag != "!!null" && n.Value != ""
+	case yaml.MappingNode, yaml.SequenceNode:
+		return len(n.Content) != 0
+	default:
+		return true
+	}
 }
 
 // Validate enforces the schema rules (spec §5.1): version, name charset (the
@@ -369,55 +390,15 @@ func (f File) Validate() error {
 			}
 		}
 	}
-	for alias, workflow := range f.Workflows {
-		if strings.TrimSpace(alias) == "" {
-			return fmt.Errorf("workflow name is required")
-		}
-		if strings.TrimSpace(workflow.Source) == "" {
-			return fmt.Errorf("workflow %q source is required", alias)
-		}
-		if !workflowRouteSegmentRE.MatchString(alias) {
-			return fmt.Errorf("invalid workflow alias %q", alias)
-		}
-		if workflow.Definition.Name == "" && f.workflowSourcesLoaded {
-			return fmt.Errorf("workflow %q source was not loaded", alias)
-		}
-		if workflow.Definition.Name == "" {
-			continue
-		}
-		canonical := tasks.CanonicalWorkflowDefinition(workflow.Definition)
-		if !workflowRouteSegmentRE.MatchString(canonical.Name) {
-			return fmt.Errorf("workflow %q has unsafe route name %q", alias, canonical.Name)
-		}
-	}
 	for prefix, queue := range f.TaskQueues {
 		if !taskQueuePrefixRE.MatchString(prefix) {
 			return fmt.Errorf("invalid task queue prefix %q", prefix)
 		}
-		workflow, ok := f.Workflows[queue.Workflow]
-		if !ok {
-			return fmt.Errorf("task queue %q references unknown workflow %q", prefix, queue.Workflow)
-		}
 		if strings.TrimSpace(queue.Name) == "" {
 			return fmt.Errorf("task queue %q name is required", prefix)
 		}
-		if workflow.Definition.Name == "" {
-			continue
-		}
-		canonical := tasks.CanonicalWorkflowDefinition(workflow.Definition)
-		for pool := range requiredWorkflowPools(canonical) {
-			agents := normalizeAgentNames(queue.Pools[pool])
-			if len(agents) == 0 {
-				return fmt.Errorf("task queue %q required pool %q must not be empty", prefix, pool)
-			}
-			for _, name := range agents {
-				if _, exists := f.Agents[name]; !exists {
-					return fmt.Errorf("task queue %q pool %q references undeclared agent %q", prefix, pool, name)
-				}
-			}
-		}
 		for pool, members := range queue.Pools {
-			if !workflowRouteSegmentRE.MatchString(pool) {
+			if !poolRouteSegmentRE.MatchString(pool) {
 				return fmt.Errorf("task queue %q has unsafe pool route name %q", prefix, pool)
 			}
 			for _, name := range normalizeAgentNames(members) {
@@ -428,21 +409,6 @@ func (f File) Validate() error {
 		}
 	}
 	return nil
-}
-
-func requiredWorkflowPools(def tasks.WorkflowDefinition) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, status := range def.Statuses {
-		for _, requirement := range status.Requirements {
-			if requirement.Pool != "" {
-				out[requirement.Pool] = struct{}{}
-			}
-		}
-	}
-	if def.Questions.RouteTo != "" {
-		out[def.Questions.RouteTo] = struct{}{}
-	}
-	return out
 }
 
 func normalizeAgentNames(in []string) []string {

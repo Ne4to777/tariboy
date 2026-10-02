@@ -64,9 +64,11 @@ echo "--- operator mode sees and updates both queues"
 ttasks queue create --prefix OPS --name "Operator Queue" >/dev/null
 ttasks queue create --prefix AGT --name "Agent Queue" >/dev/null
 ttasks queue get OPS --json | grep -q '"prefix":"OPS"' || fail "operator queue argument was lost"
-ttasks workflows create --definition '{"name":"cli-flow","version":1,"initial_status":"implement","statuses":[{"id":"implement","requirements":[{"id":"code","pool":"developers","dispatch":"claim_one","produces":["implementation"],"outcomes":["done"]}],"transitions":[{"when":"code.done","to":"done"}]},{"id":"done","terminal":true}]}' >/dev/null
-ttasks workflows publish cli-flow 1 >/dev/null
-ttasks workflows get cli-flow 1 --json | grep -q '"state":"published"' || fail "workflow definition was not published"
+ttasks queue trigger create OPS --pattern external:incidents --action create_task >/dev/null
+ttasks queue trigger list OPS --json | grep -q '"pattern":"external:incidents"' || fail "queue trigger was not created"
+if ttasks workflows versions cli-flow >/dev/null 2>&1; then
+  fail "removed workflows command still runs"
+fi
 # Task keys are random, so every later reference reads the key the daemon minted.
 task_key() { grep -o '"key":"[^"]*"' | head -1 | cut -d'"' -f4; }
 OPS_KEY="$(ttasks create --queue OPS --title "operator task" --json | task_key)"

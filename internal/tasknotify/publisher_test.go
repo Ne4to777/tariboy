@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekzonder/tariboy/internal/agent"
 	"github.com/alekzonder/tariboy/internal/bus"
 	"github.com/alekzonder/tariboy/internal/store"
 	"github.com/alekzonder/tariboy/internal/tasks"
@@ -135,79 +134,5 @@ func TestFailedPublishIsRetriedAfterBackoff(t *testing.T) {
 	}
 	if len(fake.messages) != 2 {
 		t.Fatalf("attempts after backoff = %d; want 2", len(fake.messages))
-	}
-}
-
-func TestFlushPublishesDurableWorkflowWakeAfterFailureAndRestart(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "tariboyd.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	now := time.Date(2026, 8, 7, 13, 0, 0, 0, time.UTC)
-	clock := func() time.Time { return now }
-	svc := tasks.NewService(st.DB, "customer", clock)
-	if err := agent.NewStore(st).Create(agent.Agent{Name: "worker", ImageRef: "basic:latest"}); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	actor := tasks.CustomerActor("customer")
-	if _, err := svc.CreateQueue(ctx, actor, tasks.CreateQueueInput{Prefix: "FLOW", Name: "Workflow"}); err != nil {
-		t.Fatal(err)
-	}
-	def := tasks.WorkflowDefinition{Name: "wake", Version: 1, InitialStatus: "work", Statuses: []tasks.WorkflowStatus{
-		{ID: "work", Requirements: []tasks.WorkflowRequirement{{ID: "do", Pool: "workers", Dispatch: tasks.DispatchClaimOne, Outcomes: []string{"done"}}}, Transitions: []tasks.WorkflowTransition{{When: "do.done", To: "done"}}},
-		{ID: "done", Terminal: true, Requirements: []tasks.WorkflowRequirement{}, Transitions: []tasks.WorkflowTransition{}},
-	}}
-	draft, err := svc.CreateWorkflowDraft(ctx, actor, def)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published, err := svc.PublishWorkflowVersion(ctx, actor, draft.Name, draft.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RebindAgentPool(ctx, actor, "FLOW", "workers", []string{"worker"}, 0, "pool"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ActivateQueueWorkflow(ctx, actor, "FLOW", published.ID, 0, "bind"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.CreateTask(ctx, actor, tasks.CreateTaskInput{Queue: "FLOW", Title: "wake me"}); err != nil {
-		t.Fatal(err)
-	}
-
-	failing := &fakeBus{fail: true}
-	first := New(st.DB, failing, clock, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := first.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var attempts int
-	var publishedAt string
-	if err := st.DB.QueryRow(`SELECT attempts, published_at FROM task_workflow_outbox`).Scan(&attempts, &publishedAt); err != nil {
-		t.Fatal(err)
-	}
-	if attempts != 1 || publishedAt != "" {
-		t.Fatalf("failed workflow wake attempts/published=%d/%q", attempts, publishedAt)
-	}
-
-	now = now.Add(3 * time.Second)
-	recoveredBus := &fakeBus{}
-	restarted := New(st.DB, recoveredBus, clock, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := restarted.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(recoveredBus.messages) != 1 {
-		t.Fatalf("recovered workflow wakes=%d, want 1", len(recoveredBus.messages))
-	}
-	message := recoveredBus.messages[0]
-	if message.Channel != "agent:worker:inbox" || message.Type != "workflow.assignment_ready" || message.IdempotencyKey == "" {
-		t.Fatalf("workflow wake=%#v", message)
-	}
-	if err := st.DB.QueryRow(`SELECT published_at FROM task_workflow_outbox`).Scan(&publishedAt); err != nil {
-		t.Fatal(err)
-	}
-	if publishedAt == "" {
-		t.Fatal("workflow wake was not marked published")
 	}
 }

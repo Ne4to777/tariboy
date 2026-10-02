@@ -7,13 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/alekzonder/tariboy/internal/client"
 	"github.com/alekzonder/tariboy/internal/daemonctl"
-	"github.com/alekzonder/tariboy/internal/tasks"
 	"github.com/alekzonder/tariboy/internal/teamportable"
-	"gopkg.in/yaml.v3"
 )
 
 // ensureDaemonUp is the auto-start seam (overridden in tests). It brings the
@@ -31,10 +28,10 @@ var ensureDaemonUp = func(ctx context.Context, out io.Writer) error {
 // the absolute directory it lives in (used to resolve relative image contexts,
 // the $CWD token, and the default agent cwd).
 func Load(path string) (File, string, error) {
-	return loadComposeFile(path, true)
+	return loadComposeFile(path)
 }
 
-func loadComposeFile(path string, loadWorkflows bool) (File, string, error) {
+func loadComposeFile(path string) (File, string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return File{}, "", fmt.Errorf("read %s: %w", path, err)
@@ -50,47 +47,7 @@ func loadComposeFile(path string, loadWorkflows bool) (File, string, error) {
 	if abs, err := filepath.Abs(dir); err == nil {
 		dir = abs
 	}
-	if loadWorkflows {
-		f.workflowSourcesLoaded = true
-	}
-	for name, spec := range f.Workflows {
-		if !loadWorkflows {
-			continue
-		}
-		source := spec.Source
-		if !filepath.IsAbs(source) {
-			source = filepath.Join(dir, source)
-		}
-		definition, err := loadWorkflowDefinition(source)
-		if err != nil {
-			return File{}, "", fmt.Errorf("load workflow %q: %w", name, err)
-		}
-		spec.Definition = definition
-		f.Workflows[name] = spec
-	}
 	return f, dir, nil
-}
-
-func loadWorkflowDefinition(path string) (tasks.WorkflowDefinition, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return tasks.WorkflowDefinition{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	var raw any
-	if err := yaml.Unmarshal(b, &raw); err != nil {
-		return tasks.WorkflowDefinition{}, fmt.Errorf("parse %s: %w", path, err)
-	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return tasks.WorkflowDefinition{}, fmt.Errorf("normalize %s: %w", path, err)
-	}
-	var definition tasks.WorkflowDefinition
-	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&definition); err != nil {
-		return tasks.WorkflowDefinition{}, fmt.Errorf("decode %s: %w", path, err)
-	}
-	return definition, nil
 }
 
 // Main is the `tariboy compose ...` entrypoint. It parses the verb + flags,
@@ -211,8 +168,7 @@ func Main(ctx context.Context, call Caller, imagesDir string, args []string, out
 		return 0
 	}
 
-	loadWorkflows := verb == "up" || verb == "status"
-	f, workdir, err := loadComposeFile(file, loadWorkflows)
+	f, workdir, err := loadComposeFile(file)
 	if err != nil {
 		fmt.Fprintf(errOut, "compose: %v\n", err)
 		return 1

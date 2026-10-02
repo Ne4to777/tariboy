@@ -30,9 +30,6 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          WHERE r.target_id = t.id AND r.type = 'blocks'
            AND blocker.status NOT IN ('done', 'cancelled')
        ) OR t.manual_block_reason <> '',
-	   COALESCE(t.workflow_version_id, 0),
-	   COALESCE(w.name || '@' || w.version, ''),
-	   COALESCE(t.workflow_status, ''), COALESCE(t.workflow_revision, 0),
        t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at,
        COALESCE((
          SELECT waiting.requested_at
@@ -44,8 +41,7 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          LIMIT 1
        ), '')
 FROM tasks t
-LEFT JOIN tasks p ON p.id = t.parent_id
-LEFT JOIN task_workflow_versions w ON w.id = t.workflow_version_id`
+LEFT JOIN tasks p ON p.id = t.parent_id`
 
 type Store struct{ db *sql.DB }
 
@@ -268,7 +264,6 @@ func readGoalTask(tx *sql.Tx, key, agent string) (tasks.Task, string, error) {
 		&task.ID, &task.Key, &task.Queue, &task.ParentKey,
 		&task.Position, &task.Priority, &task.Title, &task.Description, &task.Status, &task.PullRequest, &task.Author, &task.Customer,
 		&task.Group, &task.Assignee, &task.ManualBlockReason, &blocked,
-		&task.WorkflowVersionID, &task.WorkflowVersion, &task.WorkflowStatus, &task.WorkflowRevision,
 		&task.Revision, &task.CreatedAt, &task.StartedAt, &task.UpdatedAt, &task.CompletedAt, &waitAt,
 	)
 	task.Blocked = blocked

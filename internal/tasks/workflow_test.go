@@ -5,61 +5,6 @@ import (
 	"testing"
 )
 
-func TestManagedTaskPullRequestPreservesLifecycleConstraints(t *testing.T) {
-	definition := claimOneDefinition()
-	svc, operator, task := runtimeWorkflowTask(t, definition, map[string][]string{
-		"developers": {"dev-a"},
-	})
-	ctx := context.Background()
-	title, description, pullRequest, priority := "renamed", "updated details", "https://example.test/pull/1", PriorityP1
-	updated, err := svc.UpdateTask(ctx, operator, task.Key, UpdateTaskInput{
-		Title: &title, Description: &description, PullRequest: &pullRequest, Priority: &priority, Revision: task.Revision,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Title != title || updated.Description != description || updated.PullRequest != pullRequest || updated.Priority != priority ||
-		updated.WorkflowStatus != task.WorkflowStatus || updated.WorkflowRevision != task.WorkflowRevision {
-		t.Fatalf("managed content update = %#v; want content-only change", updated)
-	}
-	comment, err := svc.AddComment(ctx, operator, task.Key, AddCommentInput{
-		Body: "timeline note", IdempotencyKey: "managed-comment",
-	})
-	if err != nil || comment.Comment.Body != "timeline note" {
-		t.Fatalf("managed comment = %#v, err=%v; want allowed", comment, err)
-	}
-
-	status, assignee, block := StatusDone, "agent:dev-a", "manual hold"
-	for name, input := range map[string]UpdateTaskInput{
-		"status":       {Status: &status, Revision: updated.Revision},
-		"assignee":     {Assignee: &assignee, Revision: updated.Revision},
-		"manual block": {ManualBlockReason: &block, Revision: updated.Revision},
-	} {
-		if _, err := svc.UpdateTask(ctx, operator, task.Key, input); ErrorCode(err) != "workflow_managed" {
-			t.Fatalf("managed %s update error = %v; want workflow_managed", name, err)
-		}
-	}
-	if _, err := svc.CompleteTask(ctx, operator, task.Key, CompleteInput{
-		Revision: updated.Revision,
-	}); ErrorCode(err) != "workflow_managed" {
-		t.Fatalf("managed complete error = %v; want workflow_managed", err)
-	}
-	if _, err := svc.CompleteTask(ctx, operator, task.Key, CompleteInput{
-		Revision: updated.Revision, CompleteAnyway: true,
-	}); ErrorCode(err) != "workflow_managed" {
-		t.Fatalf("managed force-complete error = %v; want workflow_managed", err)
-	}
-	if _, err := svc.db.Exec(`INSERT INTO task_queue_owners(queue_prefix, agent) VALUES ('DEV', 'dev-a')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ClaimTask(ctx, AgentActor("dev-a"), task.Key, updated.Revision); ErrorCode(err) != "workflow_managed" {
-		t.Fatalf("managed legacy claim error = %v; want workflow_managed", err)
-	}
-	if _, err := svc.ClaimTask(ctx, AgentActor("outsider"), task.Key, updated.Revision); ErrorCode(err) != "not_found" {
-		t.Fatalf("outsider managed claim error = %v; want not_found without existence leak", err)
-	}
-}
-
 func TestParentCompletionRequiresExplicitOverrideAndLeavesChildrenOpen(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()

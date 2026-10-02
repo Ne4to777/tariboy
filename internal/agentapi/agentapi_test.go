@@ -16,7 +16,6 @@ import (
 	"github.com/alekzonder/tariboy/internal/bus"
 	"github.com/alekzonder/tariboy/internal/script"
 	"github.com/alekzonder/tariboy/internal/store"
-	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
 func decode(t *testing.T, body []byte) (bool, map[string]any) {
@@ -211,79 +210,15 @@ func TestNativeTasksActionIsCapabilityGatedAndScrubsForgedIdentity(t *testing.T)
 	}
 }
 
-func TestManagedWorkflowRejectsDirectMessagingAndRawSubscriptions(t *testing.T) {
-	s := NewServer(Deps{Agent: "alice", Plugins: []string{"whoami", "loop", "messages", "tasks"},
-		CurrentIteration: func() string { return "iter-managed" },
-		WorkflowPermissions: func() (tasks.ActiveWorkflowPermissionSet, error) {
-			return tasks.ActiveWorkflowPermissionSet{Managed: true}, nil
-		},
-		Publish: func(bus.Message) (bus.Message, error) { t.Fatal("publish must be gated"); return bus.Message{}, nil },
-		Subscribe: func(string, bus.Matcher, []string) (bus.Subscription, error) {
-			t.Fatal("subscribe must be gated")
-			return bus.Subscription{}, nil
-		},
-		GroupSend: func(string, string, string, string) (map[string]any, error) {
-			t.Fatal("group request must be gated")
-			return nil, nil
-		},
-	})
-	for _, tc := range []struct{ path, body, code string }{
-		{"/tools/message/send", `{"channel":"chat:ops","text":"x"}`, "workflow_tool_not_allowed"},
-		{"/tools/channel/subscribe", `{"channel":"logs:api"}`, "workflow_channel_managed"},
-		{"/tools/group/request", `{"member":"bob","text":"x"}`, "workflow_tool_not_allowed"},
-	} {
-		rr := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", tc.path, bytes.NewBufferString(tc.body)))
-		ok, got := decode(t, rr.Body.Bytes())
-		if ok || got["code"] != tc.code {
-			t.Fatalf("%s = %d %v", tc.path, rr.Code, got)
-		}
-	}
-}
-
 func TestLegacyIterationKeepsDirectMessaging(t *testing.T) {
 	called := false
 	s := NewServer(Deps{Agent: "alice", Plugins: []string{"messages"}, CurrentIteration: func() string { return "legacy" },
-		WorkflowPermissions: func() (tasks.ActiveWorkflowPermissionSet, error) { return tasks.ActiveWorkflowPermissionSet{}, nil },
-		Publish:             func(message bus.Message) (bus.Message, error) { called = true; message.ID = "m1"; return message, nil },
-	})
-	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", "/tools/message/send", bytes.NewBufferString(`{"channel":"chat:ops","text":"x"}`)))
-	if rr.Code != http.StatusOK || !called {
-		t.Fatalf("legacy send status=%d body=%s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestManagedWorkflowCanExplicitlyGrantDirectMessageTool(t *testing.T) {
-	called := false
-	s := NewServer(Deps{Agent: "alice", Plugins: []string{"messages"}, CurrentIteration: func() string { return "managed" },
-		WorkflowPermissions: func() (tasks.ActiveWorkflowPermissionSet, error) {
-			return tasks.ActiveWorkflowPermissionSet{Managed: true, Tools: []string{"messages.send"}}, nil
-		},
 		Publish: func(message bus.Message) (bus.Message, error) { called = true; message.ID = "m1"; return message, nil },
 	})
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", "/tools/message/send", bytes.NewBufferString(`{"channel":"chat:ops","text":"x"}`)))
 	if rr.Code != http.StatusOK || !called {
-		t.Fatalf("granted send status=%d body=%s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestManagedWorkflowRejectsScheduledChannelPublish(t *testing.T) {
-	s := NewServer(Deps{Agent: "alice", Plugins: []string{"schedule"}, CurrentIteration: func() string { return "managed" },
-		WorkflowPermissions: func() (tasks.ActiveWorkflowPermissionSet, error) {
-			return tasks.ActiveWorkflowPermissionSet{Managed: true}, nil
-		},
-		AddSchedule: func(string, string, string, string) (map[string]any, error) {
-			t.Fatal("schedule must be gated")
-			return nil, nil
-		},
-	})
-	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", "/tools/schedule/add", bytes.NewBufferString(`{"kind":"oneshot","spec":"2030-01-01T00:00:00Z","channel":"chat:ops"}`)))
-	ok, got := decode(t, rr.Body.Bytes())
-	if ok || got["code"] != "workflow_tool_not_allowed" {
-		t.Fatalf("schedule response=%d %v", rr.Code, got)
+		t.Fatalf("legacy send status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

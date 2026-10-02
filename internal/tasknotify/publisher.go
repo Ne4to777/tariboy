@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -41,13 +40,6 @@ type outboxRow struct {
 	subject string
 	text    string
 	data    string
-	attempt int
-}
-
-type workflowOutboxRow struct {
-	id      string
-	kind    string
-	payload string
 	attempt int
 }
 
@@ -110,72 +102,6 @@ func (p *Publisher) Flush(ctx context.Context) error {
 			    last_error = ''
 			WHERE notification_id = ? AND published_at = ''`,
 			message.ID, now.Format(time.RFC3339Nano), row.id); err != nil {
-			return err
-		}
-	}
-	return p.flushWorkflow(ctx, now)
-}
-
-func (p *Publisher) flushWorkflow(ctx context.Context, now time.Time) error {
-	rows, err := p.db.QueryContext(ctx, `
-		SELECT wake_id, kind, payload, attempts
-		FROM task_workflow_outbox
-		WHERE published_at = '' AND next_attempt_at <= ?
-		ORDER BY wake_id
-		LIMIT 100`, now.Format(time.RFC3339Nano))
-	if err != nil {
-		return err
-	}
-	var pending []workflowOutboxRow
-	for rows.Next() {
-		var row workflowOutboxRow
-		if err := rows.Scan(&row.id, &row.kind, &row.payload, &row.attempt); err != nil {
-			rows.Close()
-			return err
-		}
-		pending = append(pending, row)
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	for _, row := range pending {
-		payload := map[string]any{}
-		if err := json.Unmarshal([]byte(row.payload), &payload); err != nil {
-			return err
-		}
-		agent, _ := payload["agent"].(string)
-		var publishErr error
-		if agent == "" {
-			publishErr = fmt.Errorf("workflow wake has no agent")
-		} else {
-			_, publishErr = p.bus.Publish(bus.Message{
-				IdempotencyKey: row.id,
-				Channel:        "agent:" + agent + ":inbox",
-				Source:         "system:tasks",
-				Type:           row.kind,
-				Subject:        payload,
-				Data:           payload,
-			})
-		}
-		if publishErr != nil {
-			attempts := row.attempt + 1
-			delay := time.Second * time.Duration(1<<min(attempts, 8))
-			next := now.Add(delay).Format(time.RFC3339Nano)
-			if _, err := p.db.ExecContext(ctx, `
-				UPDATE task_workflow_outbox
-				SET attempts = ?, next_attempt_at = ?, last_error = ?
-				WHERE wake_id = ? AND published_at = ''`,
-				attempts, next, publishErr.Error(), row.id); err != nil {
-				return err
-			}
-			p.log.Warn("workflow wake publish failed", "wake", row.id, "attempts", attempts, "err", publishErr)
-			continue
-		}
-		if _, err := p.db.ExecContext(ctx, `
-			UPDATE task_workflow_outbox
-			SET attempts = attempts + 1, published_at = ?, last_error = ''
-			WHERE wake_id = ? AND published_at = ''`,
-			now.Format(time.RFC3339Nano), row.id); err != nil {
 			return err
 		}
 	}

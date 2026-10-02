@@ -261,7 +261,7 @@ func TestCreateTaskInQueueWithoutWorkflowKeepsLegacyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != StatusOpen || task.WorkflowVersionID != 0 || task.WorkflowVersion != "" || task.WorkflowStatus != "" || task.WorkflowRevision != 0 {
+	if task.Status != StatusOpen {
 		t.Fatalf("legacy task = %#v", task)
 	}
 	var workflowVersionID, workflowStatus, workflowRevision any
@@ -272,13 +272,6 @@ func TestCreateTaskInQueueWithoutWorkflowKeepsLegacyBehavior(t *testing.T) {
 	}
 	if workflowVersionID != nil || workflowStatus != nil || workflowRevision != nil {
 		t.Fatalf("legacy workflow columns = %#v/%#v/%#v; want NULL", workflowVersionID, workflowStatus, workflowRevision)
-	}
-	detail, err := svc.GetTask(ctx, actor, task.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if detail.Task.WorkflowVersionID != 0 || detail.Task.WorkflowVersion != "" || detail.Task.WorkflowStatus != "" || detail.Task.WorkflowRevision != 0 {
-		t.Fatalf("legacy task read-back workflow = %#v; want zero values", detail.Task)
 	}
 }
 

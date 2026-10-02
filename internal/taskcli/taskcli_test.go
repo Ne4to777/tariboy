@@ -77,22 +77,10 @@ func TestParseCurrentTasksSurface(t *testing.T) {
 		{"assign", "assign", []string{"assign", "DEV-1", "worker"}, map[string]any{"key": "DEV-1", "assignee": "worker"}},
 		{"comment", "comment", []string{"comment", "DEV-1", "hello"}, map[string]any{"key": "DEV-1", "body": "hello"}},
 		{"legacy ask", "ask", []string{"ask", "DEV-1", "user:me", "why"}, map[string]any{"key": "DEV-1", "principal": "user:me", "body": "why"}},
-		{"workflow ask", "workflow_ask", []string{"ask", "A-1", "--question", "why"}, map[string]any{"assignment_id": "A-1", "question": "why"}},
 		{"move", "move", []string{"move", "DEV-1", "--to-root"}, map[string]any{"key": "DEV-1", "parent_key": ""}},
 		{"block", "block", []string{"block", "DEV-1", "--by", "DEV-2"}, map[string]any{"key": "DEV-1", "blocker_key": "DEV-2"}},
 		{"relate", "relate", []string{"relate", "DEV-1", "DEV-2"}, map[string]any{"key": "DEV-1", "target_key": "DEV-2"}},
 		{"done", "done", []string{"done", "DEV-1"}, map[string]any{"key": "DEV-1"}},
-		{"work next", "work_next", []string{"work", "next", "--idempotency-key", "id"}, map[string]any{"idempotency_key": "id"}},
-		{"work show", "work_show", []string{"work", "show", "A-1"}, map[string]any{"assignment_id": "A-1"}},
-		{"work complete", "work_complete", []string{"work", "complete", "A-1", "--outcome", "done"}, map[string]any{"assignment_id": "A-1", "outcome": "done"}},
-		{"work release", "work_release", []string{"work", "release", "A-1"}, map[string]any{"assignment_id": "A-1"}},
-		{"artifacts", "artifact_add", []string{"artifacts", "add", "A-1", "--name", "report", "--type", "text", "--content="}, map[string]any{"assignment_id": "A-1", "name": "report", "type": "text", "content": ""}},
-		{"artifact show", "artifact_show", []string{"artifacts", "show", "A-1", "2"}, map[string]any{"assignment_id": "A-1", "artifact_id": "2"}},
-		{"questions", "questions", []string{"questions", "A-1"}, map[string]any{"assignment_id": "A-1"}},
-		{"answer", "workflow_answer", []string{"answer", "1", "--assignment", "A-1", "--answer", "yes"}, map[string]any{"question_id": "1", "assignment_id": "A-1", "answer": "yes"}},
-		{"observe", "observe_list", []string{"observe", "list", "A-1"}, map[string]any{"assignment_id": "A-1"}},
-		{"observe subscribe", "observe_subscribe", []string{"observe", "subscribe", "A-1", "metrics:x"}, map[string]any{"assignment_id": "A-1", "pattern": "metrics:x"}},
-		{"observe cancel", "observe_cancel", []string{"observe", "cancel", "A-1", "2"}, map[string]any{"assignment_id": "A-1", "subscription_id": "2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,9 +115,7 @@ func TestParseRejectsUnreadArguments(t *testing.T) {
 		{"create", "--queue", "DEV", "--title"},
 		{"ready", "--claim", "stray"},
 		{"comment", "DEV-1", "stray", "--body", "body"},
-		{"work", "show", "A-1", "stray"},
-		{"artifacts", "show", "A-1", "1", "stray"},
-		{"observe", "cancel", "A-1", "1", "stray"},
+		{"ask", "DEV-1", "user:me", "why", "--question", "why"},
 	} {
 		if _, err := parse(argv); err == nil {
 			t.Fatalf("parse(%q) succeeded, want usage error", argv)
@@ -195,7 +181,7 @@ func TestOperatorReadyFiltersAcrossPagesAndClaimRequiresAgent(t *testing.T) {
 	old := newCaller
 	defer func() { newCaller = old }()
 	recorded := &scriptedRecorder{results: []json.RawMessage{
-		json.RawMessage(`{"tasks":[{"key":"DEV-1","status":"open","assignee":"worker"},{"key":"DEV-2","status":"open","blocked":true},{"key":"DEV-3","status":"open","workflow_version_id":1}],"next_cursor":"DEV-3","sequence":1}`),
+		json.RawMessage(`{"tasks":[{"key":"DEV-1","status":"open","assignee":"worker"},{"key":"DEV-2","status":"open","blocked":true}],"next_cursor":"DEV-3","sequence":1}`),
 		json.RawMessage(`{"tasks":[{"key":"DEV-4","status":"open","revision":4}],"sequence":2}`),
 	}}
 	newCaller = func(string) Caller { return recorded }
@@ -256,14 +242,10 @@ func TestOperatorAdministrationArguments(t *testing.T) {
 		{[]string{"notifications", "read", "1"}, "POST", "/api/task-notifications/1/read", map[string]any{}},
 		{[]string{"notifications", "dismiss", "1"}, "POST", "/api/task-notifications/1/dismiss", map[string]any{}},
 		{[]string{"notifications", "list", "--include-dismissed"}, "GET", "/api/task-notifications", map[string]string{"include_dismissed": "true"}},
-		{[]string{"workflows", "get", "review", "2"}, "GET", "/api/workflows/review/versions/2", map[string]string{}},
-		{[]string{"workflows", "publish", "review", "2"}, "POST", "/api/workflows/review/versions/2/publish", map[string]any{}},
-		{[]string{"workflows", "create", "--definition", `{"name":"review","version":1}`}, "POST", "/api/workflows", map[string]any{"definition": map[string]any{"name": "review", "version": 1}}},
-		{[]string{"queue", "workflow", "set", "OPS", "--workflow-version-id", "3", "--revision", "0", "--idempotency-key", "bind"}, "PUT", "/api/task-queues/OPS/workflow", map[string]any{"workflow_version_id": 3, "revision": 0, "idempotency_key": "bind"}},
 		{[]string{"queue", "pool", "get", "OPS", "reviewers"}, "GET", "/api/task-queues/OPS/pools/reviewers", map[string]string{}},
+		{[]string{"queue", "pool", "set", "OPS", "reviewers", "--agents", "worker", "--revision", "0", "--idempotency-key", "pool-1"}, "PATCH", "/api/task-queues/OPS/pools/reviewers", map[string]any{"agents": "worker", "revision": 0, "idempotency_key": "pool-1"}},
+		{[]string{"queue", "trigger", "create", "OPS", "--pattern", "external:incidents", "--action", "create_task"}, "POST", "/api/task-queues/OPS/workflow-triggers", map[string]any{"pattern": "external:incidents", "action": "create_task"}},
 		{[]string{"queue", "trigger", "delete", "OPS", "4"}, "DELETE", "/api/task-queues/OPS/workflow-triggers/4", map[string]string{}},
-		{[]string{"workflow", "get", "OPS-1"}, "GET", "/api/tasks/OPS-1/workflow", map[string]string{}},
-		{[]string{"workflow", "artifact", "get", "OPS-1", "5", "--assignment-id", "A-1"}, "GET", "/api/tasks/OPS-1/artifacts/5", map[string]string{"assignment_id": "A-1"}},
 		{[]string{"events", "OPS-1", "--after", "7", "--limit", "10"}, "GET", "/api/tasks/OPS-1/events", map[string]string{"after": "7", "limit": "10"}},
 	}
 	old := newCaller
@@ -281,13 +263,6 @@ func TestOperatorAdministrationArguments(t *testing.T) {
 			}
 		})
 	}
-	for _, definition := range []string{`not-json`, `[]`, `null`, `"string"`} {
-		r := &recorder{result: json.RawMessage(`{}`)}
-		newCaller = func(string) Caller { return r }
-		if code := Run(context.Background(), []string{"workflows", "create", "--definition", definition}, operatorEnv(t), io.Discard, io.Discard); code != 2 || len(r.calls) != 0 {
-			t.Errorf("definition %s: code = %d calls = %#v", definition, code, r.calls)
-		}
-	}
 }
 
 func TestHelpJSONCoversRunnableTaskRootsWithoutSocket(t *testing.T) {
@@ -302,12 +277,12 @@ func TestHelpJSONCoversRunnableTaskRootsWithoutSocket(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.String()), &tree); err != nil {
 		t.Fatalf("help = %q, tree = %#v, err = %v", out.String(), tree, err)
 	}
-	for _, root := range []string{"mine", "ready", "show", "assign", "ask", "work", "artifacts", "observe", "queue", "workflows", "workflow", "events", "principals", "notifications"} {
+	for _, root := range []string{"mine", "ready", "show", "assign", "ask", "queue", "events", "principals", "notifications"} {
 		if tree[root] == nil {
 			t.Fatalf("help tree missing runnable root %q: %#v", root, tree)
 		}
 	}
-	for _, root := range []string{"list", "get"} {
+	for _, root := range []string{"list", "get", "work", "artifacts", "observe", "questions", "answer", "workflows", "workflow"} {
 		if tree[root] != nil {
 			t.Fatalf("help tree advertises inaccessible root %q: %#v", root, tree)
 		}

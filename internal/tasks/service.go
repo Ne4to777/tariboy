@@ -40,7 +40,7 @@ func (s *Service) WorkflowIngressEnabled() bool { return s.workflowIngressEnable
 
 func (s *Service) refreshWorkflowIngressEnabled(ctx context.Context) {
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM task_workflow_subscriptions WHERE state='active') + (SELECT COUNT(*) FROM task_queue_workflow_triggers WHERE enabled=1)`).Scan(&count); err == nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_queue_workflow_triggers WHERE enabled=1`).Scan(&count); err == nil {
 		s.workflowIngressEnabled.Store(count > 0)
 	}
 }
@@ -222,10 +222,6 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	if exists == 0 {
 		return Task{}, domainError(http.StatusNotFound, "queue_not_found", "queue not found")
 	}
-	activeWorkflow, managed, err := activeWorkflowForQueue(ctx, tx, queue)
-	if err != nil {
-		return Task{}, err
-	}
 	// An unassigned root task from an agent that does not run the queue is a filed report:
 	// it is ungrouped and (through the visibility rules) invisible to its author afterwards,
 	// so triage belongs to whoever runs the queue. An explicit assignee instead owns only
@@ -262,23 +258,13 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	}
 	assignee := normalizeAssignee(in.Assignee)
 	status := StatusOpen
-	var workflowVersionID any
-	var workflowStatus any
-	var workflowRevision any
-	if managed {
-		workflowVersionID = activeWorkflow.ID
-		workflowStatus = activeWorkflow.Definition.InitialStatus
-		workflowRevision = int64(1)
-	}
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO tasks(
 			task_key, queue_prefix, parent_id, position, priority, title, description, status, pull_request,
-			author, customer, group_name, assignee,
-			workflow_version_id, workflow_status, workflow_revision, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			author, customer, group_name, assignee, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		key, queue, parentID, position, priority, in.Title, strings.TrimSpace(in.Description),
-		status, pullRequest, actor.Principal, customer, group, assignee,
-		workflowVersionID, workflowStatus, workflowRevision, now, now)
+		status, pullRequest, actor.Principal, customer, group, assignee, now, now)
 	if err != nil {
 		return Task{}, err
 	}
@@ -293,34 +279,13 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 		Assignee: assignee, Revision: 1, CreatedAt: now, UpdatedAt: now,
 		Access: "write",
 	}
-	if managed {
-		task.WorkflowVersionID = activeWorkflow.ID
-		task.WorkflowVersion = activeWorkflow.Name + "@" + workflowVersionString(activeWorkflow.Version)
-		task.WorkflowStatus = activeWorkflow.Definition.InitialStatus
-		task.WorkflowRevision = 1
-	}
 	if filed {
 		task.Access, task.Filed = "", true
 	}
 	payload := map[string]any{"key": key, "parent_key": parentKey, "priority": priority, "pull_request": task.PullRequest}
-	if managed {
-		payload["workflow_version"] = task.WorkflowVersion
-		payload["workflow_status"] = task.WorkflowStatus
-	}
 	sequence, err := appendEventTx(ctx, tx, task, "task.created", actor, payload, now)
 	if err != nil {
 		return Task{}, err
-	}
-	if managed {
-		if err := initializeWorkflowTaskTx(ctx, tx, task, activeWorkflow, now); err != nil {
-			return Task{}, err
-		}
-		access, filed := task.Access, task.Filed
-		task, err = taskByID(tx, task.ID)
-		if err != nil {
-			return Task{}, err
-		}
-		task.Access, task.Filed = access, filed
 	}
 	if crossQueueAssigned {
 		task.Access, err = taskAccess(ctx, tx, actor, task.ID)

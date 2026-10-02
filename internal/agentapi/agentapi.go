@@ -101,9 +101,6 @@ type Deps struct {
 	// TaskAction is the native Tasks surface. The daemon binds the caller from
 	// this socket's Agent field; request bodies never carry identity.
 	TaskAction func(action string, body map[string]any) (any, error)
-	// WorkflowPermissions returns the deny-by-default policy of the caller's
-	// active managed assignment. No active assignment preserves legacy tools.
-	WorkflowPermissions func() (tasks.ActiveWorkflowPermissionSet, error)
 }
 
 // ProvidedChannel is the daemon-independent view of one plugin provided-channel
@@ -183,18 +180,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /tools/loop/control", s.gated("loop", s.loopControl))
 
 	// Messages capability surface.
-	mux.HandleFunc("POST /tools/message/send", s.gated("messages", s.workflowGated("messages.send", s.messageSend)))
+	mux.HandleFunc("POST /tools/message/send", s.gated("messages", s.messageSend))
 	mux.HandleFunc("GET /tools/message/ls", s.gated("messages", s.messageLs))
 	mux.HandleFunc("POST /tools/message/processed", s.gated("messages", s.messageProcessed))
-	mux.HandleFunc("POST /tools/message/reply", s.gated("messages", s.workflowGated("messages.reply", s.messageReply)))
+	mux.HandleFunc("POST /tools/message/reply", s.gated("messages", s.messageReply))
 	mux.HandleFunc("GET /tools/chat/unanswered", s.gated("messages", s.chatUnanswered))
 	mux.HandleFunc("GET /tools/message/dlq", s.gated("messages", s.messageDLQ))
 	mux.HandleFunc("POST /tools/message/dlq/requeue", s.gated("messages", s.messageDLQRequeue))
-	mux.HandleFunc("POST /tools/request", s.gated("messages", s.workflowGated("messages.request", s.request)))
-	mux.HandleFunc("POST /tools/channel/subscribe", s.gated("messages", s.workflowDirectChannelGated(s.channelSubscribe)))
-	mux.HandleFunc("POST /tools/channel/unsubscribe", s.gated("messages", s.workflowDirectChannelGated(s.channelUnsubscribe)))
-	mux.HandleFunc("GET /tools/channel/ls", s.gated("messages", s.workflowDirectChannelGated(s.channelLs)))
-	mux.HandleFunc("GET /tools/sources", s.gated("messages", s.workflowDirectChannelGated(s.sources)))
+	mux.HandleFunc("POST /tools/request", s.gated("messages", s.request))
+	mux.HandleFunc("POST /tools/channel/subscribe", s.gated("messages", s.channelSubscribe))
+	mux.HandleFunc("POST /tools/channel/unsubscribe", s.gated("messages", s.channelUnsubscribe))
+	mux.HandleFunc("GET /tools/channel/ls", s.gated("messages", s.channelLs))
+	mux.HandleFunc("GET /tools/sources", s.gated("messages", s.sources))
 
 	// Optional routes: gated by plugin membership.
 	mux.HandleFunc("GET /tools/context/get", s.gated("context", s.contextGet))
@@ -220,10 +217,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /tools/group/info", s.groupInfo)
 	mux.HandleFunc("GET /tools/group/status", s.groupStatus)
 	mux.HandleFunc("GET /tools/group/status/{member}", s.groupStatus)
-	mux.HandleFunc("POST /tools/group/send", s.workflowGated("groups.send", s.groupSend))
-	mux.HandleFunc("POST /tools/group/request", s.workflowGated("groups.request", s.groupRequest))
+	mux.HandleFunc("POST /tools/group/send", s.groupSend)
+	mux.HandleFunc("POST /tools/group/request", s.groupRequest)
 	mux.HandleFunc("GET /tools/group/observe/{member}", s.groupObserve)
-	mux.HandleFunc("POST /tools/group/loop", s.workflowGated("groups.loop", s.groupLoop))
+	mux.HandleFunc("POST /tools/group/loop", s.groupLoop)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		api.WriteErr(w, http.StatusNotFound, "not_found", "unknown agent route "+r.Method+" "+r.URL.Path)
@@ -321,52 +318,6 @@ func (s *Server) gated(plugin string, h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
-}
-
-func (s *Server) workflowPermissions() (tasks.ActiveWorkflowPermissionSet, error) {
-	if s.d.WorkflowPermissions == nil || s.d.CurrentIteration == nil || s.d.CurrentIteration() == "" {
-		return tasks.ActiveWorkflowPermissionSet{}, nil
-	}
-	return s.d.WorkflowPermissions()
-}
-
-func (s *Server) workflowGated(tool string, h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		permissions, err := s.workflowPermissions()
-		if err != nil {
-			api.WriteErr(w, http.StatusInternalServerError, "workflow_policy_failed", err.Error())
-			return
-		}
-		if permissions.Managed && !contains(permissions.Tools, tool) {
-			api.WriteErr(w, http.StatusForbidden, "workflow_tool_not_allowed", "direct tool is not allowed by the active workflow assignment")
-			return
-		}
-		h(w, r)
-	}
-}
-
-func (s *Server) workflowDirectChannelGated(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		permissions, err := s.workflowPermissions()
-		if err != nil {
-			api.WriteErr(w, http.StatusInternalServerError, "workflow_policy_failed", err.Error())
-			return
-		}
-		if permissions.Managed {
-			api.WriteErr(w, http.StatusForbidden, "workflow_channel_managed", "use tasks observe commands for workflow-scoped subscriptions")
-			return
-		}
-		h(w, r)
-	}
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) contextGet(w http.ResponseWriter, r *http.Request) {
@@ -895,17 +846,6 @@ func (s *Server) scheduleAdd(w http.ResponseWriter, r *http.Request) {
 	if err := decodeBody(r, &body); err != nil {
 		api.WriteErr(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
-	}
-	if strings.TrimSpace(body.Channel) != "" {
-		permissions, err := s.workflowPermissions()
-		if err != nil {
-			api.WriteErr(w, http.StatusInternalServerError, "workflow_policy_failed", err.Error())
-			return
-		}
-		if permissions.Managed && !contains(permissions.Tools, "schedule.publish") {
-			api.WriteErr(w, http.StatusForbidden, "workflow_tool_not_allowed", "scheduled channel publishing is not allowed by the active workflow assignment")
-			return
-		}
 	}
 	tpl := "{}"
 	if len(body.Message) > 0 {

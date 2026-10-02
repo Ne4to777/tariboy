@@ -189,15 +189,12 @@ func TestOrdinaryPublishDoesNotSynchronouslyWriteWorkflowStateOrChangeLegacyDeli
 		t.Fatal("ordinary publish signaled workflow ingress without targets")
 	default:
 	}
-	var idempotency, observations int
-	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM task_idempotency WHERE actor='system:workflow-observation'`).Scan(&idempotency); err != nil {
+	var created int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&created); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM task_observations`).Scan(&observations); err != nil {
-		t.Fatal(err)
-	}
-	if idempotency != 0 || observations != 0 {
-		t.Fatalf("workflow writes = idempotency:%d observations:%d", idempotency, observations)
+	if created != 0 {
+		t.Fatalf("ordinary publish created %d tasks", created)
 	}
 	pending, err := b.Pending("legacy", 10)
 	if err != nil || len(pending) != 2 || pending[0].ID != first.ID || pending[0].Text != "unchanged legacy payload" {
@@ -509,39 +506,6 @@ func TestRunRejectsPublicTCPWithoutAuth(t *testing.T) {
 	err := Run(context.Background(), daemonTestOptions(Options{BaseDir: t.TempDir(), Listen: "tcp:0.0.0.0:0", LogLevel: "error"}))
 	if err == nil {
 		t.Fatal("public tcp without auth must fail")
-	}
-}
-
-type fakeQuestionReconciler struct{ calls chan struct{} }
-
-func (f *fakeQuestionReconciler) ReconcileWorkflowQuestions(context.Context) (int, error) {
-	select {
-	case f.calls <- struct{}{}:
-	default:
-	}
-	return 1, nil
-}
-
-func TestWorkflowQuestionReconcilerRunsAtStartupPeriodicallyAndStops(t *testing.T) {
-	fake := &fakeQuestionReconciler{calls: make(chan struct{}, 4)}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		runWorkflowQuestionReconciler(ctx, fake, 5*time.Millisecond, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
-		close(done)
-	}()
-	for i := 0; i < 2; i++ {
-		select {
-		case <-fake.calls:
-		case <-time.After(time.Second):
-			t.Fatalf("reconcile call %d did not arrive", i+1)
-		}
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("reconciler did not stop")
 	}
 }
 

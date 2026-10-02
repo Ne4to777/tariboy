@@ -13,7 +13,7 @@ func TestDetailedHelpIsLocalForEveryCommand(t *testing.T) {
 	old := newCaller
 	t.Cleanup(func() { newCaller = old })
 	newCaller = func(string) Caller { t.Fatal("help constructed a transport"); return nil }
-	paths := []string{"", "work", "artifacts", "observe"}
+	paths := []string{""}
 	for action := range taskCommandFlags() {
 		paths = append(paths, strings.Join(sharedHelpPath(action), " "))
 	}
@@ -57,10 +57,10 @@ func TestHelpExplainsTaskFormsAndFlags(t *testing.T) {
 		wants []string
 	}{
 		{"", []string{"tariboy-tasks", "TARIBOY_TOOLS_SOCKET", "operator", "agent", "queue", "notifications"}},
-		{"ask", []string{"KEY", "PRINCIPAL", "TEXT", "ASSIGNMENT", "--question", "--context", "--blocking-scope", "--task-revision", "--assignment-revision", "--idempotency-key", "flexible", "workflow"}},
+		{"ask", []string{"KEY", "PRINCIPAL", "TEXT", "--idempotency-key"}},
 		{"create", []string{"--title", "--queue", "--parent", "P0", "P3", "filed"}},
 		{"move", []string{"--to-root", "--before", "--parent"}},
-		{"work complete", []string{"ASSIGNMENT", "--outcome", "required", "--task-revision", "--assignment-revision", "--idempotency-key"}},
+		{"queue pool set", []string{"operator-only", "--agents", "--revision", "--idempotency-key"}},
 		{"queue create", []string{"operator-only", "--prefix", "--name", "--owners"}},
 	}
 	for _, tc := range cases {

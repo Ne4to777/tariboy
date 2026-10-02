@@ -255,51 +255,6 @@ func TestFinalCustomerAnswerReturnsWaitCustomerToInProgress(t *testing.T) {
 	}
 }
 
-func TestManagedTaskQuestionAndAnswerPreserveWorkflowOwnedStatus(t *testing.T) {
-	svc, actor := workflowFixture(t)
-	mustRebindPool(t, svc, actor, "developers", []string{"dev-1"}, 0)
-	mustRebindPool(t, svc, actor, "reviewers", []string{"reviewer-1"}, 0)
-	activateDevelopmentVersion(t, svc, actor, 1, 0)
-	task, err := svc.CreateTask(context.Background(), actor, CreateTaskInput{
-		Queue: "DEV", Title: "managed question", Assignee: "dev-1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	question, err := svc.AddComment(context.Background(), AgentActor("dev-1"), task.Key, AddCommentInput{
-		Body: "@user:customer choose one",
-	})
-	if err != nil || len(question.CreatedWaits) != 1 {
-		t.Fatalf("question = %#v, %v", question, err)
-	}
-	afterQuestion, err := svc.GetTask(context.Background(), actor, task.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterQuestion.Task.Status != task.Status {
-		t.Errorf("status after question = %q; want %q", afterQuestion.Task.Status, task.Status)
-	}
-	if afterQuestion.Task.WorkflowStatus != task.WorkflowStatus || afterQuestion.Task.WorkflowRevision != task.WorkflowRevision {
-		t.Fatalf("workflow after question = %#v", afterQuestion.Task)
-	}
-
-	answer, err := svc.AddComment(context.Background(), CustomerActor("customer"), task.Key, AddCommentInput{Body: "approved"})
-	if err != nil || len(answer.ResolvedWaits) != 1 {
-		t.Fatalf("answer = %#v, %v", answer, err)
-	}
-	afterAnswer, err := svc.GetTask(context.Background(), actor, task.Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if afterAnswer.Task.Status != task.Status {
-		t.Errorf("status after answer = %q; want %q", afterAnswer.Task.Status, task.Status)
-	}
-	if afterAnswer.Task.WorkflowStatus != task.WorkflowStatus || afterAnswer.Task.WorkflowRevision != task.WorkflowRevision || len(afterAnswer.WaitingFor) != 0 {
-		t.Fatalf("workflow after answer = %#v, waits %#v", afterAnswer.Task, afterAnswer.WaitingFor)
-	}
-}
-
 func TestCustomerAnswerTransitionsWithOtherWaitRemaining(t *testing.T) {
 	svc, task := assignedTask(t, "worker", StatusInProgress)
 	ctx := context.Background()

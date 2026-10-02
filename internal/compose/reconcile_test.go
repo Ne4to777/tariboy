@@ -11,24 +11,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekzonder/tariboy/internal/client"
 	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
-type workflowComposeCaller struct {
+type taskQueueComposeCaller struct {
 	*fakeCaller
-	queues    map[string]tasks.Queue
-	workflows map[string]tasks.WorkflowVersion
-	pools     map[string]map[string]tasks.AgentPool
-	bindings  map[string]tasks.QueueWorkflowBinding
-	nextID    int64
+	queues map[string]tasks.Queue
+	pools  map[string]map[string]tasks.AgentPool
 }
 
-func newWorkflowComposeCaller() *workflowComposeCaller {
-	return &workflowComposeCaller{fakeCaller: newFake(), queues: map[string]tasks.Queue{}, workflows: map[string]tasks.WorkflowVersion{}, pools: map[string]map[string]tasks.AgentPool{}, bindings: map[string]tasks.QueueWorkflowBinding{}, nextID: 1}
+func newTaskQueueComposeCaller() *taskQueueComposeCaller {
+	return &taskQueueComposeCaller{fakeCaller: newFake(), queues: map[string]tasks.Queue{}, pools: map[string]map[string]tasks.AgentPool{}}
 }
 
-func (f *workflowComposeCaller) Call(method, route string, body any) (json.RawMessage, error) {
+func (f *taskQueueComposeCaller) Call(method, route string, body any) (json.RawMessage, error) {
 	f.calls = append(f.calls, method+" "+route)
 	f.bodies = append(f.bodies, body)
 	switch {
@@ -52,26 +48,6 @@ func (f *workflowComposeCaller) Call(method, route string, body any) (json.RawMe
 		q.Revision++
 		f.queues[prefix] = q
 		return mustJSON(q), nil
-	case method == "GET" && strings.HasPrefix(route, "/api/workflows/") && strings.HasSuffix(route, "/versions"):
-		name := strings.TrimSuffix(strings.TrimPrefix(route, "/api/workflows/"), "/versions")
-		items := []tasks.WorkflowVersion{}
-		if item, ok := f.workflows[name]; ok {
-			items = append(items, item)
-		}
-		return mustJSON(map[string]any{"items": items, "count": len(items)}), nil
-	case method == "POST" && route == "/api/workflows":
-		definition := body.(map[string]any)["definition"].(tasks.WorkflowDefinition)
-		item := tasks.WorkflowVersion{ID: f.nextID, Name: definition.Name, Version: definition.Version, State: "draft", Definition: definition}
-		f.nextID++
-		f.workflows[definition.Name] = item
-		return mustJSON(item), nil
-	case method == "POST" && strings.HasSuffix(route, "/publish"):
-		parts := strings.Split(route, "/")
-		name := parts[3]
-		item := f.workflows[name]
-		item.State = "published"
-		f.workflows[name] = item
-		return mustJSON(item), nil
 	case method == "GET" && strings.HasSuffix(route, "/pools"):
 		queue := strings.Split(route, "/")[3]
 		items := []tasks.AgentPool{}
@@ -91,22 +67,6 @@ func (f *workflowComposeCaller) Call(method, route string, body any) (json.RawMe
 		item.Revision++
 		item.Agents = append([]string(nil), b["agents"].([]string)...)
 		f.pools[queue][pool] = item
-		return mustJSON(item), nil
-	case method == "GET" && strings.HasSuffix(route, "/workflow"):
-		queue := strings.Split(route, "/")[3]
-		if _, ok := f.queues[queue]; !ok {
-			return nil, &client.APIError{Code: "queue_not_found", Msg: "not found"}
-		}
-		if item, ok := f.bindings[queue]; ok {
-			return mustJSON(item), nil
-		}
-		return nil, &client.APIError{Code: "queue_workflow_not_found", Msg: "not found"}
-	case method == "PUT" && strings.HasSuffix(route, "/workflow"):
-		queue := strings.Split(route, "/")[3]
-		b := body.(map[string]any)
-		wf := f.workflows["development"]
-		item := tasks.QueueWorkflowBinding{Queue: queue, WorkflowVersionID: b["workflow_version_id"].(int64), WorkflowName: wf.Name, WorkflowVersion: wf.Version, Revision: 1}
-		f.bindings[queue] = item
 		return mustJSON(item), nil
 	default:
 		// Undo the recording above because fakeCaller records its own calls.
@@ -375,21 +335,20 @@ func upNoBuild(t *testing.T, r *Runner, f File) {
 	}
 }
 
-func workflowComposeFile() File {
+func taskQueueComposeFile() File {
 	return File{Version: 1,
 		Agents:     map[string]AgentSpec{"dev": {Image: "basic:latest"}},
-		Workflows:  map[string]WorkflowSpec{"development": {Source: "workflow.yaml", Definition: workflowDefinitionForComposeTest()}},
-		TaskQueues: map[string]TaskQueueSpec{"DEV": {Name: "Development", Workflow: "development", Pools: map[string][]string{"developers": {"dev"}}}},
+		TaskQueues: map[string]TaskQueueSpec{"DEV": {Name: "Development", Pools: map[string][]string{"developers": {"dev"}}}},
 	}
 }
 
-func TestReconcileTaskWorkflowIsIdempotentAndRebindsPoolDrift(t *testing.T) {
-	f := workflowComposeFile()
-	fc := newWorkflowComposeCaller()
+func TestReconcileTaskQueueIsIdempotentAndRebindsPoolDrift(t *testing.T) {
+	f := taskQueueComposeFile()
+	fc := newTaskQueueComposeCaller()
 	r := NewRunner(fc, "", "", io.Discard)
 	upNoBuild(t, r, f)
-	if got := fc.bindings["DEV"].WorkflowVersion; got != 1 {
-		t.Fatalf("binding workflow version = %d", got)
+	if got := fc.queues["DEV"].Name; got != "Development" {
+		t.Fatalf("queue name = %q", got)
 	}
 	if got := fc.pools["DEV"]["developers"].Agents; !slices.Equal(got, []string{"dev"}) {
 		t.Fatalf("pool agents = %v", got)
@@ -397,7 +356,7 @@ func TestReconcileTaskWorkflowIsIdempotentAndRebindsPoolDrift(t *testing.T) {
 	before := len(fc.calls)
 	upNoBuild(t, r, f)
 	for _, call := range fc.calls[before:] {
-		if strings.HasPrefix(call, "POST /api/workflows") || strings.HasPrefix(call, "POST /api/task-queues") || strings.HasPrefix(call, "PATCH /api/task-queues") || strings.HasPrefix(call, "PUT /api/task-queues") {
+		if strings.HasPrefix(call, "POST /api/task-queues") || strings.HasPrefix(call, "PATCH /api/task-queues") || strings.HasPrefix(call, "PUT /api/task-queues") {
 			t.Fatalf("second reconcile mutated task state: %s", call)
 		}
 	}
@@ -410,27 +369,25 @@ func TestReconcileTaskWorkflowIsIdempotentAndRebindsPoolDrift(t *testing.T) {
 	}
 }
 
-func TestStatusReportsWorkflowVersionAndPoolDrift(t *testing.T) {
-	f := workflowComposeFile()
-	fc := newWorkflowComposeCaller()
+func TestStatusReportsTaskQueueNameAndPoolDrift(t *testing.T) {
+	f := taskQueueComposeFile()
+	fc := newTaskQueueComposeCaller()
 	fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest"}
-	fc.queues["DEV"] = tasks.Queue{Prefix: "DEV", Name: "Development", Revision: 1}
-	fc.workflows["development"] = tasks.WorkflowVersion{ID: 2, Name: "development", Version: 2, State: "published", Definition: workflowDefinitionForComposeTest()}
-	fc.bindings["DEV"] = tasks.QueueWorkflowBinding{Queue: "DEV", WorkflowVersionID: 2, WorkflowName: "development", WorkflowVersion: 2, Revision: 1}
+	fc.queues["DEV"] = tasks.Queue{Prefix: "DEV", Name: "Old name", Revision: 1}
 	fc.pools["DEV"] = map[string]tasks.AgentPool{"developers": {Queue: "DEV", Name: "developers", Agents: []string{"other"}, Revision: 1}}
 	var out strings.Builder
 	r := NewRunner(fc, "", "", &out)
 	if err := r.Status(f); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "workflow drift") || !strings.Contains(got, "pool developers drift") {
+	if got := out.String(); !strings.Contains(got, "name drift") || !strings.Contains(got, "pool developers drift") {
 		t.Fatalf("status output:\n%s", got)
 	}
 }
 
 func TestStatusReportsMissingTaskQueueWithoutFailing(t *testing.T) {
-	f := workflowComposeFile()
-	fc := newWorkflowComposeCaller()
+	f := taskQueueComposeFile()
+	fc := newTaskQueueComposeCaller()
 	fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest"}
 	var out strings.Builder
 	r := NewRunner(fc, "", "", &out)
@@ -438,57 +395,6 @@ func TestStatusReportsMissingTaskQueueWithoutFailing(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	if got := out.String(); !strings.Contains(got, "task queue DEV") || !strings.Contains(got, "MISSING") {
-		t.Fatalf("status output:\n%s", got)
-	}
-}
-
-func TestPublishedWorkflowDefinitionUsesCanonicalComparison(t *testing.T) {
-	f := workflowComposeFile()
-	canonical := workflowDefinitionForComposeTest()
-	withWhitespace := workflowDefinitionForComposeTest()
-	withWhitespace.Name = " development "
-	withWhitespace.InitialStatus = " work "
-	withWhitespace.Statuses[0].Requirements[0].Pool = " developers "
-	f.Workflows["development"] = WorkflowSpec{Source: "workflow.yaml", Definition: withWhitespace}
-
-	fc := newWorkflowComposeCaller()
-	fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest"}
-	fc.workflows["development"] = tasks.WorkflowVersion{ID: 1, Name: "development", Version: 1, State: "published", Definition: canonical}
-	fc.queues["DEV"] = tasks.Queue{Prefix: "DEV", Name: "Development", Revision: 1}
-	fc.pools["DEV"] = map[string]tasks.AgentPool{"developers": {Queue: "DEV", Name: "developers", Agents: []string{"dev"}, Revision: 1}}
-	fc.bindings["DEV"] = tasks.QueueWorkflowBinding{Queue: "DEV", WorkflowVersionID: 1, WorkflowName: "development", WorkflowVersion: 1, Revision: 1}
-	r := NewRunner(fc, "", "", io.Discard)
-	upNoBuild(t, r, f)
-
-	changed := workflowDefinitionForComposeTest()
-	changed.Statuses[0].Instructions = "different semantics"
-	f.Workflows["development"] = WorkflowSpec{Source: "workflow.yaml", Definition: changed}
-	if err := r.Up(f); err == nil || !strings.Contains(err.Error(), "version bump") {
-		t.Fatalf("semantic drift error = %v", err)
-	}
-	var out strings.Builder
-	r.out = &out
-	if err := r.Status(f); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "definition drift") || !strings.Contains(out.String(), "version bump") {
-		t.Fatalf("status output:\n%s", out.String())
-	}
-}
-
-func TestStatusReportsDraftWorkflowWithoutQueueAsDrift(t *testing.T) {
-	f := workflowComposeFile()
-	f.TaskQueues = nil
-	fc := newWorkflowComposeCaller()
-	definition := workflowDefinitionForComposeTest()
-	fc.agents["dev"] = map[string]any{"name": "dev", "state": "running", "image": "basic:latest"}
-	fc.workflows["development"] = tasks.WorkflowVersion{ID: 1, Name: "development", Version: 1, State: "draft", Definition: definition}
-	var out strings.Builder
-	r := NewRunner(fc, "", "", &out)
-	if err := r.Status(f); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); !strings.Contains(got, "draft") || !strings.Contains(got, "publish") || !strings.Contains(got, "drift: 1") {
 		t.Fatalf("status output:\n%s", got)
 	}
 }
