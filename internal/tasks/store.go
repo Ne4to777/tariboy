@@ -15,9 +15,9 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          WHERE r.target_id = t.id AND r.type = 'blocks'
            AND blocker.status NOT IN ('done', 'cancelled')
        ) OR t.manual_block_reason <> '',
-       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at
+       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at,` + TaskWorkflowColumns + `
 FROM tasks t
-LEFT JOIN tasks p ON p.id = t.parent_id`
+LEFT JOIN tasks p ON p.id = t.parent_id` + TaskWorkflowJoin
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -26,13 +26,16 @@ type rowScanner interface {
 func scanTask(row rowScanner) (Task, error) {
 	var t Task
 	var blocked bool
-	err := row.Scan(
+	workflow, finish := WorkflowScanTargets(&t)
+	dest := []any{
 		&t.ID, &t.Key, &t.Queue, &t.ParentKey,
 		&t.Position, &t.Priority, &t.Title, &t.Description, &t.Status, &t.PullRequest, &t.Author, &t.Customer,
 		&t.Group, &t.Assignee, &t.ManualBlockReason, &blocked,
 		&t.Revision, &t.CreatedAt, &t.StartedAt, &t.UpdatedAt, &t.CompletedAt,
-	)
+	}
+	err := row.Scan(append(dest, workflow...)...)
 	t.Blocked = blocked
+	finish()
 	return t, err
 }
 

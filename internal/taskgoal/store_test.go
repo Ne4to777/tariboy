@@ -444,6 +444,21 @@ func TestCurrentReturnsAuthoritativeSelectedTask(t *testing.T) {
 	}
 }
 
+func TestSetSelectsWorkflowTaskByStoredCategory(t *testing.T) {
+	s := goalStore(t, goalNow)
+	seedTask(t, s, "T-1", "agent:worker", "P2", "in_progress", "2026-09-01T00:00:00Z")
+	execGoalSQL(t, s, `INSERT INTO task_workflow_images(digest,name,version,manifest,built_at) VALUES ('d1','flow','1.0.0','{}','now')`)
+	execGoalSQL(t, s, `UPDATE tasks SET workflow_digest='d1', workflow_status='build' WHERE task_key='T-1'`)
+
+	task, err := s.Set("worker", "T-1", goalNow, func() (func(), error) { return nil, nil })
+	if err != nil || task.Key != "T-1" {
+		t.Fatalf("Set workflow task: task=%#v err=%v", task, err)
+	}
+	if task.Status != "in_progress" || task.Category != "in_progress" || task.WorkflowStatus != "build" || task.WorkflowName != "flow" || task.WorkflowVersion != "1.0.0" {
+		t.Fatalf("workflow task fields = %#v", task)
+	}
+}
+
 type goalTask struct {
 	key, priority, status, createdAt string
 }

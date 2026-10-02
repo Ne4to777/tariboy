@@ -30,7 +30,7 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          WHERE r.target_id = t.id AND r.type = 'blocks'
            AND blocker.status NOT IN ('done', 'cancelled')
        ) OR t.manual_block_reason <> '',
-       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at,
+       t.revision, t.created_at, t.started_at, t.updated_at, t.completed_at,` + tasks.TaskWorkflowColumns + `,
        COALESCE((
          SELECT waiting.requested_at
          FROM task_waiting_for waiting
@@ -41,7 +41,8 @@ SELECT t.id, t.task_key, t.queue_prefix, COALESCE(p.task_key, ''),
          LIMIT 1
        ), '')
 FROM tasks t
-LEFT JOIN tasks p ON p.id = t.parent_id`
+LEFT JOIN tasks p ON p.id = t.parent_id` + tasks.TaskWorkflowJoin + `
+`
 
 type Store struct{ db *sql.DB }
 
@@ -258,15 +259,19 @@ func readGoalTask(tx *sql.Tx, key, agent string) (tasks.Task, string, error) {
 	// retired by the random key migration resolves through its alias — an
 	// agent's stored context can still name the number it was given.
 	key = tasks.NormalizeKey(key)
-	err := tx.QueryRow(goalTaskSelect+`
-		WHERE (t.task_key=? OR t.id=(SELECT task_id FROM task_key_aliases WHERE old_key=?))
-		  AND t.assignee='agent:' || ?`, key, key, agent).Scan(
+	workflow, finish := tasks.WorkflowScanTargets(&task)
+	dest := []any{
 		&task.ID, &task.Key, &task.Queue, &task.ParentKey,
 		&task.Position, &task.Priority, &task.Title, &task.Description, &task.Status, &task.PullRequest, &task.Author, &task.Customer,
 		&task.Group, &task.Assignee, &task.ManualBlockReason, &blocked,
-		&task.Revision, &task.CreatedAt, &task.StartedAt, &task.UpdatedAt, &task.CompletedAt, &waitAt,
-	)
+		&task.Revision, &task.CreatedAt, &task.StartedAt, &task.UpdatedAt, &task.CompletedAt,
+	}
+	dest = append(append(dest, workflow...), &waitAt)
+	err := tx.QueryRow(goalTaskSelect+`
+		WHERE (t.task_key=? OR t.id=(SELECT task_id FROM task_key_aliases WHERE old_key=?))
+		  AND t.assignee='agent:' || ?`, key, key, agent).Scan(dest...)
 	task.Blocked = blocked
+	finish()
 	return task, waitAt, err
 }
 

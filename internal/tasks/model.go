@@ -3,6 +3,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -152,11 +153,66 @@ type Task struct {
 	UpdatedAt         string   `json:"updated_at"`
 	CompletedAt       string   `json:"completed_at"`
 	Access            string   `json:"access,omitempty"`
+	// Workflow fields. A task with WorkflowDigest set follows a published workflow image;
+	// Status keeps holding the stored category for every task, and MarshalJSON reports the
+	// workflow status as "status" for a task that has one.
+	WorkflowDigest       string `json:"workflow_digest,omitempty"`
+	WorkflowName         string `json:"workflow_name,omitempty"`
+	WorkflowVersion      string `json:"workflow_version,omitempty"`
+	WorkflowStatus       string `json:"-"`
+	WorkflowPausedReason string `json:"workflow_paused_reason,omitempty"`
+	// Category and WaitingOn are not stored: scanTask derives them.
+	Category  string `json:"category"`
+	WaitingOn string `json:"waiting_on,omitempty"`
 	// Filed marks a task that was just created as a report into a queue its author does not
 	// own: unassigned, ungrouped, and no longer visible to that author. Set only on the
 	// create response, so the caller can say so instead of leaving the agent to discover it
 	// as a not_found on its own key.
 	Filed bool `json:"filed,omitempty"`
+}
+
+const (
+	WaitingOnCustomer = "customer"
+	WaitingOnScript   = "script"
+	WaitingOnPause    = "pause"
+)
+
+// plainTask has Task's fields but not its JSON methods, so MarshalJSON and
+// UnmarshalJSON can reuse the default encoding without recursing.
+type plainTask Task
+
+// MarshalJSON reports the workflow status as "status" and the stored status as
+// "category" for a task with a workflow; for a flexible task both are the stored
+// status.
+func (t Task) MarshalJSON() ([]byte, error) {
+	status := t.Status
+	if t.WorkflowDigest != "" {
+		status = t.WorkflowStatus
+	}
+	return json.Marshal(struct {
+		plainTask
+		Status   string `json:"status"`
+		Category string `json:"category"`
+	}{plainTask: plainTask(t), Status: status, Category: t.Status})
+}
+
+// UnmarshalJSON reverses MarshalJSON.
+func (t *Task) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		*plainTask
+		Status   string `json:"status"`
+		Category string `json:"category"`
+	}{plainTask: (*plainTask)(t)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if t.WorkflowDigest != "" {
+		t.WorkflowStatus, t.Status = aux.Status, aux.Category
+	} else {
+		t.WorkflowStatus, t.Status = "", aux.Status
+	}
+	t.Category = aux.Category
+	return nil
 }
 
 type Comment struct {

@@ -67,6 +67,49 @@ func TestOpenCreatesWorkflowImages(t *testing.T) {
 	}
 }
 
+func TestOpenCreatesWorkflowEngineSchema(t *testing.T) {
+	s := open(t)
+	for _, table := range []string{"task_queue_workflows", "task_workflow_holders", "task_status_visits", "task_transition_requests", "task_artifacts"} {
+		requireTable(t, s.DB, table)
+	}
+	requireColumn(t, s.DB, "tasks", "workflow_digest")
+	requireColumn(t, s.DB, "tasks", "workflow_paused_reason")
+	requireColumn(t, s.DB, "tasks", "workflow_status")
+	for _, index := range []string{"idx_tasks_workflow_digest", "idx_task_artifacts_current", "idx_task_transition_requests_one_pending"} {
+		var name string
+		if err := s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&name); err != nil {
+			t.Fatalf("index %s is missing: %v", index, err)
+		}
+	}
+
+	exec := func(query string, args ...any) error {
+		_, err := s.DB.Exec(query, args...)
+		return err
+	}
+	if err := exec(`INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('DEV', 'Dev', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(`INSERT INTO tasks(task_key, queue_prefix, title, author, customer, created_at, updated_at) VALUES ('DEV-1', 'DEV', 'one', 'user:c', 'user:c', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(`INSERT INTO task_status_visits(task_id, sequence, status_id, entered_at, entered_by) VALUES (1, 1, 'draft', 'now', 'system')`); err != nil {
+		t.Fatal(err)
+	}
+	request := `INSERT INTO task_transition_requests(task_id, visit_id, outcome, actor, state, created_at) VALUES (1, 1, 'done', 'agent:a', ?, 'now')`
+	if err := exec(request, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(request, "pending"); err == nil {
+		t.Fatal("a second pending transition request for one task was accepted")
+	}
+	if err := exec(request, "applied"); err != nil {
+		t.Fatalf("a finished request beside a pending one was refused: %v", err)
+	}
+	if err := exec(request, "bogus"); err == nil {
+		t.Fatal("an unknown request state was accepted")
+	}
+}
+
 func TestOpenRemovesJudgeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remove-judge.db")
 	db := createDatabaseBeforeMigration(t, path, "0043_remove_judge.sql")
@@ -368,8 +411,8 @@ func TestWorkflowEngineRemovalMigration(t *testing.T) {
 	}
 	for _, table := range []string{
 		"task_observations", "task_workflow_subscriptions", "task_workflow_holds",
-		"task_workflow_questions", "task_artifacts", "task_assignments",
-		"task_requirement_executions", "task_status_executions", "task_queue_workflows",
+		"task_workflow_questions", "task_assignments",
+		"task_requirement_executions", "task_status_executions",
 		"task_workflow_outbox",
 	} {
 		var count int
@@ -382,7 +425,11 @@ func TestWorkflowEngineRemovalMigration(t *testing.T) {
 	}
 	requireTable(t, s.DB, "task_workflow_versions")
 	for table, want := range map[string]int{
-		"task_workflow_versions":         0,
+		"task_workflow_versions": 0,
+		// 0055 recreates these two names with the new engine's shapes; the
+		// removal must not have carried any old rows over.
+		"task_artifacts":                 0,
+		"task_queue_workflows":           0,
 		"task_agent_pools":               1,
 		"task_agent_pool_members":        1,
 		"task_queue_workflow_triggers":   1,
