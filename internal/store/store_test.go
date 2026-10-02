@@ -954,3 +954,58 @@ func TestTaskStartedAtMigrationBackfillsTheFirstStartFromEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestScriptQuietExitMigrationWrapsLegacyDefinitions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quiet-exit.db")
+	s := openBeforeMigration(t, path, "0052_script_quiet_exit_constant.sql")
+	if _, err := s.DB.Exec(`INSERT INTO scripts(id, agent, name, description, command, mode, interval_seconds, quiet_exit, state, created_at, next_run_at) VALUES
+		('scr-legacy', 'worker', 'legacy', 'd', 'poll --state ''a b''', 'every', 60, 2, 'active', '2026-09-01T00:00:00Z', '2026-09-01T00:01:00Z'),
+		('scr-zero', 'worker', 'zero', 'd', 'poll', 'every', 60, 0, 'active', '2026-09-01T00:00:00Z', NULL),
+		('scr-current', 'worker', 'current', 'd', 'poll', 'every', 60, 111, 'active', '2026-09-01T00:00:00Z', NULL),
+		('scr-plain', 'worker', 'plain', 'd', 'poll', 'every', 60, NULL, 'completed', '2026-09-01T00:00:00Z', NULL),
+		('scr-once', 'worker', 'once', 'd', 'make check', 'once', NULL, NULL, 'completed', '2026-09-01T00:00:00Z', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	wrapped := func(command string, code string) string {
+		return "sh -c '" + command + "'\n" +
+			"__tariboy_rc=$?\n" +
+			"[ \"$__tariboy_rc\" -eq " + code + " ] && exit 111\n" +
+			"exit \"$__tariboy_rc\""
+	}
+	want := map[string]string{
+		"scr-legacy":  wrapped(`poll --state '\''a b'\''`, "2"),
+		"scr-zero":    wrapped("poll", "0"),
+		"scr-current": "poll",
+		"scr-plain":   "poll",
+		"scr-once":    "make check",
+	}
+	for id, command := range want {
+		var got string
+		var quiet *int
+		if err := s.DB.QueryRow(`SELECT command, quiet_exit FROM scripts WHERE id = ?`, id).Scan(&got, &quiet); err != nil {
+			t.Fatal(err)
+		}
+		if got != command {
+			t.Errorf("%s command:\n%s\nwant:\n%s", id, got, command)
+		}
+		if quiet != nil {
+			t.Errorf("%s quiet_exit = %d, want NULL", id, *quiet)
+		}
+	}
+	var state, next string
+	if err := s.DB.QueryRow(`SELECT state, COALESCE(next_run_at, '') FROM scripts WHERE id = 'scr-legacy'`).Scan(&state, &next); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || next != "2026-09-01T00:01:00Z" {
+		t.Fatalf("legacy schedule state=%q next_run_at=%q, want it untouched", state, next)
+	}
+}
