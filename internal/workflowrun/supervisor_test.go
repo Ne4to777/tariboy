@@ -870,7 +870,7 @@ func TestSupervisorSignalsNothingWithoutProc(t *testing.T) {
 func TestRecordUnrecordedStopsAtTheFirstFailureOfAPass(t *testing.T) {
 	h := newHarness(t)
 	w := &worker{s: h.sup, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		busy: map[string]bool{}, retry: map[int64]unrecorded{}, quietDirs: map[string]string{}}
+		busy: map[string]bool{}, retry: map[int64]unrecorded{}, quietDirs: map[string][]string{}}
 	for id := int64(1); id <= 3; id++ {
 		h.jobs.completeFail[id] = 1
 		w.retry[id] = unrecorded{job: checkJob(id, "DEV-"+strconv.FormatInt(id, 10), "scripts/pass.sh"),
@@ -1000,34 +1000,65 @@ func TestSupervisorAsksForJobsOnlyWithAFreeSlot(t *testing.T) {
 	}
 }
 
-func TestSupervisorKeepsOnlyTheLatestQuietRunDirectory(t *testing.T) {
-	h := newHarness(t, watchJob(1, "DEV-1", "scripts/quiet.sh"), watchJob(2, "DEV-1", "scripts/quiet.sh"),
-		watchJob(3, "DEV-1", "scripts/sleep.sh"), watchJob(4, "DEV-1", "scripts/quiet.sh"))
+func TestSupervisorKeepsTheNewestQuietRunDirectories(t *testing.T) {
+	jobs := make([]tasks.RunJob, 0, keptQuietRunDirs+2)
+	for id := int64(1); id <= keptQuietRunDirs+1; id++ {
+		jobs = append(jobs, watchJob(id, "DEV-1", "scripts/quiet.sh"))
+	}
+	jobs = append(jobs, watchJob(keptQuietRunDirs+2, "DEV-1", "scripts/sleep.sh"))
+	h := newHarness(t, jobs...)
 	h.start()
 	runDir := func(id int) string { return filepath.Join(h.base, "tasks", "DEV-1", "runs", strconv.Itoa(id)) }
 	exists := func(id int) bool {
 		_, err := os.Stat(runDir(id))
 		return err == nil
 	}
-	h.awaitCompletion(2, 5*time.Second)
-	waitGone := func(id int) {
-		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		for exists(id) {
-			if time.Now().After(deadline) {
-				t.Fatalf("run directory %d is still there", id)
-			}
-			time.Sleep(10 * time.Millisecond)
+	h.awaitCompletion(keptQuietRunDirs+2, 30*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for exists(1) {
+		if time.Now().After(deadline) {
+			t.Fatal("the quiet run evicted from the ring kept its directory")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for id := 2; id <= keptQuietRunDirs+2; id++ {
+		if !exists(id) {
+			t.Fatalf("run %d lost its directory; the newest %d quiet runs and every other run keep their files", id, keptQuietRunDirs)
 		}
 	}
-	waitGone(1)
-	if !exists(2) {
-		t.Fatal("the latest quiet run lost its directory")
+}
+
+func TestRememberQuietKeepsARingPerTaskAndSkipsCancelledRuns(t *testing.T) {
+	w := &worker{quietDirs: map[string][]string{}}
+	quiet := tasks.RunCompletion{Verdict: VerdictQuiet}
+	dir := func(task string, i int) string { return "/runs/" + task + "/" + strconv.Itoa(i) }
+	for i := 1; i <= keptQuietRunDirs; i++ {
+		if stale := w.rememberQuietLocked(watchJob(int64(i), "DEV-1", "q"), quiet, dir("DEV-1", i), false); stale != "" {
+			t.Fatalf("run %d evicted %q before the ring was full", i, stale)
+		}
 	}
-	h.awaitCompletion(4, 10*time.Second)
-	waitGone(2)
-	if !exists(3) || !exists(4) {
-		t.Fatalf("run 3 kept %v, run 4 kept %v; a non-quiet run and the latest quiet run keep their files", exists(3), exists(4))
+	// Another task has a ring of its own.
+	if stale := w.rememberQuietLocked(watchJob(100, "DEV-2", "q"), quiet, dir("DEV-2", 1), false); stale != "" {
+		t.Fatalf("another task evicted %q", stale)
+	}
+	// A run whose completion was cancelled is never remembered, so it is
+	// never deleted.
+	if stale := w.rememberQuietLocked(watchJob(50, "DEV-1", "q"), quiet, dir("DEV-1", 50), true); stale != "" {
+		t.Fatalf("a cancelled run evicted %q", stale)
+	}
+	if stale := w.rememberQuietLocked(watchJob(51, "DEV-1", "q"), quiet, dir("DEV-1", 51), false); stale != dir("DEV-1", 1) {
+		t.Fatalf("stale = %q; the oldest quiet run leaves the ring", stale)
+	}
+	if stale := w.rememberQuietLocked(watchJob(52, "DEV-1", "q"), quiet, dir("DEV-1", 52), false); stale != dir("DEV-1", 2) {
+		t.Fatalf("stale = %q; the cancelled run took no place in the ring", stale)
+	}
+	// Remembering the same directory again evicts nothing.
+	if stale := w.rememberQuietLocked(watchJob(52, "DEV-1", "q"), quiet, dir("DEV-1", 52), false); stale != "" {
+		t.Fatalf("stale = %q", stale)
+	}
+	// Other runs keep their files and do not enter the ring.
+	if stale := w.rememberQuietLocked(checkJob(53, "DEV-1", "c"), tasks.RunCompletion{Verdict: VerdictPass}, dir("DEV-1", 53), false); stale != "" {
+		t.Fatalf("stale = %q", stale)
 	}
 }
 

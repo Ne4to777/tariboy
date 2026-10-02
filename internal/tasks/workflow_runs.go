@@ -565,11 +565,11 @@ func (s *Service) finishCheckTx(ctx context.Context, tx *sql.Tx, task *Task, run
 		status, _ := currentStatus(manifest, task.WorkflowStatus)
 		transition, ok := statusTransition(status, request.outcome)
 		if !ok {
-			return s.failRequestTx(ctx, tx, *task, manifest, run, request,
+			return s.failRequestTx(ctx, tx, *task, &manifest, run, request,
 				"status "+task.WorkflowStatus+" no longer declares outcome "+request.outcome, "", false)
 		}
 		if err := validateScriptArtifacts(manifest, artifacts); err != nil {
-			return s.failRequestTx(ctx, tx, *task, manifest, run, request, err.Error(), logPath, true)
+			return s.failRequestTx(ctx, tx, *task, &manifest, run, request, err.Error(), logPath, true)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE task_status_visits SET script_failures = 0 WHERE id = ?`, request.visitID); err != nil {
 			return err
@@ -589,7 +589,7 @@ func (s *Service) finishCheckTx(ctx context.Context, tx *sql.Tx, task *Task, run
 			return err
 		}
 		if missing := missingArtifacts(transition, artifactNames(present)); len(missing) > 0 {
-			return s.failRequestTx(ctx, tx, *task, manifest, run, request,
+			return s.failRequestTx(ctx, tx, *task, &manifest, run, request,
 				"outcome "+request.outcome+" requires artifacts with no value: "+strings.Join(missing, ", "), "", false)
 		}
 		return s.applyTransitionTx(ctx, tx, task, manifest, request.id, transition, request.actor, request.message)
@@ -618,14 +618,15 @@ func (s *Service) finishCheckTx(ctx context.Context, tx *sql.Tx, task *Task, run
 		if message == "" {
 			message = "check " + run.Script + " failed"
 		}
-		return s.failRequestTx(ctx, tx, *task, manifest, run, request, message, logPath, true)
+		return s.failRequestTx(ctx, tx, *task, &manifest, run, request, message, logPath, true)
 	}
 }
 
 // failRequestTx closes a check's request as failed with message and, when
 // set, the log path. scriptFailure counts it toward the visit's
-// script_failures and pauses the task at the limit.
-func (s *Service) failRequestTx(ctx context.Context, tx *sql.Tx, task Task, manifest workflowimage.Manifest, run scriptRunRecord, request checkRequest, message, logPath string, scriptFailure bool) error {
+// script_failures and pauses the task at the limit; with no manifest (nil)
+// there is no limit to compare, and the failure is only counted.
+func (s *Service) failRequestTx(ctx context.Context, tx *sql.Tx, task Task, manifest *workflowimage.Manifest, run scriptRunRecord, request checkRequest, message, logPath string, scriptFailure bool) error {
 	now := s.now()
 	result := message
 	if logPath != "" {
@@ -648,10 +649,10 @@ func (s *Service) failRequestTx(ctx context.Context, tx *sql.Tx, task Task, mani
 	}, now); err != nil {
 		return err
 	}
-	if !scriptFailure {
+	if !scriptFailure || manifest == nil {
 		return nil
 	}
-	return s.pauseAtLimitTx(ctx, tx, &task, manifest, request.visitID, PauseScriptFailures, result)
+	return s.pauseAtLimitTx(ctx, tx, &task, *manifest, request.visitID, PauseScriptFailures, result)
 }
 
 // checkHolder is the agent a check runs as, recorded when the run is created:
@@ -852,7 +853,7 @@ func (s *Service) RecoverScriptRuns(ctx context.Context) error {
 
 // forceInterruptRun records a running run as interrupted when interruptRun
 // failed with cause, touching only the run row and, for a check, its pending
-// request.
+// request or, for a watch, the schedule of its open visit.
 func (s *Service) forceInterruptRun(ctx context.Context, run scriptRunRecord, cause error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -871,6 +872,14 @@ func (s *Service) forceInterruptRun(ctx context.Context, run scriptRunRecord, ca
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE task_transition_requests SET state = 'failed', result_message = ?, finished_at = ? WHERE id = ? AND state = 'pending'`,
 			message, now, run.requestID); err != nil {
+			return err
+		}
+	}
+	// A watch of a visit still open runs again after the shortest every, so
+	// the status is not left without its watch.
+	if run.Kind == "watch" {
+		if _, err := tx.ExecContext(ctx, `UPDATE task_status_visits SET next_watch_at = ? WHERE id = ? AND left_at = ''`,
+			watchTime(s.clock().Add(workflowfile.MinWatchEvery)), run.visitID); err != nil {
 			return err
 		}
 	}
@@ -913,11 +922,19 @@ func (s *Service) interruptRun(ctx context.Context, id int64) error {
 			return err
 		}
 		if live {
+			// The manifest serves only the limit comparison: without it the
+			// request still fails and the failure still counts.
+			var limits *workflowimage.Manifest
 			manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
-			if err != nil {
+			switch {
+			case err == nil:
+				limits = &manifest
+			case ctx.Err() != nil:
 				return err
+			default:
+				s.logger().Warn("fail interrupted check without its manifest", "run_id", run.ID, "task", task.Key, "err", err)
 			}
-			if err := s.failRequestTx(ctx, tx, task, manifest, run, request,
+			if err := s.failRequestTx(ctx, tx, task, limits, run, request,
 				"the daemon restarted during check "+run.Script+"; the check did not finish", run.LogPath, true); err != nil {
 				return err
 			}

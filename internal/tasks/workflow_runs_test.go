@@ -3,6 +3,8 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -814,8 +816,10 @@ func TestRecoverScriptRunsToleratesARunItCannotInterrupt(t *testing.T) {
 				t.Fatal(ok, err)
 			}
 		}
-		// The broken task's pinned workflow image is gone.
-		if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = 'missing' WHERE id = ?`, broken.ID); err != nil {
+		// The broken task cannot record an event.
+		if _, err := svc.db.Exec(fmt.Sprintf(`
+			CREATE TRIGGER broken_events BEFORE INSERT ON task_events WHEN NEW.task_id = %d
+			BEGIN SELECT RAISE(ABORT, 'events are broken'); END`, broken.ID)); err != nil {
 			t.Fatal(err)
 		}
 		if err := svc.RecoverScriptRuns(ctx); err != nil {
@@ -825,10 +829,10 @@ func TestRecoverScriptRunsToleratesARunItCannotInterrupt(t *testing.T) {
 		if err := svc.db.QueryRow(`SELECT state, message FROM task_script_runs WHERE id = ?`, brokenRun.ID).Scan(&state, &message); err != nil {
 			t.Fatal(err)
 		}
-		if state != "interrupted" || !strings.Contains(message, "missing") {
+		if state != "interrupted" || !strings.Contains(message, "events are broken") {
 			t.Fatalf("broken run = %s %q; want interrupted naming the error", state, message)
 		}
-		if state, result := requestRow(t, svc, brokenRequest.ID); state != "failed" || !strings.Contains(result, "missing") {
+		if state, result := requestRow(t, svc, brokenRequest.ID); state != "failed" || !strings.Contains(result, "events are broken") {
 			t.Fatalf("broken request = %s %q", state, result)
 		}
 		if state, _, _ := runState(t, svc, healthyRun.ID); state != "interrupted" {
@@ -870,6 +874,80 @@ func TestRecoverScriptRunsToleratesARunItCannotInterrupt(t *testing.T) {
 			t.Fatal("recovery with a cancelled context succeeded")
 		}
 	})
+}
+
+func TestForceInterruptReschedulesAWatchOfAnOpenVisit(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	ctx := context.Background()
+	run := scheduleWatch(t, svc, actor, task)
+	if ok, err := svc.ClaimScriptRun(ctx, run.ID, "t", "/log"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	runs, err := queryScriptRuns(ctx, svc.db, runningRunsWhere)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("running = %#v, %v", runs, err)
+	}
+	if err := svc.forceInterruptRun(ctx, runs[0], errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
+	if state, _, _ := runState(t, svc, run.ID); state != "interrupted" {
+		t.Fatalf("run = %s", state)
+	}
+	if _, _, _, next := openVisit(t, svc, task); next != svc.clock().Add(workflowfile.MinWatchEvery).UTC().Format(dispatchedAtLayout) {
+		t.Fatalf("next_watch_at = %q; the watch must run again", next)
+	}
+}
+
+func TestForceInterruptLeavesAClosedVisitUnscheduled(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	ctx := context.Background()
+	run := scheduleWatch(t, svc, actor, task)
+	if ok, err := svc.ClaimScriptRun(ctx, run.ID, "t", "/log"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	runs, err := queryScriptRuns(ctx, svc.db, runningRunsWhere)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("running = %#v, %v", runs, err)
+	}
+	enter(t, svc, task.Key, "done", "merged")
+	if err := svc.forceInterruptRun(ctx, runs[0], errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_status_visits WHERE task_id = ? AND next_watch_at <> ''`, task.ID); n != 0 {
+		t.Fatalf("scheduled visits = %d", n)
+	}
+}
+
+func TestInterruptedCheckWithoutAManifestStillFailsItsRequest(t *testing.T) {
+	svc, actor, task, _ := runFixture(t)
+	ctx := context.Background()
+	// At the limit a loadable manifest would pause; without one there is no
+	// limit to compare.
+	if _, err := svc.db.Exec(`UPDATE task_status_visits SET script_failures = 2 WHERE task_id = ? AND left_at = ''`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	request, run := advanceApprove(t, svc, actor, task)
+	if ok, err := svc.ClaimScriptRun(ctx, run.ID, "t", "/log"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = 'missing' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecoverScriptRuns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if state, result := requestRow(t, svc, request.ID); state != "failed" || !strings.Contains(result, "the daemon restarted during check checks/ci.sh") {
+		t.Fatalf("request = %s %q", state, result)
+	}
+	if _, _, failures, _ := openVisit(t, svc, task); failures != 3 {
+		t.Fatalf("failures = %d", failures)
+	}
+	if n := countEvents(t, svc, task, "workflow.transition_failed"); n != 1 {
+		t.Fatalf("transition_failed events = %d", n)
+	}
+	if stored := storedTask(t, svc, task.Key); stored.WorkflowPausedReason != "" {
+		t.Fatalf("stored = %#v", stored)
+	}
 }
 
 func TestRunningScriptRunsCarryTheirPID(t *testing.T) {

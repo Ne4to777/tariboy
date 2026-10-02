@@ -85,9 +85,10 @@ type activeRun struct {
 // unrecorded is a finished run whose completion failed; the worker tries to
 // record it again on every pass.
 type unrecorded struct {
-	job    tasks.RunJob
-	done   tasks.RunCompletion
-	runDir string
+	job       tasks.RunJob
+	done      tasks.RunCompletion
+	runDir    string
+	cancelled bool // the run was cancelled; the engine records it as cancelled
 }
 
 // worker is the state of one Run call.
@@ -103,7 +104,7 @@ type worker struct {
 	running   map[int64]*activeRun
 	busy      map[string]bool      // tasks with a run in progress or unrecorded
 	retry     map[int64]unrecorded // completions to record again
-	quietDirs map[string]string    // task key -> directory of its latest quiet run
+	quietDirs map[string][]string  // task key -> directories of its newest quiet runs, oldest first
 	recovered bool                 // RecoverScriptRuns has succeeded
 }
 
@@ -118,7 +119,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 		s: s, log: s.Log, clock: s.Clock, parallel: s.Parallel,
 		finished: make(chan struct{}, 1),
 		running:  map[int64]*activeRun{}, busy: map[string]bool{},
-		retry: map[int64]unrecorded{}, quietDirs: map[string]string{},
+		retry: map[int64]unrecorded{}, quietDirs: map[string][]string{},
 	}
 	if w.log == nil {
 		w.log = slog.Default()
@@ -287,7 +288,7 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 			w.finish(ctx, id, job, tasks.RunCompletion{
 				Verdict: VerdictFailure, Message: reason,
 				FinishedAt: w.clock().UTC().Format(time.RFC3339Nano),
-			}, "")
+			}, "", false)
 			return
 		}
 		spec.OnStart = func(pid int) {
@@ -318,19 +319,20 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 			FinishedAt: w.clock().UTC().Format(time.RFC3339Nano),
 		}, job.QueueSecrets)
 		w.log.Debug("workflow script message", "run_id", id, "message", done.Message)
-		w.finish(ctx, id, job, done, spec.RunDir)
+		w.finish(ctx, id, job, done, spec.RunDir, active.cancelRequested.Load())
 	}()
 }
 
 // finish records a finished run and frees its slot. When the completion fails
 // the run is kept for the next pass and its task stays busy, so the next run of
-// the task cannot start before the engine has seen this one.
-func (w *worker) finish(ctx context.Context, id int64, job tasks.RunJob, done tasks.RunCompletion, runDir string) {
+// the task cannot start before the engine has seen this one. cancelled says
+// the run was cancelled while it ran.
+func (w *worker) finish(ctx context.Context, id int64, job tasks.RunJob, done tasks.RunCompletion, runDir string, cancelled bool) {
 	err := w.complete(ctx, id, done)
 	w.mu.Lock()
 	delete(w.running, id)
 	if err != nil && ctx.Err() == nil {
-		w.retry[id] = unrecorded{job: job, done: done, runDir: runDir}
+		w.retry[id] = unrecorded{job: job, done: done, runDir: runDir, cancelled: cancelled}
 		w.mu.Unlock()
 		w.log.Error("record workflow script run; trying again on the next pass", "run_id", id,
 			"task", job.Run.TaskKey, "err", err)
@@ -339,7 +341,7 @@ func (w *worker) finish(ctx context.Context, id int64, job tasks.RunJob, done ta
 	delete(w.busy, job.Run.TaskKey)
 	stale := ""
 	if err == nil {
-		stale = w.rememberQuietLocked(job, done, runDir)
+		stale = w.rememberQuietLocked(job, done, runDir, cancelled)
 	}
 	w.mu.Unlock()
 	w.removeRunDir(stale)
@@ -367,7 +369,7 @@ func (w *worker) recordUnrecorded(ctx context.Context) {
 		w.mu.Lock()
 		delete(w.retry, id)
 		delete(w.busy, entry.job.Run.TaskKey)
-		stale := w.rememberQuietLocked(entry.job, entry.done, entry.runDir)
+		stale := w.rememberQuietLocked(entry.job, entry.done, entry.runDir, entry.cancelled)
 		w.mu.Unlock()
 		w.removeRunDir(stale)
 	}
@@ -385,18 +387,30 @@ func (w *worker) complete(ctx context.Context, id int64, done tasks.RunCompletio
 	return err
 }
 
-// rememberQuietLocked keeps the files of only the latest quiet watch run of a
-// task: it remembers runDir of a quiet run and returns the directory of the
-// task's previous quiet run, now stale. Other runs keep their files.
-func (w *worker) rememberQuietLocked(job tasks.RunJob, done tasks.RunCompletion, runDir string) string {
-	if job.Run.Kind != KindWatch || done.Verdict != VerdictQuiet || runDir == "" {
+// keptQuietRunDirs is how many quiet watch runs of a task keep their files,
+// matching the quiet run rows the engine keeps (tasks.workflowViewRuns).
+const keptQuietRunDirs = 20
+
+// rememberQuietLocked keeps the files of only the newest quiet watch runs of a
+// task: it adds runDir of a quiet run to the task's ring and returns the
+// directory the ring evicted, now stale, or "". A run cancelled while it ran
+// is recorded as cancelled, not as quiet, so it is never remembered and its
+// files stay. Other runs keep their files, and so do directories left from
+// before a restart: nightly retention removes the task directory.
+func (w *worker) rememberQuietLocked(job tasks.RunJob, done tasks.RunCompletion, runDir string, cancelled bool) string {
+	if job.Run.Kind != KindWatch || done.Verdict != VerdictQuiet || runDir == "" || cancelled {
 		return ""
 	}
-	stale := w.quietDirs[job.Run.TaskKey]
-	w.quietDirs[job.Run.TaskKey] = runDir
-	if stale == runDir {
+	ring := w.quietDirs[job.Run.TaskKey]
+	if slices.Contains(ring, runDir) {
 		return ""
 	}
+	ring = append(ring, runDir)
+	stale := ""
+	if len(ring) > keptQuietRunDirs {
+		stale, ring = ring[0], slices.Clone(ring[1:])
+	}
+	w.quietDirs[job.Run.TaskKey] = ring
 	return stale
 }
 
