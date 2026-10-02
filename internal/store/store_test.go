@@ -31,6 +31,16 @@ func TestOpenMigrates(t *testing.T) {
 	}
 }
 
+func TestOpenCreatesWorkflowImages(t *testing.T) {
+	s := open(t)
+	requireTable(t, s.DB, "task_workflow_images")
+	var name string
+	err := s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_task_workflow_images_name'`).Scan(&name)
+	if err != nil {
+		t.Fatalf("index idx_task_workflow_images_name is missing: %v", err)
+	}
+}
+
 func TestOpenRemovesJudgeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remove-judge.db")
 	db := createDatabaseBeforeMigration(t, path, "0043_remove_judge.sql")

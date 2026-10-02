@@ -146,6 +146,7 @@ func TestEnsureBase(t *testing.T) {
 		p.ImagesDir(),
 		p.PluginsDir(),
 		p.ImageSourcesDir(),
+		p.WorkflowsDir(),
 	} {
 		st, err := os.Stat(d)
 		if err != nil || !st.IsDir() {

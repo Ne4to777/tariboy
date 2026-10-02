@@ -100,6 +100,9 @@ func (p Paths) ImageSourcesDir() string {
 }
 func (p Paths) PluginsDir() string { return filepath.Join(p.Base, "plugins") }
 
+// WorkflowsDir is the workflow image store.
+func (p Paths) WorkflowsDir() string { return filepath.Join(p.Base, "workflows") }
+
 // RuntimeDir returns the socket directory, falling back to Base for a
 // zero-value Paths that was constructed without a runtime dir.
 func (p Paths) RuntimeDir() string {
@@ -127,6 +130,7 @@ func (p Paths) EnsureBase() error {
 		p.ImagesDir(),
 		p.ImageSourcesDir(),
 		p.PluginsDir(),
+		p.WorkflowsDir(),
 		p.RuntimeDir(),
 	}
 	for _, d := range dirs {

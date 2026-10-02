@@ -46,6 +46,7 @@ import (
 	"github.com/alekzonder/tariboy/internal/telemetry"
 	"github.com/alekzonder/tariboy/internal/userpath"
 	"github.com/alekzonder/tariboy/internal/version"
+	"github.com/alekzonder/tariboy/internal/workflowimage"
 
 	"go.opentelemetry.io/otel"
 )
@@ -289,6 +290,10 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if err := image.EnsureBare(imgStore, time.Now); err != nil {
 		log.Error("seed bare image", "err", err)
+	}
+	workflowImages := &workflowimage.Registry{Store: &workflowimage.Store{Dir: p.WorkflowsDir()}, DB: st.DB}
+	if err := workflowImages.Reconcile(); err != nil {
+		log.Warn("reconcile workflow images", "err", err)
 	}
 	exeDir := "."
 	if exe, err := os.Executable(); err == nil {
