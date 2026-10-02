@@ -235,6 +235,36 @@ func TestScriptSupervisorDeprecatedQuietExitTwoStaysQuiet(t *testing.T) {
 	}
 }
 
+func TestScriptSupervisorExportsTheQuietExitCode(t *testing.T) {
+	m, as, _, raw := newManager(t, &fakeRunner{})
+	st := script.NewStore(raw, time.Now)
+	m.cfg.Scripts, m.cfg.Bus = st, bus.New(raw, time.Now)
+	// The agent's own value must not replace the protocol constant.
+	if err := as.Create(agent.Agent{Name: "worker", ImageRef: "basic:latest", Cwd: t.TempDir(), Env: map[string]string{"TARIBOY_QUIET_EXIT": "5"}}); err != nil {
+		t.Fatal(err)
+	}
+	startScriptTestSupervisor(t, m)
+	definition, r, err := m.ScheduleScript("worker", script.CreateSchedule{Name: "quiet", Description: "test", Command: `exit "$TARIBOY_QUIET_EXIT"`, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = awaitScriptRun(t, st, "worker", r.ID, func(r script.Run) bool { return r.Status == script.RunFailed })
+	if r.ExitCode == nil || *r.ExitCode != script.QuietExit {
+		t.Fatalf("run=%#v, want exit %d from $TARIBOY_QUIET_EXIT", r, script.QuietExit)
+	}
+	definition, err = st.GetDefinition("worker", definition.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.State != script.StateActive || definition.NextRunAt == "" {
+		t.Fatalf("quiet run stopped its schedule: %#v", definition)
+	}
+	var outboxCount int
+	if err := raw.DB.QueryRow(`SELECT COUNT(*) FROM script_result_outbox WHERE run_id=?`, r.ID).Scan(&outboxCount); err != nil || outboxCount != 0 {
+		t.Fatalf("quiet outbox count=%d err=%v", outboxCount, err)
+	}
+}
+
 func TestScriptSupervisorMakeExitTwoCreatesFailureResult(t *testing.T) {
 	m, as, _, raw := newManager(t, &fakeRunner{})
 	st := script.NewStore(raw, time.Now)

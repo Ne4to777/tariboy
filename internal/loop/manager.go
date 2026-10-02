@@ -1872,6 +1872,9 @@ func (m *Manager) startScript(ctx context.Context, ag agent.Agent, r script.Run)
 
 	secrets, _ := m.cfg.Store.SecretMap(ag.Name)
 	env := BuildEnv(os.Environ(), l.BinDir(), ag.Name, "", l.Sock(), false, "", "", ag.Env, secrets)
+	// Appended last: os/exec keeps the final value of a duplicated key, so an
+	// agent's own environment cannot redefine the protocol.
+	env = append(env, script.ProtocolEnv()...)
 	runContext := ctx
 	cancelRunContext := func() {}
 	if m.cfg.ScriptTimeout > 0 {
