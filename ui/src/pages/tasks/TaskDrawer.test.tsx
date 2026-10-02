@@ -66,7 +66,7 @@ beforeEach(() => {
   api.listTaskEvents.mockResolvedValue({ events: [], count: 0 })
   api.listTasks.mockResolvedValue({ tasks: [], sequence: 412 })
   api.listTaskPrincipals.mockResolvedValue({ customer: "user:owner", agents: ["worker"], groups: [] })
-  api.updateTask.mockResolvedValue({ ...task, status: "in_progress", revision: 3 })
+  api.updateTask.mockResolvedValue({ ...task, status: "in_progress", category: "in_progress", revision: 3 })
   api.addTaskComment.mockResolvedValue({ comment: null, created_waits: [], resolved_waits: [] })
 })
 
@@ -186,6 +186,19 @@ it("opens at once in a loading state and fills in when the task arrives", async 
   resolve(detail)
   expect(await screen.findByText("Ship the drawer")).toBeInTheDocument()
   expect(screen.queryByText("Loading task…")).not.toBeInTheDocument()
+})
+
+it("shows a workflow task by its status label and category tone, and closes it without a draft prompt", async () => {
+  api.getTask.mockResolvedValue({
+    ...detail,
+    task: { ...task, status: "implement", category: "in_progress", workflow_name: "delivery" },
+  })
+  const onClose = vi.fn()
+  render(<TaskDrawer taskKey="TEST-1" onClose={onClose} />)
+  const pill = (await screen.findAllByText("Implement"))[0].closest("[data-slot='status-pill']")!
+  expect(pill).toHaveAttribute("data-tone", "live")
+  await userEvent.click(screen.getByRole("button", { name: "Close task detail" }))
+  expect(onClose).toHaveBeenCalled()
 })
 
 it("closes from the loading state", async () => {

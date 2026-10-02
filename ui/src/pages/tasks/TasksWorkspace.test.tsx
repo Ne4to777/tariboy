@@ -638,7 +638,7 @@ describe("TasksWorkspace", () => {
   })
 
   it("keeps a closed task with an unread question in Active until it is opened", async () => {
-    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done" }
+    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done", category: "done" }
     api.getTask.mockImplementation(async (key: string) => key === closed.key ? { ...detail, task: closed } : detail)
     api.listTaskNotifications.mockResolvedValue({
       notifications: [notification, { ...notification, id: "closed-question", task_key: closed.key }],
@@ -656,7 +656,7 @@ describe("TasksWorkspace", () => {
   })
 
   it("pulls in only the scoped agent's closed questions", async () => {
-    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done" }
+    const closed: Task = { ...root, key: "TEST-9", title: "Closed with a question", status: "done", category: "done" }
     api.getTask.mockImplementation(async (key: string) => key === closed.key ? { ...detail, task: closed } : detail)
     api.listTaskNotifications.mockResolvedValue({
       notifications: [{ ...notification, id: "other-agent", task_key: closed.key, requesting_principal: "agent:triager" }],
@@ -694,8 +694,8 @@ describe("TasksWorkspace", () => {
   it("labels nested in-progress tasks visibly and accessibly without changing open rows", async () => {
     api.listTasks.mockResolvedValue({
       tasks: [
-        { ...root, status: "open" },
-        { ...child, status: "in_progress" },
+        { ...root, status: "open", category: "open" },
+        { ...child, status: "in_progress", category: "in_progress" },
       ],
       sequence: 10,
     })
@@ -742,11 +742,11 @@ describe("TasksWorkspace", () => {
 
     await act(async () => closedPage.resolve({ tasks: [], sequence: 11 }))
     expect(screen.getByText("Ship native tasks")).toBeInTheDocument()
-    await act(async () => allPage.resolve({ tasks: [{ ...root, title: "Completed task", status: "done" }], sequence: 12 }))
+    await act(async () => allPage.resolve({ tasks: [{ ...root, title: "Completed task", status: "done", category: "done" }], sequence: 12 }))
     expect(await screen.findByText("Completed task")).toBeInTheDocument()
     expect(screen.queryByText("Ship native tasks")).toBeNull()
 
-    api.listTasks.mockResolvedValueOnce({ tasks: [{ ...root, title: "Completed task", status: "done" }], sequence: 13 })
+    api.listTasks.mockResolvedValueOnce({ tasks: [{ ...root, title: "Completed task", status: "done", category: "done" }], sequence: 13 })
     const onHint = taskSocket.options?.onHint as (hint: { sequence: number; kind: string; task_key: string }) => void
     act(() => onHint({ sequence: 13, kind: "task.updated", task_key: root.key }))
     await waitFor(() => expect(api.listTasks).toHaveBeenLastCalledWith(

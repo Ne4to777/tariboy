@@ -9,6 +9,7 @@ import type {
   TaskRelationType,
   TaskStatus,
 } from "@/lib/tasks"
+import { taskStatusLabel } from "@/lib/tasks"
 import TaskComments from "./TaskComments"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -18,7 +19,7 @@ import TaskTransferDialog from "./TaskTransferDialog"
 import { MarkdownEditor, MarkdownContent, MarkdownModeSegment, type MarkdownMode } from "./TaskMarkdown"
 import { SendFilesButton } from "@/components/SendFilesButton"
 import { StatusPill } from "@/components/ui/status"
-import { taskStatusLabel, taskTone } from "@/lib/statusTone"
+import { taskStatusLabel as flexibleStatusLabel, taskTone } from "@/lib/statusTone"
 import { formatTaskTime } from "./taskTime"
 import { cn } from "@/lib/utils"
 import { COUNT, DANGER_FILL, EMPTY, FIELD, FIELD_MONO, LABEL, MONO, PRIMARY_FILL, QUIET_ACTION, ROW, SelectShell } from "./panelStyles"
@@ -99,7 +100,7 @@ export default function TaskDetail({
   const [historyOpen, setHistoryOpen] = useState(true)
   const [transferOpen, setTransferOpen] = useState(false)
   const dirty = title !== baseline.title || description !== baseline.description
-    || status !== baseline.status || pullRequest !== (baseline.pull_request ?? "")
+    || status !== baseline.category || pullRequest !== (baseline.pull_request ?? "")
     || priority !== baseline.priority || assignee !== baseline.assignee
     || blockReason !== baseline.manual_block_reason
   const hasDraft = dirty || commentDirty || Boolean(relationTarget.trim())
@@ -130,7 +131,8 @@ export default function TaskDetail({
     const merged = { ...task,
       title: title !== baseline.title ? title : task.title,
       description: description !== baseline.description ? description : task.description,
-      status: status !== baseline.status ? status : task.status,
+      status: status !== baseline.category ? status : task.status,
+      category: status !== baseline.category ? status : task.category,
       pull_request: pullRequest !== (baseline.pull_request ?? "") ? pullRequest : task.pull_request,
       priority: priority !== baseline.priority ? priority : task.priority,
       assignee: assignee !== baseline.assignee ? assignee : task.assignee,
@@ -203,7 +205,7 @@ export default function TaskDetail({
             <span className="min-w-0 truncate text-[15px] font-semibold tracking-[-.01em]">{task.title}</span>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px]">
-            <StatusPill tone={taskTone(task.status)}>{taskStatusLabel(task.status)}</StatusPill>
+            <StatusPill tone={taskTone(task.category)}>{taskStatusLabel(task)}</StatusPill>
             <span className="text-[11.5px] text-muted-foreground">unmanaged · status set by hand</span>
             <MetaInline label="agent" value={task.assignee || "unassigned"} />
             <MetaInline label="updated" value={formatTaskTime(task.updated_at)} />
@@ -351,7 +353,7 @@ export default function TaskDetail({
                       dependency says what it is without being opened. */}
                   <span className="shrink-0 border-b border-dotted border-border font-mono text-[11.5px] font-medium tabular-nums">{other}</span>
                   <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">{otherTitle}</span>
-                  {otherStatus && <StatusPill tone={taskTone(otherStatus)}>{taskStatusLabel(otherStatus)}</StatusPill>}
+                  {otherStatus && <StatusPill tone={taskTone(otherStatus)}>{flexibleStatusLabel(otherStatus)}</StatusPill>}
                   <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove relation to ${other}`}
                     className="size-6 shrink-0 rounded-[7px] text-muted-foreground hover:bg-accent hover:text-destructive"
                     onClick={() => {

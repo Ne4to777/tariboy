@@ -2,7 +2,8 @@ import { useDraggable, useDroppable } from "@dnd-kit/core"
 import { ChevronRight, GripVertical, Plus } from "lucide-react"
 import { PriorityTag, StatusPill } from "@/components/ui/status"
 import { cn } from "@/lib/utils"
-import { taskStatusLabel, taskTone } from "@/lib/statusTone"
+import { taskTone } from "@/lib/statusTone"
+import { isWorkflowTask, taskStatusLabel } from "@/lib/tasks"
 import type { VisibleTaskRow } from "@/lib/taskTree"
 import { INDENT_PX, MAX_INDENT_DEPTH, TASK_COLUMNS, type TaskRowMode } from "./taskColumns"
 import { formatTaskDuration, formatTaskTime } from "./taskTime"
@@ -47,7 +48,8 @@ export default function TaskRow({
   const dropBefore = useDroppable({ id: `before:${row.task.key}`, disabled })
   const dropInside = useDroppable({ id: `inside:${row.task.key}`, disabled })
   const dropAfter = useDroppable({ id: `after:${row.task.key}`, disabled })
-  const tone = taskTone(row.task.status)
+  const tone = taskTone(row.task.category)
+  const workflow = isWorkflowTask(row.task)
   return (
     <div
       ref={drag.setNodeRef}
@@ -151,9 +153,24 @@ export default function TaskRow({
           {server}
         </span>
       )}
-      <span style={{ width: TASK_COLUMNS.status }} className="shrink-0">
-        <StatusPill tone={tone}>{taskStatusLabel(row.task.status)}</StatusPill>
-      </span>
+      {workflow ? (
+        <span style={{ width: TASK_COLUMNS.status }} className="flex min-w-0 shrink-0 items-center gap-1 overflow-hidden">
+          <StatusPill tone={tone} className="min-w-0 shrink">
+            {/* A workflow status ID can be 64 characters: CSS clips it, the
+                title keeps the whole ID readable. */}
+            <span title={row.task.status} className="min-w-0 max-w-[24ch] truncate">{taskStatusLabel(row.task)}</span>
+          </StatusPill>
+          {row.task.waiting_on === "pause" ? (
+            <StatusPill tone="danger" size="sm" title={row.task.workflow_paused_reason || undefined}>paused</StatusPill>
+          ) : row.task.waiting_on ? (
+            <StatusPill tone="quiet" size="sm">{row.task.waiting_on}</StatusPill>
+          ) : null}
+        </span>
+      ) : (
+        <span style={{ width: TASK_COLUMNS.status }} className="shrink-0">
+          <StatusPill tone={tone}>{taskStatusLabel(row.task)}</StatusPill>
+        </span>
+      )}
       {mode === "agent" && (
         <span
           style={{ width: TASK_COLUMNS.duration }}

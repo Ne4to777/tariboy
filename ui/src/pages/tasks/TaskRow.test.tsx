@@ -109,6 +109,89 @@ describe("task table columns", () => {
   })
 })
 
+function renderTask(next: Task) {
+  return render(
+    <TaskRow
+      row={{ task: next, depth: 0, hasChildren: false, orphaned: false }}
+      mode="agent"
+      hasActiveQuestion={false}
+      expanded={false}
+      selected={false}
+      onToggle={vi.fn()}
+      onSelect={vi.fn()}
+      onAddChild={vi.fn()}
+    />,
+  )
+}
+
+const workflowTask: Task = {
+  ...task,
+  status: "implement",
+  category: "in_progress",
+  workflow_name: "delivery",
+}
+
+describe("task row status", () => {
+  it("renders a flexible task exactly as before", () => {
+    renderTask(task)
+    const pill = screen.getByText("In progress")
+    expect(pill.tagName).toBe("SPAN")
+    expect(pill.dataset.tone).toBe("live")
+    expect(pill.className).toBe(
+      "inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap h-5 rounded-[6px] px-2 text-[11.5px] bg-status-running/13 text-status-running font-medium",
+    )
+    expect(pill.parentElement!.className).toBe("shrink-0")
+    expect(pill.parentElement!.children).toHaveLength(1)
+    expect(pill).not.toHaveAttribute("title")
+  })
+
+  it("shows a workflow status as its label with the tone of its category", () => {
+    renderTask(workflowTask)
+    const pill = screen.getByText("Implement")
+    expect(pill.closest("[data-slot='status-pill']")).toHaveAttribute("data-tone", "live")
+    expect(screen.queryByText("In progress")).toBeNull()
+  })
+
+  it("tones a workflow task by category, not by status", () => {
+    renderTask({ ...workflowTask, status: "review", category: "wait_customer" })
+    expect(screen.getByText("Review").closest("[data-slot='status-pill']")).toHaveAttribute("data-tone", "attention")
+  })
+
+  it("names the wait of a workflow task: customer, script, or paused", () => {
+    const customer = renderTask({ ...workflowTask, category: "wait_customer", waiting_on: "customer" })
+    expect(screen.getByText("customer")).toBeInTheDocument()
+    customer.unmount()
+
+    const script = renderTask({ ...workflowTask, waiting_on: "script" })
+    expect(screen.getByText("script")).toBeInTheDocument()
+    script.unmount()
+
+    renderTask({ ...workflowTask, waiting_on: "pause", workflow_paused_reason: "stalled" })
+    const paused = screen.getByText("paused")
+    expect(paused.closest("[data-slot='status-pill']")).toHaveAttribute("data-tone", "danger")
+  })
+
+  it("shows no wait indicator when nothing is waited on", () => {
+    renderTask(workflowTask)
+    expect(screen.queryByText("customer")).toBeNull()
+    expect(screen.queryByText("script")).toBeNull()
+    expect(screen.queryByText("paused")).toBeNull()
+  })
+
+  it("truncates a 64-character status ID with CSS and keeps the full ID in a title", () => {
+    const id = `s${"a".repeat(63)}`
+    renderTask({ ...workflowTask, status: id })
+    const label = screen.getByTitle(id)
+    expect(label.className).toContain("truncate")
+    expect(label.textContent!.toLowerCase()).toBe(id)
+  })
+
+  it("keeps the drag handle for a workflow task, which only reparents", () => {
+    renderTask(workflowTask)
+    expect(screen.getByRole("button", { name: `Move ${task.key}` })).toBeInTheDocument()
+  })
+})
+
 describe("task duration", () => {
   it("measures a closed task from its first start to completion and an open one until now", () => {
     expect(formatTaskDuration(task)).toBe("18m")
