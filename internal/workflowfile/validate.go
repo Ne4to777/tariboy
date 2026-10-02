@@ -44,6 +44,9 @@ type fileRef struct {
 	script bool
 }
 
+// ValidName reports whether name is a legal workflow name.
+func ValidName(name string) bool { return workflowNamePattern.MatchString(name) }
+
 // Validate returns every independently discoverable error, ordered by path
 // and then by code. A nil or empty result means the manifest and its files
 // are valid. Files are read relative to f.Dir.

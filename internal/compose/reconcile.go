@@ -3,6 +3,7 @@ package compose
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekzonder/tariboy/internal/client"
 	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
@@ -209,7 +211,156 @@ func (r *Runner) Up(f File) error {
 	if err := r.applyBudgets(f); err != nil {
 		return err
 	}
-	return r.convergeTaskQueues(f)
+	if err := r.convergeTaskQueues(f); err != nil {
+		return err
+	}
+	return r.convergeQueueWorkflows(f)
+}
+
+// workflowImage is the part of a workflow image the binding step needs.
+type workflowImage struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Digest  string `json:"digest"`
+}
+
+// shortDigest is the form a digest takes in status and progress output.
+func shortDigest(d string) string {
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
+}
+
+func isAPIError(err error, code string) bool {
+	var apiErr *client.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == code
+}
+
+// inspectWorkflowImage resolves NAME:TAG through the daemon; found is false
+// when the image or the tag does not exist.
+func (r *Runner) inspectWorkflowImage(ref string) (img workflowImage, found bool, err error) {
+	name, tag, _ := strings.Cut(ref, ":")
+	raw, err := r.call.Call("GET", "/api/workflow-images/"+name+"/"+tag, map[string]string{})
+	if isAPIError(err, "not_found") {
+		return workflowImage{}, false, nil
+	}
+	if err != nil {
+		return workflowImage{}, false, err
+	}
+	if err := json.Unmarshal(raw, &img); err != nil {
+		return workflowImage{}, false, err
+	}
+	return img, true, nil
+}
+
+// queueWorkflow reads the binding of a queue; bound is false when it has none.
+func (r *Runner) queueWorkflow(queue string) (tasks.QueueWorkflow, bool, error) {
+	raw, err := r.call.Call("GET", "/api/task-queues/"+queue+"/workflow", map[string]string{})
+	if isAPIError(err, "queue_workflow_not_found") {
+		return tasks.QueueWorkflow{}, false, nil
+	}
+	if err != nil {
+		return tasks.QueueWorkflow{}, false, err
+	}
+	var binding tasks.QueueWorkflow
+	if err := json.Unmarshal(raw, &binding); err != nil {
+		return tasks.QueueWorkflow{}, false, err
+	}
+	return binding, true, nil
+}
+
+// convergeQueueWorkflows builds the Store workflows the file names, then binds
+// each queue to the digest it resolves to. It runs after queues and pools
+// exist, since a bind needs the pools the workflow names. A queue with no
+// workflow value keeps whatever binding it has; Compose never clears one.
+func (r *Runner) convergeQueueWorkflows(f File) error {
+	built := map[string]workflowImage{}
+	for _, prefix := range sortedKeys(f.TaskQueues) {
+		ref, declared, err := f.TaskQueues[prefix].WorkflowRef()
+		if err != nil {
+			return fmt.Errorf("task queue %s workflow: %w", prefix, err)
+		}
+		if declared && ref.Store != "" {
+			if _, done := built[ref.Selector()]; !done {
+				r.logf("building workflow %s", ref.Selector())
+				raw, err := r.call.Call("POST", "/api/workflow-images/build", map[string]any{"source": ref.Selector()})
+				if err != nil {
+					return fmt.Errorf("build workflow %s: %w", ref.Selector(), err)
+				}
+				var img workflowImage
+				if err := json.Unmarshal(raw, &img); err != nil {
+					return err
+				}
+				built[ref.Selector()] = img
+			}
+		}
+	}
+	for _, prefix := range sortedKeys(f.TaskQueues) {
+		ref, declared, err := f.TaskQueues[prefix].WorkflowRef()
+		if err != nil {
+			return fmt.Errorf("task queue %s workflow: %w", prefix, err)
+		}
+		if !declared {
+			continue
+		}
+		// A Store workflow without a tag binds what its build returned; every
+		// other form resolves NAME:TAG now (after the builds).
+		img := built[ref.Selector()]
+		if ref.Store == "" || ref.Tag != "" {
+			var found bool
+			if img, found, err = r.inspectWorkflowImage(ref.Ref()); err != nil {
+				return fmt.Errorf("resolve workflow %s: %w", ref.Ref(), err)
+			}
+			if !found && ref.Store != "" {
+				return fmt.Errorf("task queue %s workflow: %s does not exist after building %s", prefix, ref.Ref(), ref.Selector())
+			}
+			if !found {
+				return fmt.Errorf("task queue %s workflow: %s is not built; build it or add the Store prefix (STORE/%s)", prefix, ref.Ref(), ref.Ref())
+			}
+		}
+		current, bound, err := r.queueWorkflow(prefix)
+		if err != nil {
+			return fmt.Errorf("read workflow of task queue %s: %w", prefix, err)
+		}
+		if bound && current.Digest == img.Digest {
+			r.logf("task queue %s workflow %s:%s unchanged", prefix, img.Name, img.Version)
+			continue
+		}
+		revision := int64(0)
+		if bound {
+			revision = current.Revision
+		}
+		r.logf("binding task queue %s workflow %s:%s", prefix, img.Name, img.Version)
+		if _, err := r.call.Call("PUT", "/api/task-queues/"+prefix+"/workflow", map[string]any{"ref": img.Name + ":" + img.Digest, "revision": revision}); err != nil {
+			return bindWorkflowError(prefix, ref, err)
+		}
+	}
+	return nil
+}
+
+// bindWorkflowError keeps the daemon's error code and message, and for a
+// missing secret names the secrets and how to set one. Compose never handles
+// a secret value: the operator sets it with the Tasks CLI.
+func bindWorkflowError(queue string, ref WorkflowRef, err error) error {
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "workflow_secret_missing" {
+		return fmt.Errorf("bind workflow %s to task queue %s: %w", ref.Ref(), queue, err)
+	}
+	var names []string
+	if list, ok := apiErr.Details["secrets"].([]any); ok {
+		for _, item := range list {
+			if name, ok := item.(string); ok {
+				names = append(names, name)
+			}
+		}
+	}
+	key := "KEY"
+	if len(names) > 0 {
+		key = names[0]
+	}
+	return fmt.Errorf("bind workflow %s to task queue %s: %w\nmissing secrets: %s\nset one with the value on standard input, for example:\n  printf '%%s' \"$VALUE\" | ttasks queue secret set %s %s",
+		ref.Ref(), queue, err, strings.Join(names, ", "), queue, key)
 }
 
 func (r *Runner) convergeGoal(name string, a AgentSpec, cur map[string]any) error {
@@ -857,9 +1008,52 @@ func (r *Runner) Status(f File) error {
 				r.logf("task queue %-10s pool %s ok", prefix, poolName)
 			}
 		}
+		if err := r.statusQueueWorkflow(prefix, want, &drift); err != nil {
+			return err
+		}
 	}
 	r.logf("drift: %d", drift)
 	r.logf("note: model/env/plugins drift not checked (not exposed by agent.ps)")
+	return nil
+}
+
+// statusQueueWorkflow reports the workflow of one queue. It never builds: a
+// declared workflow is compared through NAME:TAG (latest by default), so a
+// Store workflow that is not built yet reads as pending.
+func (r *Runner) statusQueueWorkflow(prefix string, want TaskQueueSpec, drift *int) error {
+	ref, declared, err := want.WorkflowRef()
+	if err != nil {
+		return fmt.Errorf("task queue %s workflow: %w", prefix, err)
+	}
+	bound, isBound, err := r.queueWorkflow(prefix)
+	if err != nil {
+		return fmt.Errorf("status task queue %s workflow: %w", prefix, err)
+	}
+	have := fmt.Sprintf("%s:%s %s", bound.Name, bound.Version, shortDigest(bound.Digest))
+	switch {
+	case !declared && isBound:
+		r.logf("task queue %-10s workflow %s (not declared)", prefix, have)
+		return nil
+	case !declared:
+		return nil
+	}
+	img, found, err := r.inspectWorkflowImage(ref.Ref())
+	if err != nil {
+		return fmt.Errorf("status task queue %s workflow %s: %w", prefix, ref.Ref(), err)
+	}
+	switch {
+	case !found:
+		r.logf("task queue %-10s workflow MISSING (want=%s, not built)", prefix, ref.Ref())
+		*drift++
+	case !isBound:
+		r.logf("task queue %-10s workflow MISSING (want=%s)", prefix, ref.Ref())
+		*drift++
+	case bound.Digest != img.Digest:
+		r.logf("task queue %-10s workflow drift: have=%s want=%s %s", prefix, have, ref.Ref(), shortDigest(img.Digest))
+		*drift++
+	default:
+		r.logf("task queue %-10s workflow %s ok", prefix, have)
+	}
 	return nil
 }
 

@@ -495,6 +495,10 @@ func classifySource(source string) (sourceKind, string, error) {
 	return sourceGit, source, nil
 }
 
+// ValidName reports whether name is a legal Store or Store workflow name, by
+// the rule every Store selector applies.
+func ValidName(name string) bool { return validName(name) == nil }
+
 func validName(name string) error {
 	ref, err := image.ParseRef(name + ":latest")
 	if err != nil || ref.Name != name || name == "." || name == ".." {

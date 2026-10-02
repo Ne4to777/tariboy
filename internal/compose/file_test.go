@@ -62,10 +62,9 @@ agents:
 	}
 }
 
-func TestParseRejectsRemovedWorkflowKeysByName(t *testing.T) {
+func TestParseRejectsRemovedWorkflowsKeyByName(t *testing.T) {
 	for _, tc := range []struct{ name, yaml, key string }{
 		{"top-level workflows", "version: 1\nworkflows:\n  development: {source: ./workflow.yaml}\n", "workflows"},
-		{"queue workflow", "version: 1\ntask_queues:\n  DEV: {name: Development, workflow: development}\n", "task_queues.DEV.workflow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.yaml))
