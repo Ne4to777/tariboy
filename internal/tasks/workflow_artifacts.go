@@ -34,6 +34,10 @@ func (s *Service) SetArtifact(ctx context.Context, actor Actor, key, name, value
 		return Artifact{}, domainError(http.StatusConflict, "workflow_closed", "task "+task.Key+" is closed")
 	}
 	if !actor.IsCustomer {
+		if task.WorkflowPausedReason != "" {
+			return Artifact{}, domainError(http.StatusConflict, "workflow_paused",
+				"task "+task.Key+" is paused and waits for the customer: "+task.WorkflowPausedReason)
+		}
 		holds, err := holdsPoolStatusTx(ctx, tx, task, manifest, actor)
 		if err != nil {
 			return Artifact{}, err

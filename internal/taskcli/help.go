@@ -57,6 +57,9 @@ var sharedHelp = map[string]commandHelp{
 		"Prints the last bytes of the run's log, 64 KiB by default and at most 1 MiB. Queue secret values are replaced with [redacted]. When the log is longer, a first line on stderr says so.", "KEY  Task key (required)\nRUN  Run id, as listed by workflow runs or named in a failed advance (required)", "ttasks workflow log DEV-12 4\nttasks workflow log DEV-12 4 --max-bytes 4096"},
 	"workflow_move": {"Move a workflow task to another status (operator-only)", "workflow move KEY --to STATUS --reason TEXT",
 		"Moves the task to the named status of its workflow regardless of outcomes, and records the reason. Operator-only: uses the host daemon as the customer actor.", "KEY  Task key (required)", "ttasks workflow move DEV-12 --to develop --reason 'review found a regression'"},
+	"workflow_resume": {"Resolve the pause of a workflow task (operator-only)", "workflow resume KEY --decision continue|release",
+		"A paused task waits for the customer's decision; a plain comment does not resume it. --decision continue keeps the holder, resets the status counters, and restarts the status. --decision release, only in a status owned by an agent pool, takes the task from its holder and dispatches it to another member; with no other eligible member the task waits unassigned. To stop the task instead, run ttasks cancel KEY. Operator-only: uses the host daemon as the customer actor.",
+		"KEY  Task key (required)", "ttasks workflow resume DEV-12 --decision continue\nttasks workflow resume DEV-12 --decision release"},
 	"cancel": {"Cancel a workflow task (operator-only)", "cancel KEY",
 		"Cancels a task that follows a workflow. Operator-only: uses the host daemon as the customer actor.", "KEY  Task key (required)", "ttasks cancel DEV-12"},
 }
@@ -68,7 +71,7 @@ var helpGroups = map[string]string{
 	"queue.workflow": "Bind a workflow image to a queue (operator-only)",
 	"queue.secret":   "Store secrets that workflow scripts of a queue receive (operator-only)",
 	"artifacts":      "Read and set workflow task artifacts",
-	"workflow":       "Inspect and move workflow tasks",
+	"workflow":       "Inspect, move, and resume workflow tasks",
 	"notifications":  "Read and dismiss customer task notifications (operator-only)",
 }
 
@@ -102,6 +105,7 @@ var helpFlags = map[string]string{
 	"file":                "Read the artifact value from this file instead of stdin",
 	"to":                  "Target workflow status id (required)",
 	"reason":              "Why the task is moved (required)",
+	"decision":            "How to resolve the pause: continue or release (required)",
 }
 
 const globalHelp = `Global flags:

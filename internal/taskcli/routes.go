@@ -123,6 +123,9 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 	case "workflow_move":
 		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/workflow/move"
 		delete(body, "key")
+	case "workflow_resume":
+		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/workflow/resume"
+		delete(body, "key")
 	case "cancel":
 		method, route = "POST", "/api/tasks/"+url.PathEscape(key)+"/cancel"
 		delete(body, "key")

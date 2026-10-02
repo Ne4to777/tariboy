@@ -70,6 +70,8 @@ func TestOperatorWorkflowCommandsUseRestRoutes(t *testing.T) {
 		{[]string{"artifacts", "show", "DEV-1", "plan"}, "GET", "/api/tasks/DEV-1/artifacts/plan", map[string]string{}},
 		{[]string{"workflow", "get", "DEV-1"}, "GET", "/api/tasks/DEV-1/workflow", map[string]string{}},
 		{[]string{"workflow", "move", "DEV-1", "--to", "develop", "--reason", "regression"}, "POST", "/api/tasks/DEV-1/workflow/move", map[string]any{"to": "develop", "reason": "regression"}},
+		{[]string{"workflow", "resume", "DEV-1", "--decision", "continue"}, "POST", "/api/tasks/DEV-1/workflow/resume", map[string]any{"decision": "continue"}},
+		{[]string{"workflow", "resume", "DEV-1", "--decision", " release "}, "POST", "/api/tasks/DEV-1/workflow/resume", map[string]any{"decision": "release"}},
 		{[]string{"cancel", "DEV-1"}, "POST", "/api/tasks/DEV-1/cancel", map[string]any{}},
 	}
 	for _, tt := range tests {
@@ -92,6 +94,7 @@ func TestAgentModeRefusesOperatorOnlyWorkflowCommandsLocally(t *testing.T) {
 	withCaller(t, r)
 	for _, argv := range [][]string{
 		{"workflow", "move", "DEV-1", "--to", "develop", "--reason", "x"},
+		{"workflow", "resume", "DEV-1", "--decision", "continue"},
 		{"cancel", "DEV-1"},
 		{"queue", "workflow", "get", "DEV"},
 		{"queue", "workflow", "set", "DEV", "development:latest"},
@@ -121,6 +124,9 @@ func TestWorkflowCommandUsageErrors(t *testing.T) {
 		{"workflow", "get"},
 		{"workflow", "move", "DEV-1", "--to", "develop"},
 		{"workflow", "move", "DEV-1", "--reason", "x"},
+		{"workflow", "resume", "DEV-1"},
+		{"workflow", "resume", "DEV-1", "--decision", "restart"},
+		{"workflow", "resume", "--decision", "continue"},
 		{"cancel"},
 	} {
 		if code := Run(context.Background(), argv, agentEnv(), io.Discard, io.Discard); code != 2 {
@@ -232,11 +238,13 @@ func TestOperatorRoutesEscapeKeyAndArtifactName(t *testing.T) {
 
 func TestExtraArgumentErrorsNameTheRealCommand(t *testing.T) {
 	for argv, want := range map[string]string{
-		"artifacts set DEV-1 plan v extra":        "tasks artifacts set: unexpected argument: extra",
-		"artifacts ls DEV-1 extra":                "tasks artifacts ls: unexpected argument: extra",
-		"workflow get DEV-1 extra":                "tasks workflow get: unexpected argument: extra",
-		"workflow move DEV-1 x --to a --reason b": "tasks workflow move: unexpected argument: x",
-		"artifacts show DEV-1":                    "tasks artifacts show: artifact name is required",
+		"artifacts set DEV-1 plan v extra":            "tasks artifacts set: unexpected argument: extra",
+		"artifacts ls DEV-1 extra":                    "tasks artifacts ls: unexpected argument: extra",
+		"workflow get DEV-1 extra":                    "tasks workflow get: unexpected argument: extra",
+		"workflow move DEV-1 x --to a --reason b":     "tasks workflow move: unexpected argument: x",
+		"workflow resume DEV-1 x --decision continue": "tasks workflow resume: unexpected argument: x",
+		"workflow resume DEV-1 --decision restart":    "tasks workflow resume: --decision must be continue or release",
+		"artifacts show DEV-1":                        "tasks artifacts show: artifact name is required",
 	} {
 		_, err := parse(strings.Fields(argv))
 		if err == nil || err.Error() != want {
@@ -289,9 +297,27 @@ func TestWorkflowGetTextAndJSON(t *testing.T) {
 			t.Errorf("text lacks %q:\n%s", want, &out)
 		}
 	}
+	if strings.Contains(out.String(), "paused:") {
+		t.Errorf("an unpaused task prints a paused line:\n%s", &out)
+	}
 	out.Reset()
 	if code := Run(context.Background(), []string{"workflow", "get", "DEV-1", "--json"}, agentEnv(), &out, io.Discard); code != 0 || !strings.Contains(out.String(), `"digest":"d1"`) {
 		t.Fatalf("json code %d: %s", code, &out)
+	}
+}
+
+func TestWorkflowGetPrintsThePauseReason(t *testing.T) {
+	paused := strings.Replace(sampleView, `"category":"in_progress"`,
+		`"category":"wait_customer","waiting_on":"pause","paused_reason":"idle_iterations"`, 1)
+	withCaller(t, &recorder{result: json.RawMessage(paused)})
+	var out strings.Builder
+	if code := Run(context.Background(), []string{"workflow", "get", "DEV-1"}, agentEnv(), &out, io.Discard); code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	for _, want := range []string{"waiting_on: pause", "paused: idle_iterations"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("text lacks %q:\n%s", want, &out)
+		}
 	}
 }
 
@@ -377,12 +403,13 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		{[]string{"workflow", "runs"}, []string{"KEY", "newest first"}},
 		{[]string{"workflow", "log"}, []string{"KEY", "RUN", "--max-bytes", "[redacted]"}},
 		{[]string{"workflow", "move"}, []string{"--to", "--reason", "operator-only"}},
+		{[]string{"workflow", "resume"}, []string{"--decision", "continue", "release", "ttasks cancel", "operator-only"}},
 		{[]string{"cancel"}, []string{"operator-only"}},
 		{[]string{"queue", "workflow", "set"}, []string{"operator-only", "--ref", "--revision"}},
 		{[]string{"queue", "workflow", "get"}, []string{"operator-only"}},
 		{[]string{"queue", "workflow", "clear"}, []string{"operator-only", "--revision"}},
 		{[]string{"artifacts"}, []string{"set", "ls", "show"}},
-		{[]string{"workflow"}, []string{"get", "runs", "log", "move"}},
+		{[]string{"workflow"}, []string{"get", "runs", "log", "move", "resume"}},
 	} {
 		var out strings.Builder
 		if code := Run(context.Background(), append(append([]string{}, tt.path...), "--help"), mapEnv(), &out, io.Discard); code != 0 {
@@ -402,7 +429,7 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range [][]string{
-		{"advance"}, {"artifacts", "set"}, {"artifacts", "ls"}, {"artifacts", "show"}, {"workflow", "get"}, {"workflow", "runs"}, {"workflow", "log"}, {"workflow", "move"}, {"cancel"},
+		{"advance"}, {"artifacts", "set"}, {"artifacts", "ls"}, {"artifacts", "show"}, {"workflow", "get"}, {"workflow", "runs"}, {"workflow", "log"}, {"workflow", "move"}, {"workflow", "resume"}, {"cancel"},
 		{"queue", "workflow", "set"}, {"queue", "workflow", "get"}, {"queue", "workflow", "clear"},
 	} {
 		node := tree

@@ -47,7 +47,7 @@ func taskOpenAPISchemas() map[string]map[string]any {
 		"QueueSecret":   objectSchema([]string{"key", "updated_at"}, map[string]any{"key": str, "updated_at": str}),
 		"WorkflowView": objectSchema([]string{"name", "version", "digest", "status", "category", "owner", "outcomes", "artifacts", "visits"}, map[string]any{
 			"name": str, "version": str, "digest": str, "status": str, "category": status,
-			"waiting_on": str, "owner": str, "holder": str, "instructions_path": str,
+			"waiting_on": str, "paused_reason": str, "owner": str, "holder": str, "instructions_path": str,
 			"outcomes": arrayOf("OutcomeView"), "artifacts": arrayOf("Artifact"), "visits": arrayOf("StatusVisit"),
 			"last_request": schemaRef("TransitionRequest"), "runs": arrayOf("ScriptRun")}),
 		"ScriptRun": objectSchema([]string{"id", "task_key", "kind", "script", "run_as", "state", "created_at"}, map[string]any{

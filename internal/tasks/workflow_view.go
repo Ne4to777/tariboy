@@ -26,6 +26,7 @@ type WorkflowView struct {
 	Status           string             `json:"status"`
 	Category         string             `json:"category"`
 	WaitingOn        string             `json:"waiting_on,omitempty"`
+	PausedReason     string             `json:"paused_reason,omitempty"`     // set while the task waits for the customer's decision
 	Owner            string             `json:"owner"`                       // "pool:<name>", "customer", "script", or "" for terminal
 	Holder           string             `json:"holder,omitempty"`            // "agent:<name>"
 	InstructionsPath string             `json:"instructions_path,omitempty"` // source-relative path inside the image
@@ -52,7 +53,7 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 	}
 	view := WorkflowView{
 		Name: manifest.Name, Version: manifest.Version, Digest: manifest.Digest,
-		Status: task.WorkflowStatus, Category: task.Category, WaitingOn: task.WaitingOn,
+		Status: task.WorkflowStatus, Category: task.Category, WaitingOn: task.WaitingOn, PausedReason: task.WorkflowPausedReason,
 		Outcomes: []OutcomeView{},
 	}
 	if view.Artifacts, err = currentArtifactsTx(ctx, tx, task.ID); err != nil {

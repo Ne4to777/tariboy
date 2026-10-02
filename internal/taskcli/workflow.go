@@ -206,6 +206,9 @@ func printWorkflow(raw json.RawMessage, key string, stdout io.Writer) bool {
 	field("status", view.Status)
 	field("category", view.Category)
 	field("waiting_on", view.WaitingOn)
+	if view.PausedReason != "" {
+		field("paused", view.PausedReason)
+	}
 	field("owner", view.Owner)
 	field("holder", view.Holder)
 	fmt.Fprintln(stdout, "outcomes:")

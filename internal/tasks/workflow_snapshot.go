@@ -60,7 +60,7 @@ func taskSnapshotJSON(ctx context.Context, q queryer, task Task, manifest workfl
 		Scan(&snapshot.Visit.ID, &snapshot.Visit.EnteredAt); err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT pool, agent FROM task_workflow_holders WHERE task_id = ?`, task.ID)
+	rows, err := q.QueryContext(ctx, `SELECT pool, agent FROM task_workflow_holders WHERE task_id = ? AND released = 0`, task.ID)
 	if err != nil {
 		return nil, err
 	}

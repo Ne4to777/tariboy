@@ -89,7 +89,7 @@ func TestAgentWorkflowActionsReadAndAdvance(t *testing.T) {
 
 func TestAgentActionRefusesOperatorOnlyWorkflowActions(t *testing.T) {
 	svc, _, task := requestFixture(t)
-	for _, action := range []string{"workflow_move", "cancel", "queue_workflow_set", "queue_workflow_get", "queue_workflow_clear"} {
+	for _, action := range []string{"workflow_move", "workflow_resume", "cancel", "queue_workflow_set", "queue_workflow_get", "queue_workflow_clear"} {
 		_, err := svc.AgentAction(context.Background(), AgentActor("dev-1"), action,
 			map[string]any{"key": task.Key, "to": "review", "reason": "x"})
 		if ErrorCode(err) != "invalid_action" {

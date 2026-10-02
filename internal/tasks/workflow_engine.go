@@ -182,6 +182,12 @@ func (s *Service) openStatusWaitTx(ctx context.Context, tx *sql.Tx, task Task, s
 	if instructions := strings.TrimSpace(status.Instructions); instructions != "" {
 		body += "\n\n" + instructions
 	}
+	return s.askCustomerTx(ctx, tx, task, body, now)
+}
+
+// askCustomerTx posts body as a comment by the workflow and opens the
+// workflow's wait on the customer with a question notification.
+func (s *Service) askCustomerTx(ctx context.Context, tx *sql.Tx, task Task, body, now string) error {
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO task_comments(task_id, author, body, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)`, task.ID, workflowActor, body, now, now)

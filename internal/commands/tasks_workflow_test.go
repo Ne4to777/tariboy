@@ -69,6 +69,10 @@ func (s *workflowStub) MoveWorkflow(_ context.Context, a tasks.Actor, key, to, r
 	s.record(a, "workflow_move %s %s %q", key, to, reason)
 	return tasks.Task{Key: key, Status: tasks.StatusInProgress, WorkflowDigest: "d", WorkflowStatus: to}, s.err
 }
+func (s *workflowStub) ResumeWorkflow(_ context.Context, a tasks.Actor, key, decision string) (tasks.Task, error) {
+	s.record(a, "workflow_resume %s %s", key, decision)
+	return tasks.Task{Key: key, Status: tasks.StatusInProgress, WorkflowDigest: "d", WorkflowStatus: "develop"}, s.err
+}
 func (s *workflowStub) CancelWorkflowTask(_ context.Context, a tasks.Actor, key string) (tasks.Task, error) {
 	s.record(a, "cancel %s", key)
 	return tasks.Task{Key: key, Status: tasks.StatusCancelled}, s.err
@@ -137,6 +141,8 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 		{"run log max_bytes", "GET", "/api/tasks/DEV-1/workflow/runs/4/log?max_bytes=100", nil, `run_log DEV-1 4 max=100`, `"truncated":true`},
 		{"workflow move", "POST", "/api/tasks/DEV-1/workflow/move", map[string]any{"to": "review", "reason": "unstick"},
 			`workflow_move DEV-1 review "unstick"`, `"key":"DEV-1"`},
+		{"workflow resume", "POST", "/api/tasks/DEV-1/workflow/resume", map[string]any{"decision": "release"},
+			`workflow_resume DEV-1 release`, `"category":"in_progress"`},
 		{"cancel", "POST", "/api/tasks/DEV-1/cancel", nil, `cancel DEV-1`, `"category":"cancelled"`},
 		{"queue workflow set", "PUT", "/api/task-queues/DEV/workflow", map[string]any{"ref": "flow:1.0.0", "revision": 2},
 			`queue_workflow_set DEV flow:1.0.0 2`, `"revision":3`},
@@ -188,6 +194,11 @@ func TestWorkflowRoutesPassServiceErrorsThrough(t *testing.T) {
 	if status != http.StatusConflict || env.Error == nil || env.Error.Code != "workflow_managed" || env.Error.Details["status"] != "develop" {
 		t.Fatalf("status %d envelope %+v", status, env)
 	}
+	stub.err = &tasks.Error{Status: http.StatusBadRequest, Code: "invalid_decision", Msg: "unknown decision"}
+	status, env = taskRequest(t, httpServer.Client(), "POST", httpServer.URL+"/api/tasks/DEV-1/workflow/resume", map[string]any{"decision": "restart"})
+	if status != http.StatusBadRequest || env.Error == nil || env.Error.Code != "invalid_decision" {
+		t.Fatalf("status %d envelope %+v", status, env)
+	}
 	stub.err = &tasks.Error{Status: http.StatusNotFound, Code: "queue_workflow_not_found", Msg: "queue has no workflow binding"}
 	status, env = taskRequest(t, httpServer.Client(), "GET", httpServer.URL+"/api/task-queues/DEV/workflow", nil)
 	if status != http.StatusNotFound || env.Error == nil || env.Error.Code != "queue_workflow_not_found" {
@@ -216,6 +227,7 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 		"/api/tasks/{key}/artifacts":        "get",
 		"/api/tasks/{key}/workflow":         "get",
 		"/api/tasks/{key}/workflow/move":    "post",
+		"/api/tasks/{key}/workflow/resume":  "post",
 		"/api/tasks/{key}/workflow/runs":    "get",
 
 		"/api/tasks/{key}/workflow/runs/{id}":     "get",
@@ -232,6 +244,10 @@ func TestWorkflowOpenAPIDescribesRoutesAndSchemas(t *testing.T) {
 		if doc.Components.Schemas[name] == nil {
 			t.Errorf("openapi lacks schema %s", name)
 		}
+	}
+	viewProps, _ := doc.Components.Schemas["WorkflowView"]["properties"].(map[string]any)
+	if viewProps["paused_reason"] == nil {
+		t.Error("WorkflowView schema lacks paused_reason")
 	}
 	props, _ := doc.Components.Schemas["Task"]["properties"].(map[string]any)
 	for _, name := range []string{"category", "waiting_on", "workflow_digest", "workflow_name", "workflow_version", "workflow_paused_reason"} {

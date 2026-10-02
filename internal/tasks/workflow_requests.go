@@ -273,16 +273,29 @@ func (s *Service) MoveWorkflow(ctx context.Context, actor Actor, key, to, reason
 		return Task{}, err
 	}
 	// The move is the customer's decision on a paused task; enterStatusTx
-	// dispatches only an unpaused one.
-	if task.WorkflowPausedReason != "" {
+	// dispatches only an unpaused one, and answers the pause wait when it
+	// leaves the visit.
+	pausedReason := task.WorkflowPausedReason
+	if pausedReason != "" {
 		task.WorkflowPausedReason = ""
 		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET workflow_paused_reason = '' WHERE id = ?`, task.ID); err != nil {
 			return Task{}, err
 		}
 	}
+	// A move hands the task back to holders the customer released.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_workflow_holders WHERE task_id = ? AND released = 1`, task.ID); err != nil {
+		return Task{}, err
+	}
 	from := task.WorkflowStatus
 	if err := s.enterStatusTx(ctx, tx, &task, manifest, to, actor.Principal, "", reason); err != nil {
 		return Task{}, err
+	}
+	if pausedReason != "" {
+		if _, err := appendEventTx(ctx, tx, task, "workflow.resumed", actor, map[string]any{
+			"status": from, "decision": "move", "actor": actor.Principal, "reason": pausedReason,
+		}, now); err != nil {
+			return Task{}, err
+		}
 	}
 	if _, err := appendEventTx(ctx, tx, task, "workflow.moved", actor, map[string]any{
 		"from": from, "to": to, "actor": actor.Principal, "reason": reason,

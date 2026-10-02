@@ -136,6 +136,7 @@ type TaskControl interface {
 	ScriptRunLog(context.Context, tasks.Actor, string, int64, int) (string, bool, error)
 	MoveWorkflow(context.Context, tasks.Actor, string, string, string) (tasks.Task, error)
 	CancelWorkflowTask(context.Context, tasks.Actor, string) (tasks.Task, error)
+	ResumeWorkflow(context.Context, tasks.Actor, string, string) (tasks.Task, error)
 	SetQueueWorkflow(context.Context, tasks.Actor, string, string, int64) (tasks.QueueWorkflow, error)
 	GetQueueWorkflow(context.Context, tasks.Actor, string) (tasks.QueueWorkflow, error)
 	ClearQueueWorkflow(context.Context, tasks.Actor, string, int64) error

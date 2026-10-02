@@ -273,6 +273,10 @@ func TaskOperatorCommands() []registry.Command {
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.MoveWorkflow(ctx, actor, stringParam(p, "key"), stringParam(p, "to"), stringParam(p, "reason"))
 			}),
+		taskRoute("tasks.workflow.resume", "POST", "/api/tasks/{key}/workflow/resume", "Resolve the pause of a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.ResumeWorkflow(ctx, actor, stringParam(p, "key"), stringParam(p, "decision"))
+			}),
 		taskRoute("tasks.cancel", "POST", "/api/tasks/{key}/cancel", "Cancel a workflow task",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				return control.CancelWorkflowTask(ctx, actor, stringParam(p, "key"))
@@ -449,6 +453,10 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "max_bytes", Type: registry.Int, Help: "Largest log tail to return in bytes (default 65536, maximum 1048576)"}}
 	case "tasks.workflow.move":
 		return []registry.Arg{{Name: "to", Required: true, Help: "Target status id"}, {Name: "reason", Required: true, Help: "Why the task is moved"}}
+	case "tasks.workflow.resume":
+		return []registry.Arg{{Name: "decision", Required: true, Help: "continue keeps the holder; release dispatches the task to another pool member", Schema: map[string]any{
+			"type": "string", "enum": []string{tasks.ResumeContinue, tasks.ResumeRelease},
+		}}}
 	case "tasks.queue.workflow.set":
 		return []registry.Arg{{Name: "ref", Required: true, Help: "Workflow image reference, name:tag"}, {Name: "revision", Type: registry.Int, Help: "Expected current binding revision (zero for a new binding)"}}
 	case "tasks.queue.workflow.clear":
@@ -488,7 +496,7 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return objectSchema([]string{"artifact", "history"}, map[string]any{"artifact": schemaRef("Artifact"), "history": arrayOf("Artifact")})
 	case "tasks.workflow.get":
 		return schemaRef("WorkflowView")
-	case "tasks.workflow.move", "tasks.cancel":
+	case "tasks.workflow.move", "tasks.workflow.resume", "tasks.cancel":
 		return schemaRef("Task")
 	case "tasks.queue.workflow.set", "tasks.queue.workflow.get":
 		return schemaRef("QueueWorkflow")

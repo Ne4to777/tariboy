@@ -11,7 +11,10 @@ import (
 
 // pickHolderTx chooses the agent for a task entering or waiting in a status
 // owned by pool. The task's previous holder for the pool wins while it is still
-// a member, whatever it is doing. Otherwise the first eligible member wins:
+// a member, whatever it is doing, unless the customer released it: a released
+// holder is neither sticky nor eligible for this task and pool until another
+// agent replaces its row or an operator move clears it. Otherwise the first
+// eligible member wins:
 // enabled, loop enabled, Goal enabled, not halted, with no current Goal, with
 // no other assigned task that Goal could select, and not in busy; ties go to the member dispatched least recently in this queue,
 // then to pool order. It returns "" when nobody is eligible.
@@ -21,7 +24,7 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 		SELECT h.agent FROM task_workflow_holders h
 		JOIN task_agent_pools p ON p.queue_prefix = ? AND p.name = h.pool
 		JOIN task_agent_pool_members m ON m.pool_id = p.id AND m.agent = h.agent
-		WHERE h.task_id = ? AND h.pool = ?`, task.Queue, task.ID, pool).Scan(&holder)
+		WHERE h.task_id = ? AND h.pool = ? AND h.released = 0`, task.Queue, task.ID, pool).Scan(&holder)
 	if err == nil {
 		return holder, nil
 	}
@@ -43,6 +46,10 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 		  AND a.error_reason = '' AND substr(a.status_message, 1, length(?)) <> ?
 		  AND a.current_goal_task_key = ''
 		  AND NOT EXISTS (
+			SELECT 1 FROM task_workflow_holders r
+			WHERE r.task_id = ? AND r.pool = p.name AND r.agent = m.agent AND r.released = 1
+		  )
+		  AND NOT EXISTS (
 			SELECT 1 FROM tasks t
 			WHERE t.assignee = 'agent:' || m.agent AND t.id <> ?
 			  AND t.status IN ('in_progress', 'open')
@@ -58,7 +65,7 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 			JOIN tasks ht ON ht.id = h.task_id
 			WHERE h.agent = m.agent AND ht.queue_prefix = p.queue_prefix
 		), ''), m.position`,
-		task.Queue, pool, agent.IdleStopPrefix, agent.IdleStopPrefix, task.ID)
+		task.Queue, pool, agent.IdleStopPrefix, agent.IdleStopPrefix, task.ID, task.ID)
 	if err != nil {
 		return "", err
 	}
@@ -79,12 +86,13 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 // strings; RFC3339Nano trims trailing zeros and misorders times within a second.
 const dispatchedAtLayout = "2006-01-02T15:04:05.000000000Z"
 
-// recordHolderTx records name as the task's holder for pool, dispatched now.
-// It is the only writer of task_workflow_holders.dispatched_at.
+// recordHolderTx records name as the task's holder for pool, dispatched now,
+// replacing a released holder. It is the only writer of
+// task_workflow_holders.dispatched_at.
 func (s *Service) recordHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool, name string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO task_workflow_holders(task_id, pool, agent, dispatched_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(task_id, pool) DO UPDATE SET agent = excluded.agent, dispatched_at = excluded.dispatched_at`,
+		ON CONFLICT(task_id, pool) DO UPDATE SET agent = excluded.agent, dispatched_at = excluded.dispatched_at, released = 0`,
 		task.ID, pool, name, s.clock().UTC().Format(dispatchedAtLayout))
 	return err
 }
