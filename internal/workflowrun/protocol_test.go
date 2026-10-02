@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/alekzonder/tariboy/internal/script"
 )
@@ -121,6 +122,51 @@ func TestClassifyFailureReasons(t *testing.T) {
 				t.Fatalf("got %+v, want failure containing %q", v, c.contains)
 			}
 		})
+	}
+}
+
+func TestClassifyMatchesResultKeysExactly(t *testing.T) {
+	for name, raw := range map[string]string{
+		"outcome in another case":     `{"Outcome":"merged"}`,
+		"message in another case":     `{"outcome":"merged","MESSAGE":"m"}`,
+		"artifacts in another case":   `{"outcome":"merged","Artifacts":{"notes":"n"}}`,
+		"duplicate outcome":           `{"outcome":"closed","outcome":"merged"}`,
+		"duplicate message":           `{"outcome":"merged","message":"a","message":"b"}`,
+		"duplicate artifacts":         `{"outcome":"merged","artifacts":{},"artifacts":{"notes":"n"}}`,
+		"duplicate artifact name":     `{"outcome":"merged","artifacts":{"notes":"a","notes":"b"}}`,
+		"artifact value not a string": `{"outcome":"merged","artifacts":{"notes":1}}`,
+		"artifacts not an object":     `{"outcome":"merged","artifacts":["notes"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if v := Classify(KindWatch, ip(0), false, []byte(raw), nil, declared); v.Kind != VerdictFailure {
+				t.Fatalf("got %+v, want a failure", v)
+			}
+		})
+	}
+	v := Classify(KindWatch, ip(0), false, []byte(`{"artifacts":null,"message":"m","outcome":"merged"}`), nil, declared)
+	if v.Kind != VerdictOutcome || v.Outcome != "merged" || v.Message != "m" || v.Artifacts != nil {
+		t.Fatalf("got %+v", v)
+	}
+}
+
+func TestClassifyBoundsEveryMessageOnARuneBoundary(t *testing.T) {
+	long := "a" + strings.Repeat("ж", MaxMessageBytes)
+	v := Classify(KindCheck, ip(7), false, []byte(`{"message":"`+long+`"}`), nil, declared)
+	if v.Kind != VerdictFailure || len(v.Message) > MaxMessageBytes || !utf8.ValidString(v.Message) || !strings.Contains(v.Message, "exit 7") {
+		t.Fatalf("exit failure message: %d bytes, valid %v", len(v.Message), utf8.ValidString(v.Message))
+	}
+	// A decoder error quotes the input; only 256 bytes of its text are kept.
+	key := strings.Repeat("k", 1000)
+	for _, raw := range []string{`{"` + key + `":1}`, `{"message":` + strings.Repeat("9", 1000) + `}`} {
+		v = Classify(KindCheck, ip(0), false, []byte(raw), nil, declared)
+		if v.Kind != VerdictFailure || len(v.Message) > len("the result file is not valid: ")+256 {
+			t.Fatalf("decoder failure = %d bytes: %q", len(v.Message), v.Message)
+		}
+	}
+	// An undeclared artifact name comes from the script and is cut too.
+	v = Classify(KindCheck, ip(0), false, []byte(`{"artifacts":{"`+key+`":"v"}}`), nil, declared)
+	if v.Kind != VerdictFailure || strings.Contains(v.Message, strings.Repeat("k", 65)) {
+		t.Fatalf("undeclared artifact failure = %q", v.Message)
 	}
 }
 

@@ -113,13 +113,9 @@ func Classify(kind string, exit *int, timedOut bool, rawResult []byte, resultErr
 	}
 	msg := "the script failed with exit " + strconv.Itoa(code)
 	if err == nil && res.Message != "" {
-		m := res.Message
-		if len(m) > MaxMessageBytes {
-			m = m[:MaxMessageBytes]
-		}
-		msg += ": " + m
+		msg += ": " + res.Message
 	}
-	return Verdict{Kind: VerdictFailure, Message: msg}
+	return Verdict{Kind: VerdictFailure, Message: cutRunes(msg, MaxMessageBytes)}
 }
 
 func classifySuccess(kind string, res resultFile, declared Declared) Verdict {
@@ -163,14 +159,119 @@ func readResult(raw []byte, readErr error) (resultFile, error) {
 		return res, errors.New("the result file is not a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&res); err != nil {
-		return resultFile{}, fmt.Errorf("the result file is not valid: %v", err)
+	if err := decodeResult(dec, &res); err != nil {
+		return resultFile{}, fmt.Errorf("the result file is not valid: %s", cutRunes(err.Error(), maxDecodeErrorBytes))
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return resultFile{}, errors.New("the result file has data after the JSON object")
 	}
 	return res, nil
+}
+
+// maxDecodeErrorBytes bounds the decoder error text in a failure message: it
+// may quote the script's input.
+const maxDecodeErrorBytes = 256
+
+// maxEchoedNameBytes bounds a key or artifact name from the result file that
+// goes into a failure message.
+const maxEchoedNameBytes = 64
+
+// decodeResult reads one JSON object into res, matching its keys exactly,
+// unlike encoding/json, which matches them without regard to case. A key that
+// is not outcome, message, or artifacts, or that appears twice, is an error.
+func decodeResult(dec *json.Decoder, res *resultFile) error {
+	if err := expectDelim(dec, '{'); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		key, err := objectKey(dec, seen)
+		if err != nil {
+			return err
+		}
+		switch key {
+		case "outcome":
+			err = dec.Decode(&res.Outcome)
+		case "message":
+			err = dec.Decode(&res.Message)
+		case "artifacts":
+			res.Artifacts, err = decodeArtifacts(dec)
+		default:
+			err = fmt.Errorf("unknown field %q", cutRunes(key, maxEchoedNameBytes))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return expectDelim(dec, '}')
+}
+
+// decodeArtifacts reads the artifacts value: null, or an object of strings
+// whose names appear once each.
+func decodeArtifacts(dec *json.Decoder) (map[string]string, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if tok == nil {
+		return nil, nil
+	}
+	if tok != json.Delim('{') {
+		return nil, errors.New("artifacts is not an object")
+	}
+	artifacts := map[string]string{}
+	seen := map[string]bool{}
+	for dec.More() {
+		name, err := objectKey(dec, seen)
+		if err != nil {
+			return nil, err
+		}
+		var value string
+		if err := dec.Decode(&value); err != nil {
+			return nil, fmt.Errorf("artifact %q: %v", cutRunes(name, maxEchoedNameBytes), err)
+		}
+		artifacts[name] = value
+	}
+	return artifacts, expectDelim(dec, '}')
+}
+
+// objectKey reads the next key of an object and refuses one already in seen.
+func objectKey(dec *json.Decoder, seen map[string]bool) (string, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return "", err
+	}
+	key, ok := tok.(string)
+	if !ok {
+		return "", errors.New("an object key is not a string")
+	}
+	if seen[key] {
+		return "", fmt.Errorf("duplicate key %q", cutRunes(key, maxEchoedNameBytes))
+	}
+	seen[key] = true
+	return key, nil
+}
+
+func expectDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok != want {
+		return fmt.Errorf("expected %v", want)
+	}
+	return nil
+}
+
+// cutRunes cuts s to at most n bytes on a rune boundary.
+func cutRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func checkMessage(m string) error {
@@ -190,7 +291,7 @@ func checkArtifacts(got map[string]string, declared []string) error {
 		v := got[name]
 		switch {
 		case !contains(declared, name):
-			return fmt.Errorf("the result names undeclared artifact %q", name)
+			return fmt.Errorf("the result names undeclared artifact %q", cutRunes(name, maxEchoedNameBytes))
 		case v == "":
 			return fmt.Errorf("artifact %q is empty", name)
 		case !utf8.ValidString(v):

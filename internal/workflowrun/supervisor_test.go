@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/alekzonder/tariboy/internal/script"
 	"github.com/alekzonder/tariboy/internal/tasks"
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 	"github.com/alekzonder/tariboy/internal/workflowimage"
@@ -332,7 +334,7 @@ func envFile(t *testing.T, path string) map[string]string {
 
 func noToolsSocket(t *testing.T, env map[string]string) {
 	t.Helper()
-	for _, name := range strippedEnv {
+	for _, name := range script.DaemonAccessEnv {
 		if _, ok := env[name]; ok {
 			t.Fatalf("%s reached the script", name)
 		}
@@ -628,6 +630,45 @@ func TestSupervisorRedactsQueueSecretsFromWhatAScriptReturns(t *testing.T) {
 	}
 	if got := done.Artifacts["note"]; got != "v-[redacted]-abc" {
 		t.Fatalf("artifact note = %q, want the long secret redacted and the short one kept", got)
+	}
+}
+
+func TestPrepareGivesAQueueRunADefaultPath(t *testing.T) {
+	h := newHarness(t)
+	w := &worker{s: h.sup}
+	job := checkJob(1, "DEV-1", "scripts/env.sh")
+	job.WorkflowName, job.WorkflowVersion, job.WorkflowDigest = h.image.Name, h.image.Version, h.image.Digest
+	h.sup.BaseEnv = func() []string { return []string{"MARK_DIR=" + h.marks} }
+	spec, reason := w.prepare(job)
+	if reason != "" || !slices.Contains(spec.Env, "PATH=/usr/bin:/bin") {
+		t.Fatalf("env = %v, reason %q", spec.Env, reason)
+	}
+	job.WorkflowEnv = map[string]string{"PATH": "/opt/bin"}
+	spec, reason = w.prepare(job)
+	if reason != "" || !slices.Contains(spec.Env, "PATH=/opt/bin") || slices.Contains(spec.Env, "PATH=/usr/bin:/bin") {
+		t.Fatalf("env with a workflow PATH = %v, reason %q", spec.Env, reason)
+	}
+}
+
+func TestPrepareRefusesATaskKeyThatIsNotOneDirectory(t *testing.T) {
+	h := newHarness(t)
+	w := &worker{s: h.sup}
+	for _, key := range []string{"", ".", "..", "a/b", "../x"} {
+		job := checkJob(1, key, "scripts/pass.sh")
+		job.WorkflowName, job.WorkflowVersion, job.WorkflowDigest = h.image.Name, h.image.Version, h.image.Digest
+		if _, reason := w.prepare(job); reason == "" {
+			t.Errorf("key %q was accepted", key)
+		}
+	}
+}
+
+func TestRedactCompletionLeavesNoPartialSecret(t *testing.T) {
+	secrets := map[string]string{"A": "abcdefgh", "B": "efghijkl"}
+	done := redactCompletion(tasks.RunCompletion{
+		Message: "x abcdefghijkl y", Artifacts: map[string]string{"note": "abcdefghijkl"},
+	}, secrets)
+	if done.Message != "x [redacted] y" || done.Artifacts["note"] != "[redacted]" {
+		t.Fatalf("completion = %+v", done)
 	}
 }
 

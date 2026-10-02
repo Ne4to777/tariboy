@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -126,8 +126,9 @@ func Execute(ctx context.Context, spec Spec) Result {
 	}
 	defer devNull.Close()
 
-	var killed atomic.Bool
-	cmd := exec.CommandContext(runCtx, spec.ScriptPath)
+	// The worker signals the process group itself, never through os/exec's
+	// context handling, which may signal after the process was reaped.
+	cmd := exec.Command(spec.ScriptPath)
 	cmd.Dir, cmd.Env = spec.Cwd, spec.Env
 	if cmd.Env == nil {
 		// A nil Env means "inherit" to os/exec; a run gets exactly spec.Env.
@@ -135,37 +136,60 @@ func Execute(ctx context.Context, spec Spec) Result {
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = killGrace
-	cmd.Cancel = func() error {
-		killed.Store(true)
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	}
 
 	res.Started = time.Now()
 	if err := cmd.Start(); err != nil {
 		return fail("cannot start the script %s: %v", spec.ScriptPath, err)
 	}
 	pid := cmd.Process.Pid
-	if spec.OnStart != nil {
-		spec.OnStart(pid)
+	proc := startProcess(pid)
+	// reap kills what the script left in its group while the exited leader,
+	// not yet reaped, still holds the group id, and then reaps the leader.
+	reap := func() {
+		<-proc.exited
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			_, _ = fmt.Fprintf(logFile, "error: cannot kill the process group %d: %v\n", pid, err)
+		}
+		_ = cmd.Wait()
+		res.Finished = time.Now()
 	}
-	_ = cmd.Wait()
-	res.Finished = time.Now()
-	// A child the script left behind still belongs to its group.
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		_, _ = fmt.Fprintf(logFile, "error: cannot kill the process group %d: %v\n", pid, err)
+	if !callOnStart(spec.OnStart, pid) {
+		proc.signal(syscall.SIGKILL)
+		reap()
+		_, _ = fmt.Fprintln(logFile, "error: run bookkeeping failed")
+		_ = logFile.Close()
+		res.Verdict = failure("run bookkeeping failed")
+		return res
 	}
+	killed := false
+	select {
+	case <-proc.exited:
+	case <-runCtx.Done():
+		if testHookTimeout != nil {
+			testHookTimeout(proc.exited)
+		}
+		// A script that has exited by itself is judged by its exit code, even
+		// when the deadline passed at the same instant.
+		if killed = proc.signal(syscall.SIGTERM); killed {
+			select {
+			case <-proc.exited:
+			case <-time.After(killGrace):
+				proc.signal(syscall.SIGKILL)
+			}
+		}
+	}
+	reap()
 	_ = logFile.Close()
 
 	if st := cmd.ProcessState; st != nil && st.Exited() {
 		code := st.ExitCode()
 		res.ExitCode = &code
 	}
-	if killed.Load() && ctx.Err() != nil {
+	if killed && ctx.Err() != nil {
 		res.Verdict = failure("the run was cancelled")
 		return res
 	}
-	res.TimedOut = killed.Load()
+	res.TimedOut = killed && errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	var raw []byte
 	var resultErr error
 	if !res.TimedOut {
@@ -173,6 +197,60 @@ func Execute(ctx context.Context, spec Spec) Result {
 	}
 	res.Verdict = Classify(spec.Kind, res.ExitCode, res.TimedOut, raw, resultErr, spec.Declared)
 	return res
+}
+
+// testHookTimeout, when set by a test, runs when the timeout fires, before the
+// worker decides whether to signal; it receives the channel closed on exit.
+var testHookTimeout func(exited <-chan struct{})
+
+// process tracks whether a started child has exited, without reaping it, so
+// its process group is signalled only while its id cannot have been reused.
+type process struct {
+	pid    int
+	exited chan struct{} // closed once the child has exited
+
+	mu   sync.Mutex
+	done bool
+}
+
+// startProcess watches pid until it exits. The child stays a zombie, holding
+// its pid and group id, until the caller reaps it after exited is closed.
+func startProcess(pid int) *process {
+	p := &process{pid: pid, exited: make(chan struct{})}
+	go func() {
+		waitExit(pid)
+		p.mu.Lock()
+		p.done = true
+		p.mu.Unlock()
+		close(p.exited)
+	}()
+	return p
+}
+
+// signal sends sig to the process group while the leader has not exited; it
+// reports whether it did.
+func (p *process) signal(sig syscall.Signal) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.done {
+		return false
+	}
+	_ = syscall.Kill(-p.pid, sig)
+	return true
+}
+
+// callOnStart runs onStart and reports false when it panicked.
+func callOnStart(onStart func(int), pid int) (ok bool) {
+	if onStart == nil {
+		return true
+	}
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	onStart(pid)
+	return true
 }
 
 // ownerDir creates dir, and narrows it to 0700 if it already existed.

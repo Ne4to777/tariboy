@@ -22,6 +22,16 @@ const (
 // script writes `exit "$TARIBOY_QUIET_EXIT"` instead of a magic number.
 const QuietExitEnv = "TARIBOY_QUIET_EXIT"
 
+// DaemonAccessEnv names the variables that reach the agent tools socket or the
+// daemon API. A script that must not reach them, such as a workflow script or
+// an agent script run without the tools socket, never receives any of them.
+var DaemonAccessEnv = []string{
+	"TARIBOY_TOOLS_SOCKET",
+	"TARIBOY_DAEMON_SOCKET",
+	"TARIBOY_PLUGIN_SOCKET",
+	"TARIBOY_PLUGIN_TOKEN",
+}
+
 // ProtocolEnv returns the environment entries every script run receives.
 // Append it after the agent's own environment so the protocol value wins.
 func ProtocolEnv() []string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -178,6 +179,64 @@ func TestExecuteCancelIsNotTimeout(t *testing.T) {
 	if r.TimedOut || r.Verdict.Kind != VerdictFailure || !strings.Contains(r.Verdict.Message, "cancelled") {
 		t.Fatalf("result = %+v", r)
 	}
+}
+
+// TestExecuteExitBeforeTheTimeoutSignalIsJudgedByItsCode: the deadline passes
+// while the script is exiting by itself. The hook holds the timeout branch
+// until the script has exited, so the worker must see that and judge the exit
+// code instead of signalling a finished process.
+func TestExecuteExitBeforeTheTimeoutSignalIsJudgedByItsCode(t *testing.T) {
+	f := newFixture(t, "sleep 0.3; exit 0\n")
+	spec := f.spec(KindCheck)
+	spec.Timeout = 50 * time.Millisecond
+	testHookTimeout = func(exited <-chan struct{}) { <-exited }
+	t.Cleanup(func() { testHookTimeout = nil })
+	r := Execute(context.Background(), spec)
+	if r.TimedOut || r.Verdict.Kind != VerdictPass {
+		t.Fatalf("result = %+v", r)
+	}
+	requireExit(t, r, 0)
+}
+
+func TestProcessIsNeverSignalledAfterItExited(t *testing.T) {
+	cmd := exec.Command("sleep", "0.1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	p := startProcess(cmd.Process.Pid)
+	<-p.exited
+	if p.signal(syscall.SIGKILL) {
+		t.Fatal("signal reported delivery to an exited process")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("the process was signalled: %v", err)
+	}
+}
+
+func TestExecuteOnStartPanicKillsTheRun(t *testing.T) {
+	f := newFixture(t, `sleep 30 & echo $! > "$FIXTURE_DIR/child.pid"; sleep 30`+"\n")
+	spec := f.spec(KindCheck)
+	childFile := filepath.Join(f.dir, "child.pid")
+	spec.OnStart = func(int) {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(childFile); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		panic("bookkeeping exploded")
+	}
+	start := time.Now()
+	r := Execute(context.Background(), spec)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %v", elapsed)
+	}
+	if r.Verdict.Kind != VerdictFailure || r.Verdict.Message != "run bookkeeping failed" {
+		t.Fatalf("result = %+v", r)
+	}
+	requireGone(t, readPID(t, childFile))
 }
 
 func TestExecuteCancelledBeforeStart(t *testing.T) {

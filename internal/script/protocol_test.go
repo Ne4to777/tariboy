@@ -40,6 +40,13 @@ func shellExit(t *testing.T, command string) int {
 	return exit.ExitCode()
 }
 
+func TestDaemonAccessEnvNamesEverySocketAndToken(t *testing.T) {
+	want := []string{"TARIBOY_TOOLS_SOCKET", "TARIBOY_DAEMON_SOCKET", "TARIBOY_PLUGIN_SOCKET", "TARIBOY_PLUGIN_TOKEN"}
+	if !reflect.DeepEqual(DaemonAccessEnv, want) {
+		t.Fatalf("DaemonAccessEnv = %v, want %v", DaemonAccessEnv, want)
+	}
+}
+
 func TestLegacyQuietCommandMapsOnlyTheLegacyCode(t *testing.T) {
 	cases := []struct {
 		name    string

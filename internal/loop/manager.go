@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -1961,23 +1962,16 @@ func agentScriptEnv(ag agent.Agent, l agentdir.Layout, secrets map[string]string
 	if toolsSock != "" {
 		return env
 	}
+	// A script without the tools socket gets none of the variables that reach
+	// the socket or the daemon API.
 	out := env[:0]
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		if !noToolsSocketEnv[name] {
+		if !slices.Contains(script.DaemonAccessEnv, name) {
 			out = append(out, kv)
 		}
 	}
 	return out
-}
-
-// noToolsSocketEnv names the variables that reach the agent tools socket or
-// the daemon API; a script without the tools socket gets none of them.
-var noToolsSocketEnv = map[string]bool{
-	"TARIBOY_TOOLS_SOCKET":  true,
-	"TARIBOY_DAEMON_SOCKET": true,
-	"TARIBOY_PLUGIN_SOCKET": true,
-	"TARIBOY_PLUGIN_TOKEN":  true,
 }
 
 // ScriptRuntime returns the working directory and environment a script run

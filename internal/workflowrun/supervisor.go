@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alekzonder/tariboy/internal/script"
 	"github.com/alekzonder/tariboy/internal/tasks"
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 	"github.com/alekzonder/tariboy/internal/workflowimage"
@@ -31,15 +33,6 @@ const (
 	completeTimeout    = 10 * time.Second
 )
 
-// strippedEnv names the variables that reach the agent tools socket or the
-// daemon API. A run never receives them, whatever its baseline holds.
-var strippedEnv = []string{
-	"TARIBOY_TOOLS_SOCKET",
-	"TARIBOY_DAEMON_SOCKET",
-	"TARIBOY_PLUGIN_SOCKET",
-	"TARIBOY_PLUGIN_TOKEN",
-}
-
 // protocolNames are the TARIBOY_* names the protocol owns. No other layer may
 // set one, including TARIBOY_WORKFLOW_OUTCOME on a run that has no outcome.
 var protocolNames = func() []string {
@@ -50,6 +43,9 @@ var protocolNames = func() []string {
 	}
 	return names
 }()
+
+// defaultPath is the PATH of a queue run whose environment names none.
+const defaultPath = "PATH=/usr/bin:/bin"
 
 // Jobs is the part of the task service the worker uses.
 type Jobs interface {
@@ -211,7 +207,7 @@ func (w *worker) start(ctx context.Context, job tasks.RunJob) {
 		}
 	}
 	if reason != "" {
-		reason = redactSecrets(reason, job.QueueSecrets)
+		reason = tasks.RedactSecrets(reason, secretValues(job.QueueSecrets))
 		w.log.Warn("workflow script run failed before it started", "run_id", id, "task", job.Run.TaskKey,
 			"script", job.Run.Script, "reason", reason)
 		w.complete(ctx, job, tasks.RunCompletion{
@@ -308,7 +304,7 @@ func (w *worker) complete(ctx context.Context, job tasks.RunJob, done tasks.RunC
 func (w *worker) prepare(job tasks.RunJob) (Spec, string) {
 	run := job.Run
 	key := run.TaskKey
-	if key == "" || !filepath.IsLocal(key) || strings.ContainsAny(key, `/\`) {
+	if !tasks.IsTaskDirKey(key) {
 		return Spec{}, fmt.Sprintf("task key %q is not a valid directory name", key)
 	}
 	base, err := filepath.Abs(w.s.BaseDir)
@@ -330,7 +326,8 @@ func (w *worker) prepare(job tasks.RunJob) (Spec, string) {
 	var cwd string
 	var baseline []string
 	// A watch run is always a queue run, whatever its record says.
-	if run.Kind == KindCheck && run.RunAs == workflowfile.RunAsAgent {
+	agentMode := run.Kind == KindCheck && run.RunAs == workflowfile.RunAsAgent
+	if agentMode {
 		if job.Holder == "" {
 			return Spec{}, fmt.Sprintf("check %s runs as the agent, but the task has no agent holder", run.Script)
 		}
@@ -365,6 +362,10 @@ func (w *worker) prepare(job tasks.RunJob) (Spec, string) {
 		withoutNames(mapEnv(job.QueueSecrets), protocolNames),
 		protocol,
 	)
+	// A queue run whose layers name no PATH still finds the system tools.
+	if !agentMode && !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "PATH=") }) {
+		env = append(env, defaultPath)
+	}
 	return Spec{
 		RunID: strconv.FormatInt(run.ID, 10), Kind: run.Kind, ScriptPath: scriptPath, Cwd: cwd, Env: env,
 		Timeout: job.Timeout, RunDir: runDir, TaskDir: stateDir, Snapshot: job.Snapshot,
@@ -374,7 +375,8 @@ func (w *worker) prepare(job tasks.RunJob) (Spec, string) {
 
 // mergeEnv joins environment lists so that a later value replaces an earlier
 // one of the same name, keeping the order of first appearance, and drops the
-// variables in strippedEnv.
+// variables in script.DaemonAccessEnv: a run never receives them, whatever its
+// baseline holds.
 func mergeEnv(lists ...[]string) []string {
 	values := map[string]string{}
 	var order []string
@@ -392,7 +394,7 @@ func mergeEnv(lists ...[]string) []string {
 	}
 	out := make([]string, 0, len(order))
 	for _, name := range order {
-		if !contains(strippedEnv, name) {
+		if !contains(script.DaemonAccessEnv, name) {
 			out = append(out, name+"="+values[name])
 		}
 	}
@@ -421,45 +423,30 @@ func withoutNames(env, names []string) []string {
 	return out
 }
 
-// Redaction of queue secret values from what a script returns. A value shorter
-// than minRedactBytes is too short to match safely and is left alone.
-const (
-	redactedText   = "[redacted]"
-	minRedactBytes = 6
-)
-
 // redactCompletion replaces queue secret values in the message and in every
-// artifact value. The outcome is matched against declared names and is left
-// alone; the run log is owner-only and is not rewritten.
+// artifact value with tasks.RedactSecrets. The outcome is matched against
+// declared names and is left alone; the run log is owner-only and is not
+// rewritten.
 func redactCompletion(done tasks.RunCompletion, secrets map[string]string) tasks.RunCompletion {
-	done.Message = redactSecrets(done.Message, secrets)
+	values := secretValues(secrets)
+	done.Message = tasks.RedactSecrets(done.Message, values)
 	if done.Artifacts != nil {
 		artifacts := make(map[string]string, len(done.Artifacts))
 		for name, value := range done.Artifacts {
-			artifacts[name] = redactSecrets(value, secrets)
+			artifacts[name] = tasks.RedactSecrets(value, values)
 		}
 		done.Artifacts = artifacts
 	}
 	return done
 }
 
-// redactSecrets replaces every secret value of at least minRedactBytes in s,
-// longest first, so a value that contains another is replaced whole.
-func redactSecrets(s string, secrets map[string]string) string {
-	if s == "" {
-		return s
-	}
+// secretValues lists the values of a secret map.
+func secretValues(secrets map[string]string) []string {
 	values := make([]string, 0, len(secrets))
 	for _, value := range secrets {
-		if len(value) >= minRedactBytes {
-			values = append(values, value)
-		}
+		values = append(values, value)
 	}
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	for _, value := range values {
-		s = strings.ReplaceAll(s, value, redactedText)
-	}
-	return s
+	return values
 }
 
 func exitAttr(code *int) any {

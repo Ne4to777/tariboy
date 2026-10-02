@@ -512,8 +512,9 @@ func TestStartScriptDoesNotLaunchCanceledPendingRecord(t *testing.T) {
 
 func TestScriptRuntimeIsTheAgentScriptEnvironmentWithoutToolsSocket(t *testing.T) {
 	m, as, agentsDir, _ := newManager(t, &fakeRunner{})
-	t.Setenv("TARIBOY_TOOLS_SOCKET", "/baseline/tools.sock")
-	t.Setenv("TARIBOY_DAEMON_SOCKET", "/baseline/daemon.sock")
+	for _, name := range script.DaemonAccessEnv {
+		t.Setenv(name, "/baseline/"+name)
+	}
 	t.Setenv("SCRIPT_RUNTIME_BASELINE", "base")
 	t.Setenv("SCRIPT_RUNTIME_SHARED", "base")
 	workdir := t.TempDir()
@@ -551,7 +552,7 @@ func TestScriptRuntimeIsTheAgentScriptEnvironmentWithoutToolsSocket(t *testing.T
 			t.Fatalf("%s = %q, want %q", name, values[name], want)
 		}
 	}
-	for _, name := range []string{"TARIBOY_TOOLS_SOCKET", "TARIBOY_DAEMON_SOCKET"} {
+	for _, name := range script.DaemonAccessEnv {
 		if _, ok := values[name]; ok {
 			t.Fatalf("%s is present in the script runtime environment", name)
 		}
