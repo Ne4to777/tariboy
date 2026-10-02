@@ -28,6 +28,8 @@ type Client struct {
 type APIError struct {
 	Code string
 	Msg  string
+	// Details is the error's structured data, when the daemon sent any.
+	Details map[string]any
 }
 
 func (e *APIError) Error() string { return e.Code + ": " + e.Msg }
@@ -81,8 +83,9 @@ func (c *Client) Call(method, route string, body any) (json.RawMessage, error) {
 		OK     bool            `json:"ok"`
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
 		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -92,7 +95,7 @@ func (c *Client) Call(method, route string, body any) (json.RawMessage, error) {
 		if env.Error == nil {
 			return nil, errors.New("daemon returned failure without error detail")
 		}
-		return nil, &APIError{Code: env.Error.Code, Msg: env.Error.Message}
+		return nil, &APIError{Code: env.Error.Code, Msg: env.Error.Message, Details: env.Error.Details}
 	}
 	return env.Result, nil
 }

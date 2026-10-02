@@ -16,7 +16,32 @@ import (
 	"github.com/alekzonder/tariboy/internal/bus"
 	"github.com/alekzonder/tariboy/internal/script"
 	"github.com/alekzonder/tariboy/internal/store"
+	"github.com/alekzonder/tariboy/internal/tasks"
 )
+
+func TestNativeTasksActionReturnsErrorDataToTheAgent(t *testing.T) {
+	server := NewServer(Deps{
+		Agent: "alice", Plugins: []string{"whoami", "loop", "messages", "tasks"},
+		TaskAction: func(string, map[string]any) (any, error) {
+			return nil, &tasks.Error{Status: http.StatusConflict, Code: "workflow_managed", Msg: "managed",
+				Data: map[string]any{"status": "develop", "outcomes": []string{"ready"}}}
+		},
+	})
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest("POST", "/tools/tasks/done", bytes.NewBufferString(`{"key":"DEV-1"}`)))
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusConflict || env.Error.Code != "workflow_managed" || env.Error.Details["status"] != "develop" {
+		t.Fatalf("status %d body %s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func decode(t *testing.T, body []byte) (bool, map[string]any) {
 	t.Helper()

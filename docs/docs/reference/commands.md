@@ -220,6 +220,29 @@ derives identity from the socket.
 | `ttasks relate KEY OTHER` | Add a symmetric related link |
 | `ttasks done KEY [--complete-anyway]` | Complete, optionally overriding active descendants |
 
+These verbs drive a task that follows a queue's workflow image. Agent mode
+sends `advance`, `artifact_set`, `artifact_ls`, `artifact_show`, and
+`workflow_get` over the identity-bound socket; operator mode calls the REST
+routes as the customer.
+
+| Command | Modes | REST route |
+| --- | --- | --- |
+| `ttasks advance KEY --outcome NAME [--message TEXT]` | agent, operator | `POST /api/tasks/{key}/advance` |
+| `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` (stdin when absent; stored as given, up to 64 KiB) | agent, operator | `PUT /api/tasks/{key}/artifacts/{name}` |
+| `ttasks artifacts ls KEY` | agent, operator | `GET /api/tasks/{key}/artifacts` |
+| `ttasks artifacts show KEY NAME` | agent, operator | `GET /api/tasks/{key}/artifacts/{name}` |
+| `ttasks workflow get KEY` | agent, operator | `GET /api/tasks/{key}/workflow` |
+| `ttasks workflow move KEY --to STATUS --reason TEXT` | operator only | `POST /api/tasks/{key}/workflow/move` |
+| `ttasks cancel KEY` | operator only | `POST /api/tasks/{key}/cancel` |
+| `ttasks queue workflow set QUEUE REF [--revision N]` | operator only | `PUT /api/task-queues/{queue}/workflow` |
+| `ttasks queue workflow get QUEUE` | operator only | `GET /api/task-queues/{queue}/workflow` |
+| `ttasks queue workflow clear QUEUE --revision N` | operator only | `DELETE /api/task-queues/{queue}/workflow` |
+
+On a workflow task `ttasks done`, `ttasks update --status`, and
+`ttasks ready --claim` are refused with `workflow_managed`; the error lists the
+status's outcomes and the `ttasks advance` form to use. `ttasks show` prints
+`status` (the workflow status), `category`, and `waiting_on`.
+
 The following administration roots are operator-only and are documented by
 `ttasks --help-json`: `queue` (including pools and triggers; see
 [Task workflows](/docs/task-workflows)), `events`, `principals`, and

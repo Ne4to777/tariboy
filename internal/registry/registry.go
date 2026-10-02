@@ -121,6 +121,16 @@ type TaskControl interface {
 	CreateQueueWorkflowTrigger(context.Context, tasks.Actor, string, tasks.CreateQueueWorkflowTriggerInput) (tasks.QueueWorkflowTrigger, error)
 	ListQueueWorkflowTriggers(context.Context, tasks.Actor, string) ([]tasks.QueueWorkflowTrigger, error)
 	DeleteQueueWorkflowTrigger(context.Context, tasks.Actor, string, int64) error
+	Advance(context.Context, tasks.Actor, string, tasks.AdvanceInput) (tasks.TransitionRequest, error)
+	SetArtifact(context.Context, tasks.Actor, string, string, string) (tasks.Artifact, error)
+	ListArtifacts(context.Context, tasks.Actor, string) ([]tasks.Artifact, error)
+	GetArtifact(context.Context, tasks.Actor, string, string) (tasks.Artifact, []tasks.Artifact, error)
+	GetWorkflow(context.Context, tasks.Actor, string) (tasks.WorkflowView, error)
+	MoveWorkflow(context.Context, tasks.Actor, string, string, string) (tasks.Task, error)
+	CancelWorkflowTask(context.Context, tasks.Actor, string) (tasks.Task, error)
+	SetQueueWorkflow(context.Context, tasks.Actor, string, string, int64) (tasks.QueueWorkflow, error)
+	GetQueueWorkflow(context.Context, tasks.Actor, string) (tasks.QueueWorkflow, error)
+	ClearQueueWorkflow(context.Context, tasks.Actor, string, int64) error
 }
 
 // ScriptControl is the narrow manager-owned script lifecycle surface used by

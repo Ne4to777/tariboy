@@ -115,6 +115,20 @@ func (s *Service) AgentAction(ctx context.Context, actor Actor, action string, b
 		return s.CompleteTask(ctx, actor, key, CompleteInput{
 			Revision: revision, CompleteAnyway: actionBool(body, "complete_anyway"),
 		})
+	case "advance":
+		return s.Advance(ctx, actor, actionString(body, "key"), AdvanceInput{
+			Outcome: actionString(body, "outcome"), Message: actionRawString(body, "message"),
+		})
+	case "artifact_set":
+		return s.SetArtifact(ctx, actor, actionString(body, "key"), actionString(body, "name"), actionRawString(body, "value"))
+	case "artifact_ls":
+		artifacts, err := s.ListArtifacts(ctx, actor, actionString(body, "key"))
+		return map[string]any{"artifacts": artifacts, "count": len(artifacts)}, err
+	case "artifact_show":
+		artifact, history, err := s.GetArtifact(ctx, actor, actionString(body, "key"), actionString(body, "name"))
+		return map[string]any{"artifact": artifact, "history": history}, err
+	case "workflow_get":
+		return s.GetWorkflow(ctx, actor, actionString(body, "key"))
 	default:
 		return nil, domainError(http.StatusBadRequest, "invalid_action",
 			fmt.Sprintf("unknown task action %q", action))
@@ -132,6 +146,13 @@ func (s *Service) actionRevision(ctx context.Context, actor Actor, key string, b
 func actionString(body map[string]any, key string) string {
 	value, _ := body[key].(string)
 	return strings.TrimSpace(value)
+}
+
+// actionRawString is actionString without the trimming, for values stored as
+// given such as artifact text.
+func actionRawString(body map[string]any, key string) string {
+	value, _ := body[key].(string)
+	return value
 }
 
 func actionOptionalString(body map[string]any, key string) *string {

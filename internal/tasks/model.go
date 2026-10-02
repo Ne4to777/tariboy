@@ -196,22 +196,42 @@ func (t Task) MarshalJSON() ([]byte, error) {
 	}{plainTask: plainTask(t), Status: status, Category: t.Status})
 }
 
-// UnmarshalJSON reverses MarshalJSON.
+// UnmarshalJSON reverses MarshalJSON. Whether the payload is a workflow task
+// is decided from the payload alone: the receiver's workflow fields are cleared
+// first, so decoding into a reused Task never inherits the previous value's
+// workflow. A payload with neither "status" nor "category" leaves Status as it
+// was.
 func (t *Task) UnmarshalJSON(data []byte) error {
+	next := *t
+	next.WorkflowDigest, next.WorkflowName, next.WorkflowVersion = "", "", ""
+	next.WorkflowStatus, next.WorkflowPausedReason, next.WaitingOn = "", "", ""
 	aux := struct {
 		*plainTask
-		Status   string `json:"status"`
-		Category string `json:"category"`
-	}{plainTask: (*plainTask)(t)}
+		Status   *string `json:"status"`
+		Category *string `json:"category"`
+	}{plainTask: (*plainTask)(&next)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if t.WorkflowDigest != "" {
-		t.WorkflowStatus, t.Status = aux.Status, aux.Category
-	} else {
-		t.WorkflowStatus, t.Status = "", aux.Status
+	switch {
+	case next.WorkflowDigest != "":
+		if aux.Status != nil {
+			next.WorkflowStatus = *aux.Status
+		}
+		if aux.Category != nil {
+			next.Status = *aux.Category
+		}
+	case aux.Status != nil:
+		next.Status = *aux.Status
+	case aux.Category != nil:
+		next.Status = *aux.Category
 	}
-	t.Category = aux.Category
+	if aux.Category != nil {
+		next.Category = *aux.Category
+	} else if aux.Status != nil && next.WorkflowDigest == "" {
+		next.Category = next.Status
+	}
+	*t = next
 	return nil
 }
 

@@ -3,6 +3,7 @@ package taskcli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -97,6 +98,26 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 		}
 		method, route = "POST", "/api/tasks/"+key+"/complete"
 		delete(body, "key")
+	case "advance":
+		method, route = "POST", "/api/tasks/"+key+"/advance"
+		delete(body, "key")
+	case "artifact_set":
+		name, _ := body["name"].(string)
+		method, route = "PUT", "/api/tasks/"+key+"/artifacts/"+name
+		body = map[string]any{"value": body["value"]}
+	case "artifact_ls":
+		method, route, body = "GET", "/api/tasks/"+key+"/artifacts", nil
+	case "artifact_show":
+		name, _ := body["name"].(string)
+		method, route, body = "GET", "/api/tasks/"+key+"/artifacts/"+name, nil
+	case "workflow_get":
+		method, route, body = "GET", "/api/tasks/"+key+"/workflow", nil
+	case "workflow_move":
+		method, route = "POST", "/api/tasks/"+key+"/workflow/move"
+		delete(body, "key")
+	case "cancel":
+		method, route = "POST", "/api/tasks/"+key+"/cancel"
+		delete(body, "key")
 	default:
 		fmt.Fprintf(stderr, "tasks: unsupported operator command %s\n", parsed.action)
 		return 2
@@ -107,7 +128,7 @@ func runOperator(ctx context.Context, parsed request, caller Caller, jsonOut boo
 	}
 	raw, err := caller.Call(method, route, requestBody)
 	if err != nil {
-		return operatorError(err, stderr)
+		return operatorErrorFor(err, key, stderr)
 	}
 	return printResult(parsed, raw, jsonOut, stdout, stderr)
 }
@@ -164,7 +185,8 @@ func runReady(parsed request, caller Caller, jsonOut bool, stdout, stderr io.Wri
 		}
 		for _, rawTask := range page.Tasks {
 			var task struct {
-				Status            string `json:"status"`
+				Category          string `json:"category"`
+				WorkflowDigest    string `json:"workflow_digest"`
 				Assignee          string `json:"assignee"`
 				ManualBlockReason string `json:"manual_block_reason"`
 				Blocked           bool   `json:"blocked"`
@@ -173,7 +195,10 @@ func runReady(parsed request, caller Caller, jsonOut bool, stdout, stderr io.Wri
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
-			if task.Status == "open" && task.Assignee == "" && task.ManualBlockReason == "" && !task.Blocked {
+			// "status" is the workflow status for a workflow task; the category is
+			// the lifecycle state. The daemon assigns workflow work, so a task with a
+			// workflow is never ready to claim.
+			if task.Category == "open" && task.WorkflowDigest == "" && task.Assignee == "" && task.ManualBlockReason == "" && !task.Blocked {
 				ready = append(ready, rawTask)
 				if len(ready) == limit {
 					result, _ := json.Marshal(ready)
@@ -206,12 +231,20 @@ func firstTask(raw json.RawMessage) (string, int64, error) {
 	return value.Tasks[0].Key, value.Tasks[0].Revision, nil
 }
 
-func operatorError(err error, stderr io.Writer) int {
+func operatorError(err error, stderr io.Writer) int { return operatorErrorFor(err, "", stderr) }
+
+// operatorErrorFor is operatorError for a command on task key, so a
+// workflow_managed refusal can name the exact advance command.
+func operatorErrorFor(err error, key string, stderr io.Writer) int {
 	if client.IsDaemonDown(err) {
 		fmt.Fprintln(stderr, "tariboyd is not running (start it with: tariboyd)")
 		return 2
 	}
 	fmt.Fprintf(stderr, "error: %v\n", err)
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		printWorkflowManagedHint(apiErr, key, stderr)
+	}
 	return 1
 }
 
@@ -269,6 +302,13 @@ func runHelpJSON(ctx context.Context, stdout, stderr io.Writer) int {
 }
 
 func sharedHelpPath(action string) []string {
+	for group, words := range commandWords {
+		for word, name := range words {
+			if name == action {
+				return []string{group, word}
+			}
+		}
+	}
 	return []string{action}
 }
 

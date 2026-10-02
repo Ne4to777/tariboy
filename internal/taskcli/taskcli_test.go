@@ -181,13 +181,13 @@ func TestOperatorReadyFiltersAcrossPagesAndClaimRequiresAgent(t *testing.T) {
 	old := newCaller
 	defer func() { newCaller = old }()
 	recorded := &scriptedRecorder{results: []json.RawMessage{
-		json.RawMessage(`{"tasks":[{"key":"DEV-1","status":"open","assignee":"worker"},{"key":"DEV-2","status":"open","blocked":true}],"next_cursor":"DEV-3","sequence":1}`),
-		json.RawMessage(`{"tasks":[{"key":"DEV-4","status":"open","revision":4}],"sequence":2}`),
+		json.RawMessage(`{"tasks":[{"key":"DEV-1","status":"open","category":"open","assignee":"worker"},{"key":"DEV-2","status":"open","category":"open","blocked":true},{"key":"DEV-5","status":"develop","category":"open","workflow_digest":"d1"}],"next_cursor":"DEV-3","sequence":1}`),
+		json.RawMessage(`{"tasks":[{"key":"DEV-4","status":"open","category":"open","revision":4}],"sequence":2}`),
 	}}
 	newCaller = func(string) Caller { return recorded }
 	var out, errOut strings.Builder
 	env := operatorEnv(t)
-	if code := Run(context.Background(), []string{"ready", "--json"}, env, &out, &errOut); code != 0 || strings.TrimSpace(out.String()) != `[{"key":"DEV-4","status":"open","revision":4}]` {
+	if code := Run(context.Background(), []string{"ready", "--json"}, env, &out, &errOut); code != 0 || strings.TrimSpace(out.String()) != `[{"key":"DEV-4","status":"open","category":"open","revision":4}]` {
 		t.Fatalf("ready = %d stdout %q stderr %q", code, out.String(), errOut.String())
 	}
 	if len(recorded.calls) != 2 || !sameJSON(recorded.calls[0].body, map[string]string{"status": "open", "blocked": "false", "limit": "500"}) || !sameJSON(recorded.calls[1].body, map[string]string{"status": "open", "blocked": "false", "limit": "500", "after": "DEV-3"}) {
@@ -246,6 +246,10 @@ func TestOperatorAdministrationArguments(t *testing.T) {
 		{[]string{"queue", "pool", "set", "OPS", "reviewers", "--agents", "worker", "--revision", "0", "--idempotency-key", "pool-1"}, "PATCH", "/api/task-queues/OPS/pools/reviewers", map[string]any{"agents": "worker", "revision": 0, "idempotency_key": "pool-1"}},
 		{[]string{"queue", "trigger", "create", "OPS", "--pattern", "external:incidents", "--action", "create_task"}, "POST", "/api/task-queues/OPS/workflow-triggers", map[string]any{"pattern": "external:incidents", "action": "create_task"}},
 		{[]string{"queue", "trigger", "delete", "OPS", "4"}, "DELETE", "/api/task-queues/OPS/workflow-triggers/4", map[string]string{}},
+		{[]string{"queue", "workflow", "set", "OPS", "development:latest", "--revision", "2"}, "PUT", "/api/task-queues/OPS/workflow", map[string]any{"ref": "development:latest", "revision": 2}},
+		{[]string{"queue", "workflow", "set", "OPS", "development:latest"}, "PUT", "/api/task-queues/OPS/workflow", map[string]any{"ref": "development:latest"}},
+		{[]string{"queue", "workflow", "get", "OPS"}, "GET", "/api/task-queues/OPS/workflow", map[string]string{}},
+		{[]string{"queue", "workflow", "clear", "OPS", "--revision", "3"}, "DELETE", "/api/task-queues/OPS/workflow", map[string]string{"revision": "3"}},
 		{[]string{"events", "OPS-1", "--after", "7", "--limit", "10"}, "GET", "/api/tasks/OPS-1/events", map[string]string{"after": "7", "limit": "10"}},
 	}
 	old := newCaller
@@ -277,12 +281,12 @@ func TestHelpJSONCoversRunnableTaskRootsWithoutSocket(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.String()), &tree); err != nil {
 		t.Fatalf("help = %q, tree = %#v, err = %v", out.String(), tree, err)
 	}
-	for _, root := range []string{"mine", "ready", "show", "assign", "ask", "queue", "events", "principals", "notifications"} {
+	for _, root := range []string{"mine", "ready", "show", "assign", "ask", "queue", "events", "principals", "notifications", "advance", "artifacts", "workflow", "cancel"} {
 		if tree[root] == nil {
 			t.Fatalf("help tree missing runnable root %q: %#v", root, tree)
 		}
 	}
-	for _, root := range []string{"list", "get", "work", "artifacts", "observe", "questions", "answer", "workflows", "workflow"} {
+	for _, root := range []string{"list", "get", "work", "observe", "questions", "answer", "workflows"} {
 		if tree[root] != nil {
 			t.Fatalf("help tree advertises inaccessible root %q: %#v", root, tree)
 		}

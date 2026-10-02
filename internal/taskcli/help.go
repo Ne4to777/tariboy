@@ -41,13 +41,30 @@ var sharedHelp = map[string]commandHelp{
 		"Adds a symmetric related relation without blocking either task. Requires write access to both endpoints.", "KEY  Source task key (required)\nTARGET  Related task key (required)", "ttasks relate DEV-12 DEV-9"},
 	"done": {"Complete a flexible task", "done KEY [flags]",
 		"Marks work done. Active descendants cause a conflict unless --complete-anyway is explicit.", "KEY  Task key (required)", "ttasks done DEV-12"},
+	"advance": {"Declare an outcome for a workflow task", "advance KEY --outcome NAME [--message TEXT]",
+		"Leaves the task's current workflow status by the named outcome. An agent may advance a task it holds in a pool status; the customer may advance a task in a customer status. Required artifacts must be set first. Prints the request state; a refusal exits non-zero.", "KEY  Task key (required)", "ttasks advance DEV-12 --outcome ready --message 'PR opened'"},
+	"artifact_set": {"Set a workflow task artifact", "artifacts set KEY NAME [VALUE | --file PATH]",
+		"Stores a new value for a declared artifact. Without VALUE the value is read from stdin; --file reads it from a file. The value is stored as given, trailing newline included, up to 64 KiB.", "KEY  Task key (required)\nNAME  Declared artifact name (required)\nVALUE  Artifact text; stdin when absent", "ttasks artifacts set DEV-12 plan 'step 1'\nttasks artifacts set DEV-12 summary --file summary.md"},
+	"artifact_ls": {"List the current artifacts of a workflow task", "artifacts ls KEY",
+		"Lists the current value of every artifact set on the task.", "KEY  Task key (required)", "ttasks artifacts ls DEV-12"},
+	"artifact_show": {"Show a workflow task artifact and its history", "artifacts show KEY NAME",
+		"Prints the current value of one artifact and every earlier value, newest first.", "KEY  Task key (required)\nNAME  Artifact name (required)", "ttasks artifacts show DEV-12 plan"},
+	"workflow_get": {"Show where a workflow task is and what it may do next", "workflow get KEY",
+		"Prints the workflow, status, category, owner, holder, the outcomes with their missing artifacts and checks, the current artifacts, and the last transition request. --json prints the whole view.", "KEY  Task key (required)", "ttasks workflow get DEV-12"},
+	"workflow_move": {"Move a workflow task to another status (operator-only)", "workflow move KEY --to STATUS --reason TEXT",
+		"Moves the task to the named status of its workflow regardless of outcomes, and records the reason. Operator-only: uses the host daemon as the customer actor.", "KEY  Task key (required)", "ttasks workflow move DEV-12 --to develop --reason 'review found a regression'"},
+	"cancel": {"Cancel a workflow task (operator-only)", "cancel KEY",
+		"Cancels a task that follows a workflow. Operator-only: uses the host daemon as the customer actor.", "KEY  Task key (required)", "ttasks cancel DEV-12"},
 }
 
 var helpGroups = map[string]string{
-	"queue":         "Manage task queues, owners, and agent pools (operator-only)",
-	"queue.pool":    "Bind existing agents to named queue pools (operator-only)",
-	"queue.trigger": "Manage external events that create tasks (operator-only)",
-	"notifications": "Read and dismiss customer task notifications (operator-only)",
+	"queue":          "Manage task queues, owners, and agent pools (operator-only)",
+	"queue.pool":     "Bind existing agents to named queue pools (operator-only)",
+	"queue.trigger":  "Manage external events that create tasks (operator-only)",
+	"queue.workflow": "Bind a workflow image to a queue (operator-only)",
+	"artifacts":      "Read and set workflow task artifacts",
+	"workflow":       "Inspect and move workflow tasks",
+	"notifications":  "Read and dismiss customer task notifications (operator-only)",
 }
 
 var helpFlags = map[string]string{
@@ -72,6 +89,11 @@ var helpFlags = map[string]string{
 	"to-root":             "Detach from parent; excludes --parent and --before (boolean, default false)",
 	"by":                  "Blocking task key (required)",
 	"complete-anyway":     "Complete despite active descendants (boolean, default false)",
+	"outcome":             "Outcome to declare, as listed by workflow get (required)",
+	"message":             "Message recorded with the transition",
+	"file":                "Read the artifact value from this file instead of stdin",
+	"to":                  "Target workflow status id (required)",
+	"reason":              "Why the task is moved (required)",
 }
 
 const globalHelp = `Global flags:
@@ -216,6 +238,9 @@ var operatorExamples = map[string]string{
 	"queue.trigger.list":    "queue trigger list DEV",
 	"queue.trigger.create":  "queue trigger create DEV --pattern external:incidents --action create_task",
 	"queue.trigger.delete":  "queue trigger delete DEV 4",
+	"queue.workflow.set":    "queue workflow set DEV development:latest --revision 0",
+	"queue.workflow.get":    "queue workflow get DEV",
+	"queue.workflow.clear":  "queue workflow clear DEV --revision 2",
 	"events":                "events DEV-12 --after 42 --limit 20",
 	"principals":            "principals",
 	"notifications.list":    "notifications list --include-dismissed",
@@ -234,6 +259,9 @@ var operatorHelp = map[string]string{
 	"queue.trigger.list":    "Lists external channel triggers configured to create work in this queue.",
 	"queue.trigger.create":  "Creates a trigger for future plugin-produced events. --action must be create_task; internal agent/group/user/system namespaces are rejected. --correlation-key restricts matching to an exact key.",
 	"queue.trigger.delete":  "Removes a trigger by numeric id. Existing tasks created by that trigger remain.",
+	"queue.workflow.set":    "Binds a published workflow image, name:tag, to the queue. Use revision 0 (the default) for a new binding, or the current revision from queue workflow get to rebind.",
+	"queue.workflow.get":    "Shows the image a queue is bound to and the binding revision; fails with queue_workflow_not_found when the queue is unbound.",
+	"queue.workflow.clear":  "Unbinds the queue. Pass the current revision from queue workflow get. Tasks already running keep their workflow.",
 	"events":                "Reads durable task events after the supplied sequence, bounded by --limit. Use the last sequence to resume.",
 	"principals":            "Lists principals available for task assignment and typed user:login or agent:name mentions.",
 	"notifications.list":    "Lists customer task notifications. Dismissed entries are excluded unless --include-dismissed is supplied.",

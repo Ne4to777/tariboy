@@ -101,8 +101,8 @@ func TestPoolAndTriggerOperatorHTTPKeepsTypedRoutesWithoutWorkflowEngine(t *test
 	for _, path := range []string{
 		"/api/workflows", "/api/workflows/{name}/versions", "/api/workflows/{name}/versions/{version}",
 		"/api/workflows/{name}/versions/{version}/validate", "/api/workflows/{name}/versions/{version}/publish",
-		"/api/task-queues/{queue}/workflow", "/api/tasks/{key}/workflow", "/api/tasks/{key}/work-packets",
-		"/api/tasks/{key}/assignments", "/api/tasks/{key}/artifacts", "/api/tasks/{key}/artifacts/{id}",
+		"/api/tasks/{key}/work-packets",
+		"/api/tasks/{key}/assignments", "/api/tasks/{key}/artifacts/{id}",
 		"/api/tasks/{key}/questions", "/api/tasks/{key}/questions/{id}", "/api/tasks/{key}/subscriptions",
 		"/api/tasks/{key}/workflow-events",
 	} {
@@ -110,7 +110,7 @@ func TestPoolAndTriggerOperatorHTTPKeepsTypedRoutesWithoutWorkflowEngine(t *test
 			t.Errorf("OpenAPI still publishes removed route %s", path)
 		}
 	}
-	for _, name := range []string{"WorkflowDefinition", "WorkflowVersion", "QueueWorkflowBinding", "WorkflowExecutionView", "Assignment", "Artifact", "WorkPacket"} {
+	for _, name := range []string{"WorkflowDefinition", "WorkflowVersion", "QueueWorkflowBinding", "WorkflowExecutionView", "Assignment", "WorkPacket"} {
 		if _, ok := openapi.Result.Components.Schemas[name]; ok {
 			t.Errorf("OpenAPI still publishes removed schema %s", name)
 		}

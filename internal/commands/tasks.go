@@ -222,6 +222,54 @@ func TaskOperatorCommands() []registry.Command {
 				}
 				return map[string]any{"deleted": true, "id": id}, nil
 			}),
+		taskRoute("tasks.advance", "POST", "/api/tasks/{key}/advance", "Declare an outcome for a workflow task's current status",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.Advance(ctx, actor, stringParam(p, "key"), tasks.AdvanceInput{
+					Outcome: stringParam(p, "outcome"), Message: rawStringParam(p, "message"),
+				})
+			}),
+		taskRoute("tasks.artifacts.set", "PUT", "/api/tasks/{key}/artifacts/{name}", "Set a workflow task artifact",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.SetArtifact(ctx, actor, stringParam(p, "key"), stringParam(p, "name"), rawStringParam(p, "value"))
+			}),
+		taskRoute("tasks.artifacts.list", "GET", "/api/tasks/{key}/artifacts", "List the current artifacts of a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				artifacts, err := control.ListArtifacts(ctx, actor, stringParam(p, "key"))
+				return map[string]any{"artifacts": artifacts, "count": len(artifacts)}, err
+			}),
+		taskRoute("tasks.artifacts.get", "GET", "/api/tasks/{key}/artifacts/{name}", "Show a workflow task artifact and its history",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				artifact, history, err := control.GetArtifact(ctx, actor, stringParam(p, "key"), stringParam(p, "name"))
+				return map[string]any{"artifact": artifact, "history": history}, err
+			}),
+		taskRoute("tasks.workflow.get", "GET", "/api/tasks/{key}/workflow", "Show where a workflow task is and what it may do next",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.GetWorkflow(ctx, actor, stringParam(p, "key"))
+			}),
+		taskRoute("tasks.workflow.move", "POST", "/api/tasks/{key}/workflow/move", "Move a workflow task to another status",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.MoveWorkflow(ctx, actor, stringParam(p, "key"), stringParam(p, "to"), stringParam(p, "reason"))
+			}),
+		taskRoute("tasks.cancel", "POST", "/api/tasks/{key}/cancel", "Cancel a workflow task",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.CancelWorkflowTask(ctx, actor, stringParam(p, "key"))
+			}),
+		taskRoute("tasks.queue.workflow.set", "PUT", "/api/task-queues/{queue}/workflow", "Bind a workflow image to a queue",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.SetQueueWorkflow(ctx, actor, stringParam(p, "queue"), stringParam(p, "ref"), int64Param(p, "revision"))
+			}),
+		taskRoute("tasks.queue.workflow.get", "GET", "/api/task-queues/{queue}/workflow", "Show the workflow image a queue is bound to",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				return control.GetQueueWorkflow(ctx, actor, stringParam(p, "queue"))
+			}),
+		taskRoute("tasks.queue.workflow.clear", "DELETE", "/api/task-queues/{queue}/workflow", "Unbind the workflow image from a queue",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				queue := stringParam(p, "queue")
+				if err := control.ClearQueueWorkflow(ctx, actor, queue, int64Param(p, "revision")); err != nil {
+					return nil, err
+				}
+				return map[string]any{"queue": queue, "cleared": true}, nil
+			}),
 	}
 }
 
@@ -336,6 +384,16 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "pattern", Required: true, Help: "Allowed channel pattern"}, {Name: "correlation_key", Help: "Correlation selector"}, {Name: "action", Required: true, Help: "Declared workflow trigger action"}}
 	case "tasks.queue.trigger.delete":
 		return []registry.Arg{{Name: "id", Type: registry.Int, Required: true, Help: "Resource id"}}
+	case "tasks.advance":
+		return []registry.Arg{{Name: "outcome", Required: true, Help: "Outcome to declare"}, {Name: "message", Help: "Message recorded with the transition"}}
+	case "tasks.artifacts.set":
+		return []registry.Arg{{Name: "value", Help: "Artifact value, stored as given"}}
+	case "tasks.workflow.move":
+		return []registry.Arg{{Name: "to", Required: true, Help: "Target status id"}, {Name: "reason", Required: true, Help: "Why the task is moved"}}
+	case "tasks.queue.workflow.set":
+		return []registry.Arg{{Name: "ref", Required: true, Help: "Workflow image reference, name:tag"}, {Name: "revision", Type: registry.Int, Help: "Expected current binding revision (zero for a new binding)"}}
+	case "tasks.queue.workflow.clear":
+		return []registry.Arg{{Name: "revision", Type: registry.Int, Required: true, Help: "Expected current binding revision"}}
 	case "tasks.events":
 		return []registry.Arg{{Name: "after", Type: registry.Int, Help: "Resume after sequence"}, {Name: "limit", Type: registry.Int, Help: "Maximum events"}}
 	default:
@@ -353,6 +411,22 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return schemaRef("QueueWorkflowTrigger")
 	case "tasks.queue.trigger.list":
 		return listSchema("QueueWorkflowTrigger")
+	case "tasks.advance":
+		return schemaRef("TransitionRequest")
+	case "tasks.artifacts.set":
+		return schemaRef("Artifact")
+	case "tasks.artifacts.list":
+		return objectSchema([]string{"artifacts", "count"}, map[string]any{"artifacts": arrayOf("Artifact"), "count": map[string]any{"type": "integer"}})
+	case "tasks.artifacts.get":
+		return objectSchema([]string{"artifact", "history"}, map[string]any{"artifact": schemaRef("Artifact"), "history": arrayOf("Artifact")})
+	case "tasks.workflow.get":
+		return schemaRef("WorkflowView")
+	case "tasks.workflow.move", "tasks.cancel":
+		return schemaRef("Task")
+	case "tasks.queue.workflow.set", "tasks.queue.workflow.get":
+		return schemaRef("QueueWorkflow")
+	case "tasks.queue.workflow.clear":
+		return objectSchema([]string{"queue", "cleared"}, map[string]any{"queue": map[string]any{"type": "string"}, "cleared": map[string]any{"type": "boolean"}})
 	default:
 		return map[string]any{"type": "object"}
 	}
@@ -365,6 +439,13 @@ func poolMutationArgs(primary registry.Arg) []registry.Arg {
 func stringParam(p registry.Params, key string) string {
 	value, _ := p[key].(string)
 	return strings.TrimSpace(value)
+}
+
+// rawStringParam is stringParam without the trimming, for values stored as
+// given such as artifact text.
+func rawStringParam(p registry.Params, key string) string {
+	value, _ := p[key].(string)
+	return value
 }
 
 func optionalStringParam(p registry.Params, key string) *string {

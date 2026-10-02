@@ -29,8 +29,25 @@ func taskOpenAPISchemas() map[string]map[string]any {
 	free := map[string]any{"type": "object", "additionalProperties": true}
 	status := map[string]any{"type": "string", "enum": []string{tasks.StatusOpen, tasks.StatusInProgress, tasks.StatusWaitCustomer, tasks.StatusDone, tasks.StatusCancelled}}
 	return map[string]map[string]any{
-		"AgentPool":            objectSchema([]string{"id", "queue", "name", "agents", "revision", "created_at", "updated_at"}, map[string]any{"id": integer, "queue": str, "name": str, "agents": stringArray(), "revision": integer, "created_at": str, "updated_at": str}),
-		"Task":                 objectSchema([]string{"key", "queue", "title", "status", "revision"}, map[string]any{"key": str, "queue": str, "title": str, "description": str, "status": status, "pull_request": str, "revision": integer}),
+		"AgentPool": objectSchema([]string{"id", "queue", "name", "agents", "revision", "created_at", "updated_at"}, map[string]any{"id": integer, "queue": str, "name": str, "agents": stringArray(), "revision": integer, "created_at": str, "updated_at": str}),
+		"Task": objectSchema([]string{"key", "queue", "title", "status", "category", "revision"}, map[string]any{
+			"key": str, "queue": str, "title": str, "description": str,
+			"status":          map[string]any{"type": "string", "description": "The flexible status, or the workflow status for a workflow task"},
+			"category":        status,
+			"waiting_on":      map[string]any{"type": "string", "enum": []string{tasks.WaitingOnCustomer, tasks.WaitingOnScript, tasks.WaitingOnPause}},
+			"workflow_digest": str, "workflow_name": str, "workflow_version": str, "workflow_paused_reason": str,
+			"pull_request": str, "revision": integer}),
+		"OutcomeView": objectSchema([]string{"on", "to"}, map[string]any{"on": str, "to": str, "requires": stringArray(), "missing": stringArray(), "checks": stringArray()}),
+		"StatusVisit": objectSchema([]string{"id", "sequence", "status", "entered_at", "entered_by"}, map[string]any{"id": integer, "sequence": integer, "status": str, "entered_at": str, "entered_by": str, "left_at": str, "outcome": str, "message": str}),
+		"TransitionRequest": objectSchema([]string{"id", "task_key", "outcome", "actor", "state", "created_at"}, map[string]any{"id": integer, "task_key": str, "outcome": str, "message": str, "actor": str,
+			"state": map[string]any{"type": "string", "description": "applied, or an error is returned"}, "result_message": str, "created_at": str, "finished_at": str}),
+		"Artifact":      objectSchema([]string{"id", "name", "value", "author", "created_at"}, map[string]any{"id": integer, "name": str, "value": str, "author": str, "created_at": str}),
+		"QueueWorkflow": objectSchema([]string{"queue", "name", "version", "digest", "revision", "updated_at"}, map[string]any{"queue": str, "name": str, "version": str, "digest": str, "revision": integer, "updated_at": str}),
+		"WorkflowView": objectSchema([]string{"name", "version", "digest", "status", "category", "owner", "outcomes", "artifacts", "visits"}, map[string]any{
+			"name": str, "version": str, "digest": str, "status": str, "category": status,
+			"waiting_on": str, "owner": str, "holder": str, "instructions_path": str,
+			"outcomes": arrayOf("OutcomeView"), "artifacts": arrayOf("Artifact"), "visits": arrayOf("StatusVisit"),
+			"last_request": schemaRef("TransitionRequest")}),
 		"QueueWorkflowTrigger": objectSchema([]string{"id", "queue", "pattern", "action", "enabled", "created_by", "created_at", "updated_at"}, map[string]any{"id": integer, "queue": str, "pattern": str, "correlation_key": str, "action": str, "enabled": boolean, "created_by": str, "created_at": str, "updated_at": str}),
 		"TaskEvent":            objectSchema([]string{"sequence", "event_id", "queue", "kind", "actor", "task_revision", "payload", "created_at"}, map[string]any{"sequence": integer, "event_id": str, "task_key": str, "queue": str, "kind": str, "actor": str, "task_revision": integer, "payload": free, "created_at": str}),
 	}

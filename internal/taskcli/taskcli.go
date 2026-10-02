@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -20,6 +21,9 @@ type Caller interface {
 }
 
 var newCaller = func(socket string) Caller { return client.New(socket) }
+
+// stdin is where "artifacts set" reads a value that is not given as an argument.
+var stdin io.Reader = os.Stdin
 
 // Run dispatches task commands to the identity-bound agent socket when one is
 // present, otherwise to the operator daemon socket.
@@ -55,12 +59,22 @@ func Run(ctx context.Context, argv []string, getenv func(string) string, stdout,
 		return 2
 	}
 	if toolsSocket := getenv("TARIBOY_TOOLS_SOCKET"); toolsSocket != "" {
+		if operatorOnlyActions[parsed.action] {
+			fmt.Fprintf(stderr, "tasks: unknown command %q\n", strings.ReplaceAll(parsed.action, "_", " "))
+			return 2
+		}
+		if code := resolveArtifactValue(&parsed, stderr); code != 0 {
+			return code
+		}
 		return runAgent(parsed, newCaller(toolsSocket), jsonOut, stdout, stderr)
 	}
 	resolved, err := paths.Resolve(getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "tariboy-tasks: %v\n", err)
 		return 2
+	}
+	if code := resolveArtifactValue(&parsed, stderr); code != 0 {
+		return code
 	}
 	return runOperator(ctx, parsed, newCaller(resolved.Socket()), jsonOut, stdout, stderr)
 }
@@ -71,6 +85,8 @@ func runAgent(parsed request, caller Caller, jsonOut bool, stdout, stderr io.Wri
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) {
 			fmt.Fprintf(stderr, "error (%s): %s\n", apiErr.Code, apiErr.Msg)
+			key, _ := parsed.payload["key"].(string)
+			printWorkflowManagedHint(apiErr, key, stderr)
 			return 1
 		}
 		fmt.Fprintln(stderr, "tools: agent socket is not reachable")
@@ -83,6 +99,14 @@ func printResult(parsed request, raw json.RawMessage, jsonOut bool, stdout, stde
 	if jsonOut {
 		fmt.Fprintln(stdout, string(raw))
 		return 0
+	}
+	switch parsed.action {
+	case "workflow_get":
+		if printWorkflow(raw, stdout) {
+			return 0
+		}
+	case "show":
+		printShowHeader(raw, stdout)
 	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {

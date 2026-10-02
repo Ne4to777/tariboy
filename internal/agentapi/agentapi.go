@@ -278,7 +278,7 @@ func (s *Server) nativeTaskAction(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var domain *tasks.Error
 		if errors.As(err, &domain) {
-			api.WriteErr(w, domain.Status, domain.Code, domain.Msg)
+			api.WriteErrData(w, domain.Status, domain.Code, domain.Msg, domain.Data)
 			return
 		}
 		api.WriteErr(w, http.StatusBadRequest, "task_failed", err.Error())

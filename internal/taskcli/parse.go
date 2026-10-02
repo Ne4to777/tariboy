@@ -22,14 +22,40 @@ func taskCommandFlags() map[string]map[string]bool {
 		"update": set("title,description,status,pull-request,assignee,manual-block-reason,priority,revision"), "assign": set("revision"),
 		"comment": set("body,idempotency-key"), "ask": set("idempotency-key"),
 		"move": set("parent,before,to-root,revision"), "block": set("by,revision,idempotency-key"), "relate": set("revision,idempotency-key"), "done": set("revision,complete-anyway"),
+		"advance": set("outcome,message"), "artifact_set": set("file"), "artifact_ls": {}, "artifact_show": {},
+		"workflow_get": {}, "workflow_move": set("to,reason"), "cancel": {},
 	}
 }
+
+// commandWords maps a two-word command to its action name, which is also the
+// agent tools-socket action where one exists.
+var commandWords = map[string]map[string]string{
+	"artifacts": {"set": "artifact_set", "ls": "artifact_ls", "show": "artifact_show"},
+	"workflow":  {"get": "workflow_get", "move": "workflow_move"},
+}
+
+// operatorOnlyActions are served only by the host daemon as the customer.
+var operatorOnlyActions = map[string]bool{"workflow_move": true, "cancel": true}
+
+// maxArtifactInput is one byte more than the daemon accepts, so an oversize
+// value reaches the server and is refused there instead of being cut short.
+const maxArtifactInput = 64<<10 + 1
 
 func parse(argv []string) (request, error) {
 	if len(argv) == 0 {
 		return request{}, usageError{"tasks: a command is required"}
 	}
 	action, rest := argv[0], argv[1:]
+	if words, grouped := commandWords[action]; grouped {
+		if len(rest) == 0 || strings.HasPrefix(rest[0], "--") {
+			return request{}, usageError{fmt.Sprintf("tasks %s: a command is required", action)}
+		}
+		sub, ok := words[rest[0]]
+		if !ok {
+			return request{}, usageError{fmt.Sprintf("tasks: unknown command %q", action+" "+rest[0])}
+		}
+		action, rest = sub, rest[1:]
+	}
 	allowed := taskCommandFlags()
 	valid, ok := allowed[action]
 	if !ok {
@@ -198,6 +224,62 @@ func parse(argv []string) (request, error) {
 		if flags["complete-anyway"] == "true" {
 			p["complete_anyway"] = true
 		}
+	case "advance":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		p["key"] = v
+		if strings.TrimSpace(flags["outcome"]) == "" {
+			return request{}, usageError{"tasks advance: --outcome is required"}
+		}
+		p["outcome"] = strings.TrimSpace(flags["outcome"])
+		copyFlag("message", true)
+	case "artifact_set":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		name, e := require(1, "artifact name")
+		if e != nil {
+			return request{}, e
+		}
+		p["key"], p["name"] = v, name
+		if len(pos) > 2 {
+			if _, file := flags["file"]; file {
+				return request{}, usageError{"tasks artifacts set: pass VALUE or --file, not both"}
+			}
+			p["value"] = pos[2]
+		}
+		copyFlag("file", false)
+	case "artifact_ls", "workflow_get", "cancel":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		p["key"] = v
+	case "artifact_show":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		name, e := require(1, "artifact name")
+		if e != nil {
+			return request{}, e
+		}
+		p["key"], p["name"] = v, name
+	case "workflow_move":
+		v, e := require(0, "task key")
+		if e != nil {
+			return request{}, e
+		}
+		p["key"] = v
+		for _, name := range []string{"to", "reason"} {
+			if strings.TrimSpace(flags[name]) == "" {
+				return request{}, usageError{fmt.Sprintf("tasks workflow move: --%s is required", name)}
+			}
+			p[name] = strings.TrimSpace(flags[name])
+		}
 	}
 	if err := noExtra(action, pos); err != nil {
 		return request{}, err
@@ -254,7 +336,8 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 	return flags, pos, nil
 }
 func noExtra(action string, pos []string) error {
-	limits := map[string]int{"mine": 0, "ready": 0, "show": 1, "create": 0, "update": 1, "assign": 2, "comment": -1, "ask": -1, "move": 1, "block": 1, "relate": 2, "done": 1}
+	limits := map[string]int{"mine": 0, "ready": 0, "show": 1, "create": 0, "update": 1, "assign": 2, "comment": -1, "ask": -1, "move": 1, "block": 1, "relate": 2, "done": 1,
+		"advance": 1, "artifact_set": 3, "artifact_ls": 1, "artifact_show": 2, "workflow_get": 1, "workflow_move": 1, "cancel": 1}
 	if limit, ok := limits[action]; ok && limit >= 0 && len(pos) > limit {
 		return usageError{fmt.Sprintf("tasks %s: unexpected argument: %s", strings.ReplaceAll(action, "_", " "), pos[limit])}
 	}
