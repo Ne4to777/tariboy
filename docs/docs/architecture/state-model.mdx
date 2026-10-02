@@ -260,7 +260,7 @@ the image a task follows, set in the transaction that creates the task from the
 queue's binding; the task is never migrated to another version, and the image
 row (`task_workflow_images`) cannot be removed while a queue binds it or an
 unfinished task pins it. `tasks.workflow_status` holds the workflow status
-(and `tasks.workflow_paused_reason`, always empty today), while `tasks.status`
+(and `tasks.workflow_paused_reason`, the pause reason, empty unless the task is paused), while `tasks.status`
 keeps holding the category for every task. Task JSON shows the
 workflow status as `status` and the stored value as `category`; for a task
 without a workflow both are the stored status. New tables: `task_queue_workflows`
@@ -299,6 +299,20 @@ as `interrupted`. Run files live under `<base-dir>/tasks/<KEY>/` (`state/` and
 `runs/<run-id>/`), owner-only; only the latest quiet watch run of a task keeps
 its run directory, and nightly retention removes the directory of every task it
 deletes.
+
+Migration `0060` adds `task_workflow_holders.released` (default `0`): the
+customer's `release` decision sets it on the holder's row, which makes that
+agent neither sticky nor eligible for the task in that pool until another agent
+replaces the row or an operator move deletes it. Migration `0061` adds
+`task_workflow_holders.unavailable_since` (default empty): when the holder was
+first seen unable to work, cleared by every dispatch, which the daemon compares
+with the `unavailable_grace` limit. `tasks.workflow_paused_reason` is now set: a
+pause writes one of `idle_iterations`, `rejected_requests`, `script_failures`,
+or `holder_unavailable`, together with category `wait_customer`, an open
+customer wait authored by `system:workflow`, and a `workflow.paused` event; a
+resume decision, an operator move, or a cancel clears it, and a decision or move
+appends `workflow.resumed`. Both are written in the transaction that changes the
+task. See [Task workflows](/docs/task-workflows#pauses).
 
 ## Image assignment state
 

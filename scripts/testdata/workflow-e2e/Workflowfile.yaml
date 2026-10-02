@@ -48,6 +48,9 @@ statuses:
       - { on: approved, to: monitor }
       - { on: rework, to: build }
       - { on: drop, to: dropped }
+      # Only so the pause fixtures below are reachable; the test enters them by move.
+      - { on: to_qa, to: qa }
+      - { on: to_probe, to: probe }
 
   - id: monitor
     owner: script
@@ -65,6 +68,31 @@ statuses:
       script: ./scripts/watch-finish.sh
       every: 1s
       timeout: 60s
+    transitions:
+      - { on: finished, to: done }
+
+  # Pause fixtures, entered by an operator move. In qa the second check of
+  # `pass` follows the gate artifact; two rejections or two failures pause it.
+  - id: qa
+    owner: { pool: builders }
+    instructions: ./statuses/qa.md
+    limits: { rejected_requests: 2, script_failures: 2 }
+    transitions:
+      - on: pass
+        to: done
+        checks:
+          - script: ./scripts/check-gate.sh
+            run_as: agent
+            timeout: 20s
+
+  # A watch that fails on purpose (finish_mode is neither done nor sleep).
+  - id: probe
+    owner: script
+    limits: { script_failures: 2 }
+    watch:
+      script: ./scripts/watch-finish.sh
+      every: 1s
+      timeout: 20s
     transitions:
       - { on: finished, to: done }
 

@@ -64,6 +64,7 @@ cleanup() {
   if [ -S "$SOCK" ]; then
     "$BIN/tariboy" --socket "$SOCK" agent kill builder >/dev/null 2>&1
     "$BIN/tariboy" --socket "$SOCK" agent kill outsider >/dev/null 2>&1
+    "$BIN/tariboy" --socket "$SOCK" agent kill second >/dev/null 2>&1
   fi
   if [ -n "${DPID:-}" ]; then
     kill "$DPID" 2>/dev/null
@@ -402,6 +403,160 @@ capture as_agent builder advance "$KEY_C" --outcome shipped --from build --json
 [ "$(printf '%s' "$OUT" | field state)" = applied ] || fail "the advance did not print the applied request: $OUT"
 VC="$(as_agent builder workflow get "$KEY_C" --json)"
 contains "$VC" "\"name\":\"e2e-flow\"" || fail "the former holder cannot read its task's workflow: $VC"
+
+# --- pauses and resumes ---------------------------------------------------
+# qa (pool builders) and probe (script) of the fixture carry limits of 2.
+paused_reason() { op workflow get "$1" --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("paused_reason",""))'; }
+is_paused() { [ "$(paused_reason "$1")" = "$2" ]; }
+not_paused() { [ -z "$(paused_reason "$1")" ]; }
+run_count() { runs_json "$1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["runs"]))'; }
+event_count() { op events "$1" --limit 500 --json | python3 -c 'import json,sys
+print(sum(1 for e in json.load(sys.stdin)["events"] if e["kind"]==sys.argv[1]))' "$2"; }
+task_field() { op show "$1" --json | field "$2"; }
+# open_waits KEY prints the number of open waits on the task.
+open_waits() { op show "$1" --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("waiting_for") or []))'; }
+# nudge_dispatch creates a flexible task: any task change wakes the dispatcher.
+nudge_dispatch() { op create --queue LEG --title "nudge $RANDOM" --json >/dev/null; }
+# reject_twice KEY rejects the qa check twice as the holder.
+reject_twice() {
+  as_agent builder artifacts set "$1" gate reject >/dev/null
+  for _ in 1 2; do
+    capture as_agent builder advance "$1" --outcome pass --from qa
+    [ "$CODE" -eq 1 ] && has_line "$ERR" 'rejected:' || fail "a rejected advance in qa exited $CODE: $OUT $ERR"
+  done
+}
+# new_qa_task TITLE puts a fresh task, held by the pool, into qa.
+new_qa_task() {
+  local k
+  k="$(op create --queue E2E --title "$1" --json | field key)"
+  wait_for 30 "dispatch of $k" has_holder "$k"
+  op workflow move "$k" --to qa --reason "e2e: pause fixture" >/dev/null || fail "move to qa failed"
+  wait_for 30 "dispatch of $k in qa" status_is "$k" qa
+  wait_for 30 "a holder of $k in qa" has_holder "$k"
+  echo "$k"
+}
+has_holder() { [ -n "$(view "$1" | field holder 2>/dev/null)" ]; }
+
+step "the Goal block names the status, its instructions, the outcomes, and the exact advance command"
+KEY_P="$(new_qa_task "pause by rejections")"
+holder_is "$KEY_P" builder || fail "$KEY_P is not held by builder (the only pool member): $(view "$KEY_P")"
+PROMPT="$(sa prompt get builder --json | field prompt)"
+for want in '## Goal' 'This task follows a workflow. Do only the work of its current status, `qa`.' "key: $KEY_P" 'status: qa' '### Status instructions' 'Set the `gate` artifact, then advance with the `pass` outcome.' \
+  '### Outcomes' '- `pass` -> `done`; checks: ./scripts/check-gate.sh' '### Commands' "ttasks advance $KEY_P --outcome NAME --from qa"; do
+  contains "$PROMPT" "$want" || fail "the prompt preview lacks '$want': $PROMPT"
+done
+contains "$PROMPT" 'is paused' && fail "the preview of a running task says it is paused"
+
+step "two rejected requests pause the task and ask the customer"
+reject_twice "$KEY_P"
+wait_for 20 "the pause by rejected_requests" is_paused "$KEY_P" rejected_requests
+[ "$(task_field "$KEY_P" task.category)" = wait_customer ] || fail "paused category: $(op show "$KEY_P" --json)"
+[ "$(view "$KEY_P" | field waiting_on)" = pause ] || fail "waiting_on is not pause: $(view "$KEY_P")"
+[ "$(view "$KEY_P" | field status)" = qa ] || fail "the pause changed the status"
+holder_is "$KEY_P" builder || fail "the pause changed the assignee"
+[ "$(event_count "$KEY_P" workflow.paused)" = 1 ] || fail "want one workflow.paused event"
+SHOW="$(op show "$KEY_P" --json)"
+for want in "ttasks workflow resume $KEY_P --decision continue" "ttasks workflow resume $KEY_P --decision release" "ttasks cancel $KEY_P" 'rejected_requests' 'gate says no: set gate to pass'; do
+  contains "$SHOW" "$want" || fail "the pause comment lacks '$want': $SHOW"
+done
+[ "$(open_waits "$KEY_P")" = 1 ] || fail "want one open customer wait, got $(open_waits "$KEY_P"): $SHOW"
+# A paused task is not a Goal (its only wait is the workflow's own), so the
+# holder's next iteration shows no Goal and nothing to work on.
+PROMPT="$(sa prompt get builder --json | field prompt)"
+contains "$PROMPT" 'No goal selected for this iteration' || fail "the preview of a paused task still shows a Goal: $PROMPT"
+contains "$PROMPT" "key: $KEY_P" && fail "the preview of a paused task names it: $PROMPT"
+
+step "a paused task refuses the holder, ignores a customer comment, and is left alone by dispatch"
+capture as_agent builder advance "$KEY_P" --outcome pass --from qa
+[ "$CODE" -ne 0 ] && contains "$ERR" workflow_paused || fail "a paused advance: code=$CODE $ERR"
+capture as_agent builder artifacts set "$KEY_P" gate pass
+[ "$CODE" -ne 0 ] && contains "$ERR" workflow_paused || fail "a paused artifacts set: code=$CODE $ERR"
+RUNS_BEFORE="$(run_count "$KEY_P")"
+op comment "$KEY_P" "please carry on" >/dev/null || fail "the customer could not comment"
+nudge_dispatch
+sleep 2  # absence check: the dispatcher had its chance to act
+is_paused "$KEY_P" rejected_requests || fail "a customer comment resumed the task"
+[ "$(task_field "$KEY_P" task.category)" = wait_customer ] || fail "a comment changed the category"
+holder_is "$KEY_P" builder || fail "dispatch changed the assignee of a paused task"
+[ "$(run_count "$KEY_P")" = "$RUNS_BEFORE" ] || fail "a paused task started a run"
+[ "$(open_waits "$KEY_P")" = 1 ] || fail "a comment changed the open waits"
+
+step "resume refuses an unknown decision, a task that is not paused, and an agent"
+# The CLI refuses an unknown decision locally; the route answers invalid_decision.
+capture op workflow resume "$KEY_P" --decision restart
+[ "$CODE" -ne 0 ] && contains "$ERR" 'must be continue or release' || fail "the CLI accepted an unknown decision: code=$CODE $ERR $OUT"
+BAD="$(curl -s --unix-socket "$SOCK" -X POST -H 'Content-Type: application/json' -d '{"decision":"restart"}' "http://localhost/api/tasks/$KEY_P/workflow/resume")"
+contains "$BAD" invalid_decision || fail "want invalid_decision from the route: $BAD"
+capture op workflow resume "$KEY" --decision continue
+[ "$CODE" -ne 0 ] && contains "$ERR$OUT" workflow_not_paused || fail "want workflow_not_paused: code=$CODE $ERR $OUT"
+capture as_agent builder workflow resume "$KEY_P" --decision continue
+[ "$CODE" -ne 0 ] || fail "an agent resumed a paused task: $OUT"
+is_paused "$KEY_P" rejected_requests || fail "the refused resumes changed the pause"
+
+step "continue resumes with the same holder and zeroed counters, and the holder can advance again"
+op workflow resume "$KEY_P" --decision continue >/dev/null || fail "resume continue failed"
+not_paused "$KEY_P" || fail "continue left the pause reason set"
+[ "$(task_field "$KEY_P" task.category)" = in_progress ] || fail "category after continue: $(op show "$KEY_P" --json)"
+holder_is "$KEY_P" builder || fail "continue changed the holder"
+[ "$(visit_counters "$(open_visit "$KEY_P")")" = "0|0|0" ] || fail "counters after continue: $(visit_counters "$(open_visit "$KEY_P")")"
+[ "$(event_count "$KEY_P" workflow.resumed)" = 1 ] || fail "want one workflow.resumed event"
+[ "$(open_waits "$KEY_P")" = 0 ] || fail "the pause wait is still open"
+capture as_agent builder advance "$KEY_P" --outcome pass --from qa
+[ "$CODE" -eq 1 ] && has_line "$ERR" 'rejected:' || fail "the holder cannot advance after continue: code=$CODE $ERR"
+
+step "release with one pool member leaves the task open and unassigned, and dispatch does not hand it back"
+# The advance above rejected once; one more rejection reaches the limit of 2.
+capture as_agent builder advance "$KEY_P" --outcome pass --from qa
+wait_for 20 "the second pause" is_paused "$KEY_P" rejected_requests
+op workflow resume "$KEY_P" --decision release >/dev/null || fail "resume release failed"
+not_paused "$KEY_P" || fail "release left the pause reason set"
+[ "$(task_field "$KEY_P" task.category)" = open ] || fail "category after release without another member: $(op show "$KEY_P" --json)"
+[ -z "$(view "$KEY_P" | field holder 2>/dev/null)" ] || fail "release kept the assignee"
+[ "$(db "SELECT released FROM task_workflow_holders WHERE task_id=(SELECT id FROM tasks WHERE task_key='$KEY_P') AND pool='builders'")" = 1 ] \
+  || fail "the holder row is not marked released"
+nudge_dispatch
+sleep 2  # absence check: the dispatcher had its chance to hand the task back
+[ "$(task_field "$KEY_P" task.category)" = open ] && [ -z "$(view "$KEY_P" | field holder 2>/dev/null)" ] \
+  || fail "dispatch handed the released task back to its holder"
+
+step "release with a second pool member replaces the holder"
+# The released task would go to the new member as soon as it joins the pool.
+op cancel "$KEY_P" >/dev/null || fail "cancel of $KEY_P failed"
+sa agent run wf-e2e-agent:latest --name second --harness stub --loop true --plugins tasks \
+  --cwd "$SANDBOX/builder-work" --env 'STUB_SLEEP=600,STUB_CALL_DONE=0' >/dev/null || fail "create second"
+sa agent start second >/dev/null || fail "start second"
+wait_for 20 "the second tools socket" test -S "$RUNTIME/second.sock"
+POOL_REV="$(op queue pool get E2E builders --json | field revision)"
+op queue pool set E2E builders --agents builder,second --revision "$POOL_REV" --idempotency-key e2e-pool-2 >/dev/null || fail "add second to the pool"
+KEY_R="$(new_qa_task "pause then release")"
+FIRST="$(view "$KEY_R" | field holder)"; FIRST="${FIRST#agent:}"
+OTHER=builder; [ "$FIRST" = builder ] && OTHER=second
+as_agent "$FIRST" artifacts set "$KEY_R" gate reject >/dev/null
+for _ in 1 2; do capture as_agent "$FIRST" advance "$KEY_R" --outcome pass --from qa; done
+wait_for 20 "the pause of $KEY_R" is_paused "$KEY_R" rejected_requests
+op workflow resume "$KEY_R" --decision release >/dev/null || fail "resume release failed"
+wait_for 20 "the task to reach $OTHER (it was $FIRST)" holder_is "$KEY_R" "$OTHER"
+[ "$(task_field "$KEY_R" task.category)" = in_progress ] || fail "category after release to $OTHER: $(op show "$KEY_R" --json)"
+[ "$(db "SELECT agent||'|'||released FROM task_workflow_holders WHERE task_id=(SELECT id FROM tasks WHERE task_key='$KEY_R') AND pool='builders'")" = "$OTHER|0" ] \
+  || fail "the holder row was not replaced by $OTHER"
+
+step "script failures pause a watch status; continue restarts the watch"
+KEY_W="$(op create --queue E2E --title "pause by script failures" --json | field key)"
+wait_for 30 "dispatch of $KEY_W" has_holder "$KEY_W"
+op workflow move "$KEY_W" --to probe --reason "e2e: failing watch" >/dev/null || fail "move to probe failed"
+wait_for 30 "the pause by script_failures" is_paused "$KEY_W" script_failures
+[ "$(task_field "$KEY_W" task.category)" = wait_customer ] && [ "$(view "$KEY_W" | field waiting_on)" = pause ] || fail "the watch pause: $(view "$KEY_W")"
+SHOW="$(op show "$KEY_W" --json)"
+contains "$SHOW" 'the script failed with exit 7' || fail "the pause comment has no failure message: $(printf %s "$SHOW" | field comments.0.body)"
+contains "$SHOW" "ttasks workflow resume $KEY_W --decision continue" || fail "the watch pause comment lacks the decision commands: $SHOW"
+WATCH_RUNS="$(run_count "$KEY_W")"
+[ "$(visit_counters "$(open_visit "$KEY_W")" | cut -d'|' -f2)" = 2 ] || fail "want two counted failures: $(visit_counters "$(open_visit "$KEY_W")")"
+sleep 2  # absence check: a paused watch must not run
+[ "$(run_count "$KEY_W")" = "$WATCH_RUNS" ] || fail "a paused watch status kept running its watch"
+op workflow resume "$KEY_W" --decision continue >/dev/null || fail "resume continue in a script status failed"
+more_runs() { [ "$(run_count "$KEY_W")" -gt "$WATCH_RUNS" ]; }
+wait_for 30 "a new watch run after continue" more_runs
+op cancel "$KEY_W" >/dev/null || fail "cancel of $KEY_W failed"
 
 step "the secret value appears in no read, while [redacted] does; the agent's secret only in the logs it may read"
 QUEUE_LOG_FILE="$(cat "$BASE/tasks/$KEY/runs/$QUEUE_RUN/run.log")"

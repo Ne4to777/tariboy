@@ -15,13 +15,13 @@ A queue binds a workflow image, and its tasks then follow the image's statuses;
 see [Task workflows](/docs/task-workflows) for binding, the runtime, and the
 script protocol.
 
-Everything in the manifest drives queue tasks except `limits`. `owner`,
+Everything in the manifest drives queue tasks. `owner`,
 `transitions`, `requires`, and `artifacts` shape the status graph; the daemon
 runs `checks` when a holder requests a transition and runs each `watch` while a
 task is in its script status; `requires_secrets` names queue secrets that must
 be set before the image can be bound and that the scripts receive; `env` sets
-non-secret variables for every script. `limits` are validated and stored, but
-nothing enforces them yet, because pausing a stalled task is not built.
+non-secret variables for every script; `limits` set when the daemon pauses a
+stalled task (see [Limits](/docs/task-workflows#limits)).
 
 ## Source layout
 
@@ -185,9 +185,9 @@ A path in `instructions`, `watch.script`, or `checks[].script`:
 | `unavailable_grace` | `5m` | Non-negative duration such as `5m`; `0` is allowed. |
 
 A status `limits` block overrides the workflow-wide block, which overrides the
-defaults. The limits are validated and stored; nothing enforces them yet. The
-daemon counts rejected requests and script failures per visit of a status, but
-pausing a task when a limit is reached is not built.
+defaults. The daemon counts idle iterations, rejected requests, and script
+failures per visit of a status and pauses the task when a limit is reached; see
+[Limits](/docs/task-workflows#limits) and [Pauses](/docs/task-workflows#pauses).
 
 ### Validation
 
@@ -348,6 +348,4 @@ the Compose form.
 
 ## Not built yet
 
-Pausing a stalled task and the `limits` that trigger it, the workflow guidance
-in the agent's Goal prompt, and the Desktop workflow UI are designed but not
-built.
+The Desktop workflow UI is designed but not built.

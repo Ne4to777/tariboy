@@ -18,12 +18,9 @@ write workflow scripts. The manifest format, build, and storage are described
 in [Workflow images](/docs/workflow-images).
 
 :::note
-Not built yet: the workflow block of the agent's Goal prompt, pausing a stalled
-task and the customer's continue or release decision, idle-iteration counting,
-handling of a holder that cannot work, and the Desktop UI for workflows. The
-`rejected_requests` and `script_failures` counters are counted but nothing acts
-on them, and the image's `limits` are not enforced. Drive workflow tasks with
-`ttasks` and the REST API. See [Not built yet](#not-built-yet).
+Not built yet: the Desktop UI for workflows. Drive workflow tasks, including the
+customer's pause decision, with `ttasks` and the REST API. See
+[Not built yet](#not-built-yet).
 :::
 
 ## Mental model
@@ -252,17 +249,18 @@ Nobody sets a category; the daemon derives it from the status owner:
 | Pool status, the holder asked the customer a question | `wait_customer` | the holder | `customer` |
 | Customer status | `wait_customer`, with an open customer wait | unchanged | `customer` |
 | Script status | `wait_customer`, with no customer wait | empty | `script` |
+| Paused (any non-terminal status) | `wait_customer`, with an open customer wait authored by `system:workflow` | unchanged | `pause` |
 | Terminal status | `done`, or `cancelled` when the status declares `cancelled: true` | unchanged | |
 | Cancelled with `ttasks cancel` | `cancelled`; the status stays where the task stopped | unchanged | |
 
 `waiting_on` is non-empty only while the category is `wait_customer`. It takes
-the values `customer` and `script`; `pause` is reserved for pausing, which is
-not built, and never appears. A flexible task has `category` equal to `status`
+the values `customer`, `script`, and `pause`; `pause` marks a task the daemon
+paused and is described under [Pauses](#pauses). A flexible task has `category` equal to `status`
 and an empty `waiting_on`.
 
 In the task JSON a workflow task also carries `workflow_digest`,
-`workflow_name`, `workflow_version`, and `workflow_paused_reason`. The last is
-always empty today.
+`workflow_name`, `workflow_version`, and `workflow_paused_reason`, which holds
+the pause reason while the task is paused and is empty otherwise.
 
 On a workflow task `ttasks done`, `ttasks update --status`, `ttasks assign`
 (and `--assignee` on update or create), and `ttasks ready --claim` are refused
@@ -667,7 +665,10 @@ owner-only log that starts with the script path and working directory.
 | `cancelled` | The task left the status or was cancelled before or during the run; the process was killed. |
 | `interrupted` | The daemon stopped while the run was in progress. |
 
-After a daemon restart the worker recovers before it starts any run. A script
+After a daemon restart the worker recovers before it starts any run. The API
+already serves while it does, so for the first few seconds after startup, while
+the worker terminates the scripts the old daemon left behind, a run that was
+`running` may still read `running`. A script
 that a crashed daemon left running is terminated first: on Linux, when the
 recorded process is alive and its environment carries that run's
 `TARIBOY_RESULT_FILE`, its process group gets `SIGTERM` and, two seconds later,
@@ -675,7 +676,11 @@ recorded process is alive and its environment carries that run's
 naming the run and the process. Then every run that was `running` is recorded
 as `interrupted`. An interrupted check closes its request as `failed` and counts
 as a script failure; an interrupted watch runs again after `every`, as after any
-run. Pending runs start normally.
+run. Pending runs start normally. Recovery tolerates a run it cannot interrupt:
+when recording the interruption fails, the daemon logs the error and forces the
+run to `interrupted` (and its pending check request to `failed`) by touching
+only those rows, so one stuck run does not hold back every other script. Only a
+shutdown during recovery stops it, and it starts again at the next startup.
 
 A run whose result the worker cannot record, for example while the database is
 busy, stays in the worker and is recorded on a later pass; no other run of the
@@ -747,6 +752,213 @@ Agents still use `ttasks ask` and `ttasks comment`.
   outcome does. Leaving the status by any route resolves that wait.
 - **In a script status** a comment does not change the category.
 
+## The Goal block
+
+An agent works on its selected Goal task. For a task that follows a workflow the
+daemon replaces the flexible-task guidance with a block that states the current
+status, its instructions, and the exact way out. The operator prompt preview
+(`tariboy prompt get AGENT`, `GET /api/agents/{name}/prompt`) renders the same
+block as a real iteration, so what you read there is what the agent is given. In
+an image with a v2 prompt template it appears under `## Goal` in Task Processing
+Order, without the `# Agent Goal` heading it has in the older prompt layout. See
+[Iteration loop](/docs/architecture/iteration-loop#agent-goals).
+
+The block is rendered in this order:
+
+1. A fixed paragraph: do only the work of the current status; leave it only with
+   `ttasks advance`; `ttasks status`, `ttasks done`, and `ttasks claim` do not
+   apply; never merge or close anything for the customer unless the status
+   instructions say so; ask the customer with `ttasks ask KEY user:LOGIN "QUESTION"`.
+2. The task lines: `key`, `title` (one line), `priority`, `workflow`
+   (`name@version`), `status`, `category`, `reached by` (the outcome or move out
+   of the previous status, and who entered the status), the `transition message`
+   of that exit, and the `description`.
+3. `### Status instructions`: the status's instruction file from the pinned
+   image, cut at a fixed byte limit with a marker when longer.
+4. `### Outcomes`: each outcome with its target, the artifacts it `requires`, the
+   ones still `missing`, and its `checks`.
+5. `### Artifacts`: each current artifact with its author.
+6. `### Last transition request`: only when the last request of the current
+   visit was `rejected` or `failed`, with the script's message and, for a failure,
+   the `ttasks workflow log` command to read.
+7. `### Commands`: `ttasks artifacts set KEY NAME [VALUE]` and
+   `ttasks advance KEY --outcome NAME --from STATUS --message "TEXT"`, with the
+   task's own key and status filled in.
+
+Outcomes, last request, and commands appear only while the agent may work: a
+pool status that is not paused. For a script, customer, closed, or paused task
+the instructions section says the agent must not work on it, and the agent is
+given no `advance` line.
+
+````text
+This task follows a workflow. Do only the work of its current status, `develop`. ...
+
+key: DEV-12
+title: Add login
+priority: P2
+workflow: development@0.1.0
+status: develop
+category: in_progress
+reached by: outcome `changes` of `review`, entered by agent:reviewer-1
+transition message:
+```
+needs tests
+```
+description:
+```
+Build it.
+```
+
+### Status instructions
+
+Write the code.
+
+### Outcomes
+
+- `ready` -> `review`; requires: plan, summary; missing: plan; checks: checks/ci.sh
+
+### Artifacts
+
+- `summary` by agent:dev-1:
+```
+s
+```
+
+### Commands
+
+```
+ttasks artifacts set DEV-12 NAME [VALUE]
+ttasks advance DEV-12 --outcome NAME --from develop --message "TEXT"
+```
+````
+
+Trust follows the source. The **status instructions** are trusted like an image
+prompt: they come from the image you built and bound. The **task title and
+description, artifact values, transition messages, and script messages** are
+untrusted input. The daemon renders each as bounded data inside a code fence
+that is longer than any run of backticks in the value (descriptions are cut at
+4000 characters, the other values at 400, with a `… (cut)` marker), so a value
+that contains a heading, a fence, or "ignore previous instructions" stays text.
+Queue secret values never reach the block. If the workflow data or the
+instruction file cannot be read, the iteration still starts: the agent gets the
+flexible guidance with a note to run `ttasks workflow get KEY`, or the line "The
+status instructions could not be read."
+
+A task that waits for the customer through the workflow's own wait (a customer
+status, or a pause) is not selected as a Goal, so the holder of a paused task
+sees no Goal at all.
+
+## Limits
+
+A workflow stops a stalled task instead of letting it spin. Four limits decide
+when; each is set in the manifest `limits` block of the workflow and may be
+overridden in a status's own `limits` block. A status value overrides the
+workflow value, which overrides the default. See
+[Workflow images](/docs/workflow-images#limits) for the syntax.
+
+| Limit | Default | What it counts |
+| --- | --- | --- |
+| `idle_iterations` | `3` | Iterations of the holder in a row that end without a transition request in the current visit. |
+| `rejected_requests` | `5` | Transition requests rejected by a check in the current visit. |
+| `script_failures` | `3` | Failed check or watch runs in the current visit, in a row: a pass, a reject, a quiet watch run, or an outcome resets the count. |
+| `unavailable_grace` | `5m` | How long the holder may be unable to work before the task pauses. |
+
+Counters belong to a visit of a status, so entering a status starts them at zero
+and a resolved pause zeroes them. The count limits must be positive integers;
+`0` is refused when the image is built (`limit_invalid`), so a count limit cannot
+be turned off. `unavailable_grace: 0` is allowed and pauses at once.
+
+## Pauses
+
+A pause stops a task that is stalled and asks the customer what to do. The
+daemon pauses a task for exactly four reasons, the `reason` of the pause.
+
+| Reason | When it fires |
+| --- | --- |
+| `idle_iterations` | The holder finished `idle_iterations` iterations in a row, each started while it already held the status, without a transition request of any kind (even a rejected one) in that iteration. The loop reports the end of every iteration to the daemon. An iteration of a task that is not the agent's Goal, of a paused task, or begun before the status was entered does not count, and a request resets the count to zero. |
+| `rejected_requests` | A check rejected `rejected_requests` requests in the visit. The detail is the last script message. |
+| `script_failures` | Checks or watches failed `script_failures` times in a row in the visit, including a check interrupted by a daemon restart, an undeclared outcome, or an invalid artifact. The detail is the failure message and the log path. |
+| `holder_unavailable` | The holder of a pool status cannot work (it is disabled, its loop is off, it is halted, it left the pool, or it was deleted) and has been unable for `unavailable_grace`. The daemon notes when it first saw the holder unavailable and checks after every dispatch pass (on each task change and every minute). The mark clears when the holder can work again or the task is dispatched anew. |
+
+A task that is already paused, or closed, is not paused again.
+
+**What a pause does.** The task keeps its workflow status and its assignee.
+Its category becomes `wait_customer` with `waiting_on: pause`, and
+`workflow_paused_reason` holds the reason (`paused_reason` in the task view,
+`paused: REASON` in `ttasks workflow get`). The daemon stops the status's watch,
+cancels a pending request and the pending runs, and asks a running run to stop.
+It opens one customer wait authored by `system:workflow`, records a
+`workflow.paused` event with the status and reason, and posts a comment that
+mentions the customer. No work is dispatched for the task, and the daemon never
+hands a paused task to another agent on its own. An open question of the holder
+to the customer is absorbed: the pause takes over that wait, and the comment
+names the reason, so the question is resolved together with the pause.
+
+The comment names the reason and what it means, quotes the detail as a block
+quote holding a fenced text block (at most 1 KiB, so a script cannot inject
+markup), and lists the decisions:
+
+````text
+@user:customer The workflow paused this task in status "review" and waits for your decision.
+
+Reason (`rejected_requests`): checks rejected too many transition requests in a row in this status.
+
+Details:
+
+> ```text
+> checks/ci.sh: 3 tests failed
+> ```
+
+Decide with one of:
+
+- Continue with the same holder; counters are reset: `ttasks workflow resume DEV-ab12 --decision continue`
+- Release the holder and dispatch the task again (pool statuses only): `ttasks workflow resume DEV-ab12 --decision release`
+- Cancel the task: `ttasks cancel DEV-ab12`
+
+A plain reply does not resume the task.
+````
+
+**What is refused while paused.** The holder's `ttasks advance` and
+`ttasks artifacts set` fail with `workflow_paused` (409), and so does the
+customer's `advance`; the customer may still set artifacts. A check that
+finishes after the pause changes nothing: its request stays cancelled. A
+comment, including one that mentions the customer, leaves the task paused and
+the wait open. Only a decision, an operator move, or a cancel ends a pause.
+
+**The decisions.** The customer resolves a pause with exactly one of these.
+Resume is operator-only: an agent has no command for it (the CLI answers
+"unknown command"), and a caller of the route that is not the customer receives
+`forbidden`.
+
+```bash
+ttasks workflow resume DEV-ab12 --decision continue
+ttasks workflow resume DEV-ab12 --decision release
+ttasks cancel DEV-ab12
+```
+
+| Decision | Effect |
+| --- | --- |
+| `continue` | Resolves the pause wait, zeroes the visit's counters, clears the reason, and records `workflow.resumed` with the decision. In a pool status the same holder continues and the category returns to `in_progress` (a task blocked by another task stays `open` until unblocked; a holder that has left the pool is replaced by normal dispatch). In a script status the watch runs again at once. In a customer status the customer is asked again with a fresh wait. |
+| `release` | Pool statuses only; any other status answers `invalid_decision`. Marks the holder's row `released`, so that agent is neither sticky nor eligible for this task in this pool, resolves the pause, zeroes the counters, and dispatches the task as on entering the status. Another eligible member receives it and its holder row replaces the released one. With no other eligible member the task is `open` and unassigned, and later dispatch passes do not hand it back to the released agent. The released agent keeps read access until the task is moved. |
+| `ttasks cancel` | Closes the task as `cancelled`; see [Operator move and cancel](#operator-move-and-cancel). It records no `workflow.resumed` event. |
+
+An operator `workflow move` also ends a pause: it resolves the wait, records
+`workflow.resumed` with the decision `move`, deletes the task's released holder
+rows, and enters the target status as usual. A move is therefore how an operator
+hands a released task back to the agent that held it.
+
+`resume` answers `invalid_decision` (400) for a decision that is not `continue`
+or `release` and for `release` outside a pool status, `workflow_not_paused`
+(409) for a task that is not paused, `workflow_not_bound` or `not_found` for a
+task that has no workflow or does not exist, and `forbidden` (403) for a caller
+that is not the customer. The CLI refuses an unknown `--decision` itself,
+before it calls the daemon.
+
+The events are `workflow.paused` (`status`, `reason`) and `workflow.resumed`
+(`status`, `decision`, `actor`, `reason`). The route is
+`POST /api/tasks/{key}/workflow/resume` with the body `{"decision":"continue"}`
+or `{"decision":"release"}`; it returns the task.
+
 ## The task view
 
 `ttasks workflow get KEY` (`--json` for the whole view) shows where a task is
@@ -756,6 +968,7 @@ and what it may do next. Agents and the operator can read it.
 | --- | --- |
 | `name`, `version`, `digest` | The pinned image. |
 | `status`, `category`, `waiting_on` | As described in [Status and category](#status-and-category). |
+| `paused_reason` | The reason the task is paused; absent otherwise. |
 | `owner` | `pool:<name>`, `customer`, `script`, or empty for a finished task. |
 | `holder` | The assigned `agent:<name>` of a pool status. |
 | `instructions_path` | The status instruction file inside the image. |
@@ -785,6 +998,7 @@ and what it may do next. Agents and the operator can read it.
 | `ttasks workflow runs KEY` | agent, operator | List script runs. |
 | `ttasks workflow log KEY RUN [--max-bytes N]` | holder, operator | Read a run log. |
 | `ttasks workflow move KEY --to STATUS --reason TEXT` | operator | Move without checks. |
+| `ttasks workflow resume KEY --decision continue\|release` | operator | Resolve a pause. |
 | `ttasks cancel KEY` | operator | Cancel the task. |
 
 "agent" means any agent that can read the task; "holder" means the agent that
@@ -813,6 +1027,7 @@ generated OpenAPI document is the authority for request and response schemas.
 | `GET` | `/api/tasks/{key}/workflow/runs/{id}` | one run | agent, operator |
 | `GET` | `/api/tasks/{key}/workflow/runs/{id}/log` | the redacted log tail (`max_bytes`); returns `run_id`, `text`, `truncated` | holder, operator |
 | `POST` | `/api/tasks/{key}/workflow/move` | move to a status (`to`, `reason`) | operator |
+| `POST` | `/api/tasks/{key}/workflow/resume` | resolve a pause (`decision`: `continue` or `release`); returns the task | operator |
 | `POST` | `/api/tasks/{key}/cancel` | cancel | operator |
 
 Agents reach the agent operations over their identity-bound socket with the
@@ -827,10 +1042,10 @@ See [State model](/docs/architecture/state-model) for the tables.
 | --- | --- |
 | `tasks.workflow_digest` | The pinned image digest; `NULL` for a flexible task. |
 | `tasks.workflow_status` | The current workflow status. |
-| `tasks.workflow_paused_reason` | Reserved for pause; always empty. |
+| `tasks.workflow_paused_reason` | The pause reason; empty unless the task is paused. |
 | `task_queue_workflows` | One binding per queue: digest, revision, update time. |
 | `task_queue_secrets` | Queue secret values in plaintext, per queue and key (migration `0056`). |
-| `task_workflow_holders` | The last holder of each task and pool, with the dispatch time. |
+| `task_workflow_holders` | The last holder of each task and pool, with the dispatch time, `released` (set by a `release` decision; migration `0060`), and `unavailable_since`, when the holder was first seen unable to work (migration `0061`). |
 | `task_status_visits` | One row per stay in a status, with its outcome and message, the `rejected_requests`, `script_failures`, and `idle_iterations` counters, and `next_watch_at`, when a script status's watch runs next (migration `0057`). |
 | `task_transition_requests` | Each request, with its state and `result_message`; at most one is `pending` per task. |
 | `task_artifacts` | Every artifact value with its author and time. |
@@ -856,7 +1071,7 @@ Events recorded on a workflow task: `workflow.transition_requested`,
 message), `workflow.transition_failed` (with the reason and log path),
 `workflow.script_run` (every run that ended, with its state, verdict, and exit
 code), `workflow.script_failed` (a failed watch run), `workflow.moved`,
-`workflow.cancelled`, and `artifact.set`.
+`workflow.cancelled`, `workflow.paused`, `workflow.resumed`, and `artifact.set`.
 
 ## Error codes
 
@@ -865,14 +1080,16 @@ code), `workflow.script_failed` (a failed watch run), `workflow.moved`,
 | `workflow_managed` | 409 | The command does not apply to a task with a workflow. |
 | `workflow_not_bound` | 409 | The task has no workflow. |
 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
-| `workflow_paused` | 409 | Reserved for pausing; does not occur today. |
+| `workflow_paused` | 409 | The task is paused: `advance` and `artifacts set` are refused until the customer decides. |
+| `workflow_not_paused` | 409 | `workflow resume` on a task that is not paused. |
+| `invalid_decision` | 400 | A resume decision that is not `continue` or `release`, or `release` outside a pool status. |
 | `workflow_in_use` | 409 | A queue binds the image or a task, open or closed, pins it. |
 | `workflow_pool_empty` | 409 | A pool the image names is missing or has no agents. |
 | `workflow_secret_missing` | 409 | A secret the image requires has no value in the queue, or `secret rm` would remove a secret the bound image requires. |
 | `workflow_unavailable` | 503 | The workflow image store is not available. |
 | `queue_workflow_not_found` | 404 | The queue has no binding. |
 | `not_holder` | 403 | The caller does not own the current status. |
-| `forbidden` | 403 | A caller that is not the customer used an operator-only route, or a caller that may not read a run log asked for it. |
+| `forbidden` | 403 | A caller that is not the customer used an operator-only route (move, cancel, resume), or a caller that may not read a run log asked for it. |
 | `status_changed` | 409 | An advance named `from`, and the task is in another status. |
 | `outcome_unknown` | 400 | The status does not declare that outcome. |
 | `status_unknown` | 400, 409 | The image does not declare that status (400 for a move, 409 for a task in an undeclared status). |
@@ -909,6 +1126,7 @@ pending request.
 | `advance` prints `failed:` | A check could not run or broke the protocol. Read the log it names with `ttasks workflow log KEY RUN`. A check that failed with `the daemon restarted during check ...` was interrupted; repeat the advance. |
 | `advance` says the request is still pending | The checks run longer than `wait_seconds` allows the CLI to wait. They keep running; follow them with `ttasks workflow get KEY`. |
 | `advance` fails with `script_running` | A watch or check of the previous status is still being killed. Retry in a few seconds. |
+| A task is `wait_customer` with `waiting_on: pause` | The daemon paused it; `ttasks workflow get KEY` shows `paused:` and the comment names the reason. Fix the cause, then `ttasks workflow resume KEY --decision continue` or `--decision release`. |
 | A script status never moves | Read `ttasks workflow runs KEY`. A run of `quiet` verdicts means the condition has not happened; `failure` verdicts mean a broken script: read its log. The operator can always `ttasks workflow move` the task. |
 | `workflow log` returns `forbidden` | The caller is neither the customer nor a holder of the task, or the run is a `run_as: agent` check of another holder. |
 | A secret value shows in a log | It was rotated or removed after the run, or it was printed encoded. Rotate the secret and fix the script. |
@@ -982,18 +1200,8 @@ The routes keep their `workflow-triggers` path for compatibility.
 
 These are designed but not built. Do not rely on them.
 
-- **Pause and resume.** The daemon does not pause a stalled task, and there is
-  no continue or release decision for the customer. `workflow_paused_reason`
-  stays empty and `waiting_on: pause` never appears. The visit counters
-  `rejected_requests` and `script_failures` are counted, but no limit acts on
-  them, and `idle_iterations` is not counted.
-- **Holder availability.** A holder that is disabled, halted, or removed from
-  its pool keeps the task; nothing reassigns it. `unavailable_grace` is not
-  enforced.
-- **The Goal block of the agent prompt** still shows the flexible-task guidance
-  for every task. Agents learn the status, outcomes, and the last request from
-  `ttasks workflow get` and from the `workflow_managed` error.
 - **Desktop has no workflow UI.** The task list does not separate status from
-  category, there are no outcome buttons, run logs are not shown, and queue
-  settings cannot bind a workflow or set secrets. Drive workflow tasks through
-  `ttasks` and the REST API.
+  category, there are no outcome buttons, run logs are not shown, the customer
+  cannot continue or release a paused task there, and queue settings cannot bind
+  a workflow or set secrets. Drive workflow tasks through `ttasks` and the REST
+  API.

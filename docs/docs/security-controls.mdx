@@ -106,6 +106,14 @@ support-bundle allowlist.
 
 ## Workflow scripts and queue secrets
 
+The workflow block of an agent's Goal prompt treats its sources by trust. The
+task title and description, artifact values, transition messages, and script
+messages are rendered as fenced, bounded data (the fence is longer than any run
+of backticks in the value, and each value is cut at a fixed length), never as
+instructions; the status instructions are trusted image content, like an image
+prompt. Queue secret values appear in no prompt. See
+[Task workflows](/docs/task-workflows#the-goal-block).
+
 The daemon runs the check and watch scripts of a queue's
 [workflow image](/docs/task-workflows#script-protocol) as the daemon account,
 the same OS user as the agents. A workflow gate protects against a skipped
@@ -138,9 +146,12 @@ snapshot, artifact, or result file carries a value, and Compose never handles
 one. Queue secret values of at least 6 bytes are replaced with `[redacted]` in
 a script's message and returned artifact values before they are stored, and in
 run log text served by the log route; every match is found before any is
-replaced, so overlapping or adjacent values leave no part of either. A log tail
-never returns text from before the requested window, even where a redaction
-shortened the window. This filter uses the queue's current values only: a
+replaced, so overlapping or adjacent values leave no part of either. When the
+read window does not start at the beginning of the file, the daemon reads 64 KiB
+more ahead of it so a secret the window start would cut is still matched, and
+returns nothing from that 64 KiB lead, even where a redaction shortened the
+window. A file shorter than the window plus 64 KiB is read whole, so text before
+the requested window, fully redacted, may appear in it. This filter uses the queue's current values only: a
 rotated or removed secret is no longer redacted in an old log, and encoded
 forms are never redacted. Script authors must not print secrets. A run log is
 readable only by the customer and a holder of the task, and the log of a

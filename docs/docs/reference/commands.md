@@ -235,6 +235,7 @@ socket; operator mode calls the REST routes as the customer.
 | `ttasks workflow runs KEY` (newest first) | agent, operator | `GET /api/tasks/{key}/workflow/runs` |
 | `ttasks workflow log KEY RUN [--max-bytes N]` (last 64 KiB by default, at most 1 MiB; queue secrets redacted; customer and the task's holders only) | agent, operator | `GET /api/tasks/{key}/workflow/runs/{id}/log` |
 | `ttasks workflow move KEY --to STATUS --reason TEXT` | operator only | `POST /api/tasks/{key}/workflow/move` |
+| `ttasks workflow resume KEY --decision continue\|release` (resolves the pause of a task the daemon paused: `continue` keeps the holder and zeroes the counters; `release` takes a pool task from its holder and dispatches it to another member, or leaves it `open` and unassigned; errors `invalid_decision`, `workflow_not_paused`, `forbidden`) | operator only | `POST /api/tasks/{key}/workflow/resume` |
 | `ttasks cancel KEY` | operator only | `POST /api/tasks/{key}/cancel` |
 | `ttasks queue workflow set QUEUE REF [--revision N]` | operator only | `PUT /api/task-queues/{queue}/workflow` |
 | `ttasks queue workflow get QUEUE` | operator only | `GET /api/task-queues/{queue}/workflow` |
