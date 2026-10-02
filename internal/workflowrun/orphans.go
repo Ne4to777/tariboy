@@ -38,6 +38,11 @@ func (w *worker) terminateOrphans(ctx context.Context) error {
 			continue
 		}
 		pid := *run.PID
+		if protectedOrphanPID(pid) {
+			w.log.Warn("a recorded workflow script pid is init, the daemon, or in the daemon's process group; the worker never signals it",
+				"run_id", run.ID, "task", run.TaskKey, "pid", pid)
+			continue
+		}
 		if procErr != nil {
 			w.log.Warn("cannot prove a recorded workflow script process is the run's script without /proc; it is not signalled",
 				"run_id", run.ID, "task", run.TaskKey, "pid", pid)
@@ -52,6 +57,18 @@ func (w *worker) terminateOrphans(ctx context.Context) error {
 		terminateOrphan(pid, resultFile)
 	}
 	return nil
+}
+
+// protectedOrphanPID reports whether pid must never be signalled as an
+// orphan, whatever its environment says: init, the daemon itself, the
+// daemon's process group, or any process in that group.
+func protectedOrphanPID(pid int) bool {
+	group := syscall.Getpgrp()
+	if pid == 1 || pid == os.Getpid() || pid == group {
+		return true
+	}
+	pgid, err := syscall.Getpgid(pid)
+	return err == nil && pgid == group
 }
 
 // isRunScript reports whether process pid is alive and has

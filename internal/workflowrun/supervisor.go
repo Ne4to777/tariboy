@@ -346,7 +346,9 @@ func (w *worker) finish(ctx context.Context, id int64, job tasks.RunJob, done ta
 	w.notify()
 }
 
-// recordUnrecorded tries every kept completion once more.
+// recordUnrecorded tries the kept completions once more. It stops at the first
+// failure: the store is likely still failing, and each attempt may wait its
+// full timeout; the next pass tries again.
 func (w *worker) recordUnrecorded(ctx context.Context) {
 	w.mu.Lock()
 	pending := make(map[int64]unrecorded, len(w.retry))
@@ -360,7 +362,7 @@ func (w *worker) recordUnrecorded(ctx context.Context) {
 		}
 		if err := w.complete(ctx, id, entry.done); err != nil {
 			w.log.Error("record workflow script run", "run_id", id, "task", entry.job.Run.TaskKey, "err", err)
-			continue
+			return
 		}
 		w.mu.Lock()
 		delete(w.retry, id)

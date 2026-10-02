@@ -32,6 +32,11 @@ func resolveNativeTaskAttribution(ctx context.Context, reader nativeTaskReader, 
 			return "", "", err
 		}
 		task := detail.Task
+		// A former workflow holder may read its task, not take it as a Goal;
+		// ancestors are read as context and stay attributable.
+		if taskID == "" && detail.HolderReadOnly {
+			return "", "", fmt.Errorf("task %q not found", key)
+		}
 		if _, ok := seen[task.Key]; ok {
 			return "", "", fmt.Errorf("native task parent cycle at %q", task.Key)
 		}

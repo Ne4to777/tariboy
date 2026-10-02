@@ -165,6 +165,59 @@ func TestSetGoalUpdatesSelectionAndLiveProxyAttribution(t *testing.T) {
 	}
 }
 
+// TestSetGoalRefusesATaskReadOnlyAsAFormerHolder: a workflow holder row lets
+// an agent read its former task, never select it. A task the agent reads as
+// the ancestor of its own work resolves as it always did.
+func TestSetGoalRefusesATaskReadOnlyAsAFormerHolder(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "tariboyd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
+	service := tasks.NewService(state.DB, "customer", func() time.Time {
+		return time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
+	})
+	ctx := context.Background()
+	customer := tasks.CustomerActor("customer")
+	if _, err := service.CreateQueue(ctx, customer, tasks.CreateQueueInput{Prefix: "SUPER", Name: "Super"}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := service.CreateTask(ctx, customer, tasks.CreateTaskInput{Queue: "SUPER", Title: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateTask(ctx, customer, tasks.CreateTaskInput{ParentKey: root.Key, Title: "child", Assignee: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	former, err := service.CreateTask(ctx, customer, tasks.CreateTaskInput{Queue: "SUPER", Title: "former"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.DB.Exec(`INSERT INTO task_workflow_holders(task_id, pool, agent, dispatched_at) VALUES (?, 'devs', 'worker', 'now')`,
+		former.ID); err != nil {
+		t.Fatal(err)
+	}
+	if detail, err := service.GetTask(ctx, tasks.AgentActor("worker"), former.Key); err != nil || detail.Task.Access != "context" {
+		t.Fatalf("former holder read = %q, %v", detail.Task.Access, err)
+	}
+
+	var selected []string
+	selectGoal := func(_, key string, _ func() (func(), error)) error {
+		selected = append(selected, key)
+		return nil
+	}
+	proxy := &attributionProxy{updated: 1, changed: true}
+	if _, err := setGoal(ctx, service, selectGoal, proxy, "iter-1", "worker", former.Key); err == nil {
+		t.Fatal("a former holder selected its task as the goal")
+	}
+	if _, err := setGoal(ctx, service, selectGoal, proxy, "iter-1", "worker", root.Key); err != nil {
+		t.Fatalf("ancestor context reader: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != root.Key {
+		t.Fatalf("selected = %v; want only %s", selected, root.Key)
+	}
+}
+
 func TestSetGoalDoesNotPersistWhenLiveLeaseCannotBeUpdated(t *testing.T) {
 	reader := &attributionTaskReader{tasks: map[string]tasks.Task{"T-1": {Key: "T-1"}}}
 	proxy := &attributionProxy{}

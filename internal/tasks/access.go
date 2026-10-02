@@ -146,23 +146,30 @@ func taskAccess(ctx context.Context, q queryer, actor Actor, taskID int64) (stri
 // to another pool must still see its task and the result of its request. It
 // grants no write; every write checks taskAccess.
 func readAccess(ctx context.Context, q queryer, actor Actor, taskID int64) (string, error) {
-	access, err := taskAccess(ctx, q, actor, taskID)
+	access, _, err := holderReadAccess(ctx, q, actor, taskID)
+	return access, err
+}
+
+// holderReadAccess is readAccess that also reports whether the holder row is
+// the reader's only access.
+func holderReadAccess(ctx context.Context, q queryer, actor Actor, taskID int64) (access string, holderOnly bool, err error) {
+	access, err = taskAccess(ctx, q, actor, taskID)
 	if err != nil || access != "" || actor.IsCustomer {
-		return access, err
+		return access, false, err
 	}
 	agent, ok := strings.CutPrefix(actor.Principal, "agent:")
 	if !ok {
-		return "", nil
+		return "", false, nil
 	}
 	var holds bool
 	if err := q.QueryRowContext(ctx, `
 		SELECT EXISTS(SELECT 1 FROM task_workflow_holders WHERE task_id = ? AND agent = ?)`, taskID, agent).Scan(&holds); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if holds {
-		return "context", nil
+		return "context", true, nil
 	}
-	return "", nil
+	return "", false, nil
 }
 
 func requireRespond(ctx context.Context, q queryer, actor Actor, task Task) error {

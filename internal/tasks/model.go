@@ -294,6 +294,9 @@ type TaskDetail struct {
 	ActiveDescendants int          `json:"active_descendants"`
 	WaitingFor        []WaitingFor `json:"waiting_for"`
 	Relations         []Relation   `json:"relations"`
+	// HolderReadOnly is true when the reader sees the task only through its
+	// workflow holder row, as a former holder; it is never marshalled.
+	HolderReadOnly bool `json:"-"`
 }
 
 type CreateQueueInput struct {

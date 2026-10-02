@@ -867,6 +867,88 @@ func TestSupervisorSignalsNothingWithoutProc(t *testing.T) {
 	}
 }
 
+func TestRecordUnrecordedStopsAtTheFirstFailureOfAPass(t *testing.T) {
+	h := newHarness(t)
+	w := &worker{s: h.sup, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		busy: map[string]bool{}, retry: map[int64]unrecorded{}, quietDirs: map[string]string{}}
+	for id := int64(1); id <= 3; id++ {
+		h.jobs.completeFail[id] = 1
+		w.retry[id] = unrecorded{job: checkJob(id, "DEV-"+strconv.FormatInt(id, 10), "scripts/pass.sh"),
+			done: tasks.RunCompletion{Verdict: VerdictPass}}
+	}
+	attempts := func() int {
+		h.jobs.mu.Lock()
+		defer h.jobs.mu.Unlock()
+		total := 0
+		for _, n := range h.jobs.attempts {
+			total += n
+		}
+		return total
+	}
+	w.recordUnrecorded(context.Background())
+	if n := attempts(); n != 1 {
+		t.Fatalf("attempts in a failing pass = %d; the pass stops at the first failure", n)
+	}
+	// Each later pass records what it can and stops at the next failure.
+	for pass := 0; pass < 6 && len(w.retry) > 0; pass++ {
+		w.recordUnrecorded(context.Background())
+	}
+	if len(w.retry) != 0 {
+		t.Fatalf("kept completions left = %d", len(w.retry))
+	}
+}
+
+func TestProtectedOrphanPIDs(t *testing.T) {
+	sameGroup := exec.Command("sleep", "30")
+	if err := sameGroup.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = sameGroup.Process.Kill()
+		_ = sameGroup.Wait()
+	})
+	own := orphan(t)
+	for pid, want := range map[int]bool{
+		1: true, os.Getpid(): true, syscall.Getpgrp(): true, sameGroup.Process.Pid: true,
+		own.Process.Pid: false,
+	} {
+		if got := protectedOrphanPID(pid); got != want {
+			t.Errorf("protectedOrphanPID(%d) = %v, want %v", pid, got, want)
+		}
+	}
+}
+
+func TestSupervisorNeverSignalsInitOrItself(t *testing.T) {
+	h := newHarness(t)
+	var logged strings.Builder
+	var logMu sync.Mutex
+	h.sup.Log = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logged.Write(p)
+	}), nil))
+	// Without /proc the identity check would only log; the guard comes first.
+	procRoot = filepath.Join(t.TempDir(), "no-proc")
+	t.Cleanup(func() { procRoot = "/proc" })
+	initPID, self := 1, os.Getpid()
+	h.jobs.running = []tasks.ScriptRun{
+		{ID: 7, TaskKey: "DEV-7", Kind: KindCheck, State: "running", PID: &initPID},
+		{ID: 8, TaskKey: "DEV-8", Kind: KindWatch, State: "running", PID: &self},
+	}
+	h.start()
+	h.awaitRecovered()
+	logMu.Lock()
+	defer logMu.Unlock()
+	for _, want := range []string{"run_id=7", "run_id=8", "never signals"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Fatalf("log lacks %q: %q", want, logged.String())
+		}
+	}
+	if strings.Contains(logged.String(), "cannot prove") {
+		t.Fatalf("a protected pid reached the identity check: %q", logged.String())
+	}
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

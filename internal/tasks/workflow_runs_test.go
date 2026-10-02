@@ -801,6 +801,77 @@ func TestRecoverScriptRuns(t *testing.T) {
 	})
 }
 
+func TestRecoverScriptRunsToleratesARunItCannotInterrupt(t *testing.T) {
+	t.Run("check", func(t *testing.T) {
+		svc, actor, broken, _ := runFixture(t)
+		ctx := context.Background()
+		brokenRequest, brokenRun := advanceApprove(t, svc, actor, broken)
+		// The healthy task runs its watch.
+		healthy := enter(t, svc, mustCreateDev(t, svc, actor, "healthy").Key, "merge", "approved")
+		healthyRun := scheduleWatch(t, svc, actor, healthy)
+		for _, id := range []int64{brokenRun.ID, healthyRun.ID} {
+			if ok, err := svc.ClaimScriptRun(ctx, id, "t", "/log"); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+		}
+		// The broken task's pinned workflow image is gone.
+		if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = 'missing' WHERE id = ?`, broken.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecoverScriptRuns(ctx); err != nil {
+			t.Fatalf("recovery failed for every run: %v", err)
+		}
+		var state, message string
+		if err := svc.db.QueryRow(`SELECT state, message FROM task_script_runs WHERE id = ?`, brokenRun.ID).Scan(&state, &message); err != nil {
+			t.Fatal(err)
+		}
+		if state != "interrupted" || !strings.Contains(message, "missing") {
+			t.Fatalf("broken run = %s %q; want interrupted naming the error", state, message)
+		}
+		if state, result := requestRow(t, svc, brokenRequest.ID); state != "failed" || !strings.Contains(result, "missing") {
+			t.Fatalf("broken request = %s %q", state, result)
+		}
+		if state, _, _ := runState(t, svc, healthyRun.ID); state != "interrupted" {
+			t.Fatalf("healthy run = %s", state)
+		}
+		if _, _, _, next := openVisit(t, svc, healthy); next != svc.clock().Add(5*time.Minute).UTC().Format(dispatchedAtLayout) {
+			t.Fatalf("healthy next_watch_at = %q", next)
+		}
+	})
+	t.Run("watch without a manifest", func(t *testing.T) {
+		svc, actor, task := watchFixture(t)
+		ctx := context.Background()
+		run := scheduleWatch(t, svc, actor, task)
+		if ok, err := svc.ClaimScriptRun(ctx, run.ID, "t", "/log"); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		if _, err := svc.db.Exec(`UPDATE tasks SET workflow_digest = 'missing' WHERE id = ?`, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecoverScriptRuns(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if state, _, _ := runState(t, svc, run.ID); state != "interrupted" {
+			t.Fatalf("run = %s", state)
+		}
+		if _, _, _, next := openVisit(t, svc, task); next != svc.clock().Add(workflowfile.MinWatchEvery).UTC().Format(dispatchedAtLayout) {
+			t.Fatalf("next_watch_at = %q", next)
+		}
+	})
+	t.Run("a cancelled context still fails recovery", func(t *testing.T) {
+		svc, actor, task, _ := runFixture(t)
+		_, run := advanceApprove(t, svc, actor, task)
+		if ok, err := svc.ClaimScriptRun(context.Background(), run.ID, "t", "/log"); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := svc.RecoverScriptRuns(ctx); err == nil {
+			t.Fatal("recovery with a cancelled context succeeded")
+		}
+	})
+}
+
 func TestRunningScriptRunsCarryTheirPID(t *testing.T) {
 	svc, actor, task, _ := runFixture(t)
 	ctx := context.Background()
@@ -1037,6 +1108,48 @@ func TestQuietWatchRunsLeaveNoEventAndOnlyTheNewestAreKept(t *testing.T) {
 	}
 	if _, err := svc.GetScriptRun(ctx, actor, task.Key, failed.ID); err != nil {
 		t.Fatalf("the failed run was pruned: %v", err)
+	}
+}
+
+// A watch run whose cancellation was requested but that exited quiet by
+// itself is stored as cancelled with verdict quiet: it keeps its event and is
+// never pruned as a quiet run.
+func TestACancelledQuietWatchRunIsNotTreatedAsQuiet(t *testing.T) {
+	svc, actor, task := watchFixture(t)
+	ctx := context.Background()
+	cancelled := scheduleWatch(t, svc, actor, task)
+	if ok, err := svc.ClaimScriptRun(ctx, cancelled.ID, "t", "/log"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := svc.db.Exec(`UPDATE task_script_runs SET cancel_requested = 1 WHERE id = ?`, cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	complete(t, svc, cancelled.ID, RunCompletion{Verdict: "quiet", ExitCode: exitCode(111)})
+	if state, verdict, _ := runState(t, svc, cancelled.ID); state != "cancelled" || verdict != "quiet" {
+		t.Fatalf("run = %s %s", state, verdict)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'workflow.script_run'`, task.ID); n != 1 {
+		t.Fatalf("script_run events = %d; the cancelled run has one", n)
+	}
+	at := svc.clock()
+	for range workflowViewRuns + 1 {
+		if _, err := svc.db.Exec(`UPDATE task_status_visits SET next_watch_at = ? WHERE task_id = ? AND left_at = ''`,
+			watchTime(at), task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := svc.ScheduleDueWatches(ctx, at); err != nil || n != 1 {
+			t.Fatalf("scheduled = %d, %v", n, err)
+		}
+		run := listRuns(t, svc, actor, task)[0]
+		complete(t, svc, run.ID, RunCompletion{Verdict: "quiet", ExitCode: exitCode(111), FinishedAt: at.Format(time.RFC3339Nano)})
+		at = at.Add(5 * time.Minute)
+	}
+	if _, err := svc.GetScriptRun(ctx, actor, task.Key, cancelled.ID); err != nil {
+		t.Fatalf("the cancelled run was pruned as a quiet run: %v", err)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM task_script_runs WHERE task_id = ? AND verdict = 'quiet' AND state = 'finished'`,
+		task.ID); n != workflowViewRuns {
+		t.Fatalf("finished quiet runs kept = %d", n)
 	}
 }
 

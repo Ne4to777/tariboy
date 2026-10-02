@@ -437,7 +437,7 @@ func (s *Service) GetTask(ctx context.Context, actor Actor, key string) (TaskDet
 	if err != nil {
 		return TaskDetail{}, err
 	}
-	access, err := readAccess(ctx, s.db, actor, task.ID)
+	access, holderOnly, err := holderReadAccess(ctx, s.db, actor, task.ID)
 	if err != nil {
 		return TaskDetail{}, err
 	}
@@ -464,7 +464,7 @@ func (s *Service) GetTask(ctx context.Context, actor Actor, key string) (TaskDet
 	return TaskDetail{
 		Task: task, Comments: comments,
 		Descendants: total, ActiveDescendants: active,
-		WaitingFor: waits, Relations: relations,
+		WaitingFor: waits, Relations: relations, HolderReadOnly: holderOnly,
 	}, nil
 }
 

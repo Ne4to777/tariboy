@@ -479,14 +479,15 @@ func (s *Service) CompleteScriptRun(ctx context.Context, id int64, done RunCompl
 	if err != nil {
 		return err
 	}
-	if run.Kind == "watch" && done.Verdict == verdictQuiet {
+	if run.Kind == "watch" && done.Verdict == verdictQuiet && state == "finished" {
 		// A quiet watch run says nothing happened: it leaves no event, and only
-		// the newest quiet runs of the visit are kept.
+		// the newest quiet runs of the visit are kept. A run cancelled while it
+		// went quiet is not one of them.
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM task_script_runs
-			WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' AND id NOT IN (
+			WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' AND state = 'finished' AND id NOT IN (
 				SELECT id FROM task_script_runs
-				WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' ORDER BY id DESC LIMIT ?)`,
+				WHERE visit_id = ? AND kind = 'watch' AND verdict = 'quiet' AND state = 'finished' ORDER BY id DESC LIMIT ?)`,
 			run.visitID, run.visitID, workflowViewRuns); err != nil {
 			return err
 		}
@@ -824,22 +825,61 @@ func (s *Service) failWatchTx(ctx context.Context, tx *sql.Tx, task Task, manife
 
 // RecoverScriptRuns runs when the worker starts: every running run is recorded
 // as interrupted, its check request fails, and its watch runs next after
-// every. Pending runs stay pending.
+// every. Pending runs stay pending. A run that cannot be interrupted is logged
+// and forced to interrupted, so it does not hold back every other script;
+// only a context error fails recovery.
 func (s *Service) RecoverScriptRuns(ctx context.Context) error {
 	runs, err := queryScriptRuns(ctx, s.db, runningRunsWhere)
 	if err != nil {
 		return err
 	}
-	var errs []error
 	for _, run := range runs {
-		if err := s.interruptRun(ctx, run.ID); err != nil {
-			errs = append(errs, fmt.Errorf("script run %d: %w", run.ID, err))
+		err := s.interruptRun(ctx, run.ID)
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("script run %d: %w", run.ID, err)
+		}
+		s.logger().Error("force workflow script run to interrupted", "run_id", run.ID, "task", run.TaskKey, "err", err)
+		if err := s.forceInterruptRun(ctx, run, err); err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("script run %d: %w", run.ID, err)
+			}
+			s.logger().Error("force workflow script run to interrupted failed", "run_id", run.ID, "task", run.TaskKey, "err", err)
 		}
 	}
 	if len(runs) > 0 {
 		s.signal()
 	}
-	return errors.Join(errs...)
+	return nil
+}
+
+// forceInterruptRun records a running run as interrupted when interruptRun
+// failed with cause, touching only the run row and, for a check, its pending
+// request.
+func (s *Service) forceInterruptRun(ctx context.Context, run scriptRunRecord, cause error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := s.now()
+	message := boundRunMessage(fmt.Sprintf("the daemon restarted during %s %s; recording the interruption failed: %v",
+		run.Kind, run.Script, cause))
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE task_script_runs SET state = 'interrupted', finished_at = ?, message = ? WHERE id = ? AND state = 'running'`,
+		now, message, run.ID); err != nil {
+		return err
+	}
+	if run.Kind == "check" && run.requestID != 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE task_transition_requests SET state = 'failed', result_message = ?, finished_at = ? WHERE id = ? AND state = 'pending'`,
+			message, now, run.requestID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // interruptRun records one running run as interrupted in its own transaction.
@@ -893,14 +933,21 @@ func (s *Service) interruptRun(ctx context.Context, id int64) error {
 			return err
 		}
 		if live {
-			// The next run follows after every, as after any finished run.
+			// The next run follows after every, as after any finished run; with
+			// no readable manifest, after the shortest every.
+			every := workflowfile.MinWatchEvery
 			manifest, err := loadManifestTx(ctx, tx, task.WorkflowDigest)
-			if err != nil {
+			switch {
+			case err == nil:
+				status, _ := currentStatus(manifest, task.WorkflowStatus)
+				every = watchEvery(status)
+			case ctx.Err() != nil:
 				return err
+			default:
+				s.logger().Warn("reschedule interrupted watch without its manifest", "run_id", run.ID, "task", task.Key, "err", err)
 			}
-			status, _ := currentStatus(manifest, task.WorkflowStatus)
 			if _, err := tx.ExecContext(ctx, `UPDATE task_status_visits SET next_watch_at = ? WHERE id = ?`,
-				watchTime(s.clock().Add(watchEvery(status))), run.visitID); err != nil {
+				watchTime(s.clock().Add(every)), run.visitID); err != nil {
 				return err
 			}
 		}
