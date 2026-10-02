@@ -31,7 +31,7 @@ async function confirm(action: string) {
 
 it("says why the task is paused in words", () => {
   renderBanner("rejected_requests")
-  expect(screen.getByText(/checks rejected too many transition requests/i)).toBeInTheDocument()
+  expect(screen.getByRole("alert")).toHaveTextContent(/checks rejected too many transition requests/i)
 })
 
 it("shows an unknown reason as it came", () => {
@@ -85,6 +85,6 @@ it("shows a refused decision inline", async () => {
   const { onChanged } = renderBanner()
   fireEvent.click(screen.getByRole("button", { name: "Continue" }))
   await confirm("Continue")
-  expect(screen.getByRole("alert")).toHaveTextContent("the task is not paused")
+  expect(screen.getAllByRole("alert").some((node) => node.textContent === "the task is not paused")).toBe(true)
   expect(onChanged).not.toHaveBeenCalled()
 })

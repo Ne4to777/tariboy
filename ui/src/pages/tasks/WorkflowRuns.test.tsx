@@ -42,6 +42,7 @@ it("loads a log on demand and notes a truncated one", async () => {
   expect(api.getTaskScriptRunLog).toHaveBeenCalledWith("REL-1", 7, undefined, target)
   const row = screen.getByRole("listitem")
   expect(row.querySelector("pre")!.textContent).toBe("<script>x</script>\nok")
+  expect(row.querySelector("pre")).toHaveAttribute("tabindex", "0")
   expect(row.querySelector("script")).toBeNull()
   expect(within(row).getByText(/truncated/i)).toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Hide log" }))

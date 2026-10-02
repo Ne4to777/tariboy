@@ -28,6 +28,7 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
   const [view, setView] = useState<WorkflowView | null>(null)
   const [error, setError] = useState("")
   const [moving, setMoving] = useState(false)
+  const [cancelError, setCancelError] = useState("")
   const { confirm, dialog } = useWorkflowConfirm()
   const mounted = useRef(true)
   useEffect(() => {
@@ -68,8 +69,21 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
     title: "Cancel this task?",
     description: "The task closes as cancelled and its scripts stop. The workflow status stays where it stopped.",
     action: "Cancel task",
-    run: () => { cancelWorkflowTask(task.key, target).then(changed, (failed) => setError(errorText(failed))) },
+    run: () => {
+      setCancelError("")
+      cancelWorkflowTask(task.key, target).then(
+        () => { if (mounted.current) changed() },
+        (failed) => { if (mounted.current) setCancelError(errorText(failed)) })
+    },
   })
+  // Resolves true once moved, false when the confirmation is declined.
+  const move = (to: string, reason: string) => new Promise<boolean>((resolve, reject) => confirm({
+    title: `Move this task to ${to}?`,
+    description: "The move skips outcomes, required artifacts, and checks, stops the current scripts, and cancels a pending request.",
+    action: "Move task",
+    onCancel: () => resolve(false),
+    run: () => { moveTaskWorkflow(task.key, to, reason, target).then(() => { resolve(true); changed() }, reject) },
+  }))
 
   return (
     <div className="flex min-w-0 flex-col gap-[18px]">
@@ -95,14 +109,8 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
         </DropdownMenu>}
       </div>
       {failure}
-      {moving && <MoveForm view={view} onDone={() => setMoving(false)} onMove={(to, reason) => new Promise<void>((resolve, reject) => {
-        confirm({
-          title: `Move this task to ${to}?`,
-          description: "The move skips outcomes, required artifacts, and checks, stops the current scripts, and cancels a pending request.",
-          action: "Move task",
-          run: () => { moveTaskWorkflow(task.key, to, reason, target).then(() => { resolve(); changed() }, reject) },
-        })
-      })} />}
+      {cancelError && <p role="alert" className="text-[12px] text-status-failed">{cancelError}</p>}
+      {moving && <MoveForm view={view} onDone={() => setMoving(false)} onMove={move} />}
       <WorkflowOutcomes taskKey={task.key} view={view} target={target} onChanged={changed} onRefresh={refresh} />
       <WorkflowArtifacts taskKey={task.key} artifacts={view.artifacts} missing={missing} editable={editable && !closed}
         target={target} onChanged={changed} />
@@ -140,15 +148,24 @@ function knownStatuses(view: WorkflowView): string[] {
 
 function MoveForm({ view, onMove, onDone }: {
   view: WorkflowView
-  onMove: (to: string, reason: string) => Promise<void>
+  onMove: (to: string, reason: string) => Promise<boolean>
   onDone: () => void
 }) {
   const [to, setTo] = useState("")
   const [reason, setReason] = useState("")
   const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const submit = () => {
     setError("")
-    onMove(to, reason.trim()).then(onDone, (failure) => setError(errorText(failure)))
+    setBusy(true)
+    onMove(to, reason.trim())
+      .then((moved) => { if (moved && mounted.current) onDone() }, (failure) => { if (mounted.current) setError(errorText(failure)) })
+      .finally(() => { if (mounted.current) setBusy(false) })
   }
   return (
     <form className="flex min-w-0 flex-col gap-1.5 rounded-[8px] bg-muted/50 p-2.5"
@@ -163,7 +180,7 @@ function MoveForm({ view, onMove, onDone }: {
         </SelectShell>
         <Input aria-label="Reason" placeholder="Reason (required)" value={reason}
           className={cn(FIELD, "h-[26px] min-w-[160px] flex-1")} onChange={(event) => setReason(event.target.value)} />
-        <Button type="submit" size="sm" className="h-[26px]" disabled={!to || !reason.trim()}>Move</Button>
+        <Button type="submit" size="sm" className="h-[26px]" disabled={busy || !to || !reason.trim()}>Move</Button>
         <Button type="button" variant="ghost" size="sm" className="h-[26px]" onClick={onDone}>Close</Button>
       </div>
       {error && <p role="alert" className="text-[12px] text-status-failed">{error}</p>}

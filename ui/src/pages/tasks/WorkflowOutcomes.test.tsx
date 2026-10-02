@@ -19,6 +19,13 @@ const request = (state: TransitionRequest["state"], extra: Partial<TransitionReq
 beforeEach(() => { vi.clearAllMocks() })
 afterEach(() => { vi.useRealTimers() })
 
+function renderOutcomesWithUnmount(view = customerView) {
+  const onChanged = vi.fn()
+  const onRefresh = vi.fn()
+  const { unmount } = render(<WorkflowOutcomes taskKey="REL-1" view={view} target={target} onChanged={onChanged} onRefresh={onRefresh} />)
+  return { onChanged, onRefresh, unmount }
+}
+
 function renderOutcomes(view = customerView) {
   const onChanged = vi.fn()
   const onRefresh = vi.fn()
@@ -118,4 +125,70 @@ it("shows the last request's failure from the view", () => {
   const notice = screen.getByRole("alert")
   expect(notice).toHaveTextContent("Failed")
   expect(notice).toHaveTextContent("check timed out")
+})
+
+it("refetches the view when another request is still pending, and when the task is paused or lacks an artifact", async () => {
+  for (const code of ["transition_pending", "workflow_paused", "artifact_missing"]) {
+    api.advanceTask.mockRejectedValueOnce(new ApiError(409, code, `refused: ${code}`))
+    const { onRefresh, unmount } = renderOutcomesWithUnmount()
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole("alert")).toHaveTextContent(`refused: ${code}`)
+    unmount()
+  }
+})
+
+it("stops polling and sets no state once unmounted", async () => {
+  vi.useFakeTimers()
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+  api.advanceTask.mockResolvedValue(request("pending", { wait_seconds: 30 }))
+  api.getTransitionRequest.mockResolvedValue(request("pending"))
+  const { onChanged, onRefresh, unmount } = renderOutcomesWithUnmount()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  unmount()
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+  expect(api.getTransitionRequest).not.toHaveBeenCalled()
+  expect(onChanged).not.toHaveBeenCalled()
+  expect(onRefresh).not.toHaveBeenCalled()
+  expect(errors).not.toHaveBeenCalled()
+  errors.mockRestore()
+})
+
+it("labels a failed poll as an unreadable request, not a refusal", async () => {
+  vi.useFakeTimers()
+  api.advanceTask.mockResolvedValue(request("pending", { wait_seconds: 30 }))
+  api.getTransitionRequest.mockRejectedValue(new Error("network down"))
+  renderOutcomes()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  const notice = screen.getByRole("alert")
+  expect(notice).toHaveTextContent("Could not read the request")
+  expect(notice).toHaveTextContent("network down")
+  expect(notice).not.toHaveTextContent("Refused")
+})
+
+it("drops its notice when the view moves to another status", async () => {
+  api.advanceTask.mockRejectedValue(new ApiError(409, "status_changed", "the task is in status publish"))
+  const onChanged = vi.fn()
+  const onRefresh = vi.fn()
+  const { rerender } = render(<WorkflowOutcomes taskKey="REL-1" view={customerView} target={target} onChanged={onChanged} onRefresh={onRefresh} />)
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  expect(screen.getByRole("alert")).toBeInTheDocument()
+  rerender(<WorkflowOutcomes taskKey="REL-1" view={{ ...customerView, status: "publish", outcomes: [] }} target={target}
+    onChanged={onChanged} onRefresh={onRefresh} />)
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
+it("offers a refresh while a request from elsewhere is pending", () => {
+  const { onRefresh } = renderOutcomes({ ...customerView, last_request: request("pending", { wait_seconds: 60 }) })
+  expect(screen.getByText("checking…")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "approve" })).toBeDisabled()
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+  expect(onRefresh).toHaveBeenCalled()
+})
+
+it("says what a disabled outcome still needs", () => {
+  renderOutcomes({ ...customerView, outcomes: [{ on: "approve", to: "publish", requires: ["notes"], missing: ["notes"] }] })
+  expect(screen.getByRole("button", { name: "approve" })).toBeDisabled()
+  expect(screen.getByText("needs: notes")).toBeInTheDocument()
 })

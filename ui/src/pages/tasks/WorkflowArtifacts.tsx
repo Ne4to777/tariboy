@@ -8,8 +8,9 @@ import { COUNT, EMPTY, LABEL, MONO, QUIET_ACTION } from "./panelStyles"
 import { formatTaskTime } from "./taskTime"
 import { errorText } from "./WorkflowConfirm"
 
-/** A value longer than this many lines starts collapsed. */
+/** A value longer than this many lines, or characters, starts collapsed. */
 const COLLAPSED_LINES = 6
+const COLLAPSED_CHARS = 600
 
 /**
  * The task's artifacts: the current value of each, its author and time, the
@@ -111,13 +112,17 @@ function ArtifactItem({ taskKey, name, artifact, editable, target, onChanged }: 
 function ArtifactValue({ value }: { value: string }) {
   const [expanded, setExpanded] = useState(false)
   const lines = value.split("\n")
-  const long = lines.length > COLLAPSED_LINES
+  const manyLines = lines.length > COLLAPSED_LINES
+  const short = lines.slice(0, COLLAPSED_LINES).join("\n").slice(0, COLLAPSED_CHARS)
+  const long = short.length < value.length
   return <div className="flex min-w-0 flex-col items-start gap-0.5">
-    <pre className="w-full min-w-0 overflow-x-auto rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11.5px] whitespace-pre-wrap break-words">
-      {long && !expanded ? lines.slice(0, COLLAPSED_LINES).join("\n") : value}
+    {/* Scrolls inside its own box, focusable so the keyboard can scroll it. */}
+    <pre tabIndex={0} className="max-h-60 w-full min-w-0 overflow-auto rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11.5px] whitespace-pre-wrap break-words">
+      {long && !expanded ? short : value}
     </pre>
-    {long && <Button type="button" variant="ghost" className={QUIET_ACTION} onClick={() => setExpanded(!expanded)}>
-      {expanded ? "Show less" : `Show all ${lines.length} lines`}
+    {long && <Button type="button" variant="ghost" className={QUIET_ACTION} aria-expanded={expanded}
+      onClick={() => setExpanded(!expanded)}>
+      {expanded ? "Show less" : manyLines ? `Show all ${lines.length} lines` : `Show all ${value.length} characters`}
     </Button>}
   </div>
 }

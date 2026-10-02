@@ -63,7 +63,7 @@ function RunItem({ taskKey, run, target }: { taskKey: string; run: ScriptRun; ta
       {error && <p role="alert" className="text-[12px] text-status-failed">{error}</p>}
       {log && <div className="flex min-w-0 flex-col gap-0.5">
         {log.truncated && <span className={EMPTY}>The log is truncated; only its end is shown.</span>}
-        <pre className="max-h-80 min-w-0 overflow-auto rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11px] whitespace-pre-wrap break-words">{log.text}</pre>
+        <pre tabIndex={0} className="max-h-80 min-w-0 overflow-auto rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11px] whitespace-pre-wrap break-words">{log.text}</pre>
       </div>}
     </li>
   )

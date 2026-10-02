@@ -13,7 +13,9 @@ const DEFAULT_WAIT_SECONDS = 90
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const RESULT_LABEL: Record<string, string> = { rejected: "Rejected", failed: "Failed", cancelled: "Cancelled" }
 
-type Notice = { kind: "result"; request: TransitionRequest } | { kind: "error"; message: string } | { kind: "timeout" }
+type Notice = { kind: "result"; request: TransitionRequest } | { kind: "error"; label: string; message: string } | { kind: "timeout" }
+/** A refusal that means the view is stale, so the panel refetches it. */
+const STALE_CODES = new Set(["status_changed", "transition_pending", "workflow_paused", "artifact_missing"])
 
 /**
  * The outcomes of the current status. The Desktop acts as the customer, so a
@@ -33,7 +35,11 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
   const paused = view.waiting_on === "pause"
   const [message, setMessage] = useState("")
   const [checking, setChecking] = useState(false)
-  const [notice, setNotice] = useState<Notice | null>(null)
+  // A notice belongs to the status it was given in; once the view shows
+  // another status it no longer applies and is not shown.
+  const [held, setHeld] = useState<{ status: string; notice: Notice } | null>(null)
+  const notice = held?.status === view.status ? held.notice : null
+  const setNotice = (next: Notice | null, status = view.status) => setHeld(next && { status, notice: next })
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -54,7 +60,13 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
         }
         await sleep(1000)
         if (!mounted.current) return
-        request = await getTransitionRequest(taskKey, request.id, target)
+        try {
+          request = await getTransitionRequest(taskKey, request.id, target)
+        } catch (error) {
+          // The request may still be applying; only reading it failed.
+          if (mounted.current) setNotice({ kind: "error", label: "Could not read the request", message: errorText(error) })
+          return
+        }
       }
       if (!mounted.current) return
       if (request.state === "applied") {
@@ -66,8 +78,12 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       }
     } catch (error) {
       if (!mounted.current) return
-      setNotice({ kind: "error", message: errorText(error) })
-      if (error instanceof ApiError && (error.code === "status_changed" || error.code === "transition_pending")) onRefresh()
+      const stale = error instanceof ApiError && STALE_CODES.has(error.code)
+      // status_changed names the status the task is in now, where the
+      // refetched view lands, so its message survives that refetch.
+      const now = stale && typeof error.details?.status === "string" ? error.details.status : view.status
+      setNotice({ kind: "error", label: "Refused", message: errorText(error) }, now)
+      if (stale) onRefresh()
     } finally {
       if (mounted.current) setChecking(false)
     }
@@ -95,6 +111,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
                 ? <Button type="button" size="sm" className="h-7" disabled={disabled || missing.size > 0}
                   onClick={() => void advance(outcome.on)}>{outcome.on}</Button>
                 : <span className={cn(MONO, "font-medium")}>{outcome.on}</span>}
+              {customer && missing.size > 0 && <span className="text-[11.5px] text-status-failed">needs: {[...missing].join(", ")}</span>}
               <ArrowRight aria-hidden="true" className="size-3 text-muted-foreground" />
               <span className={MONO}>{outcome.to}</span>
               {(outcome.requires ?? []).length > 0 && <span className="text-[11.5px] text-muted-foreground">requires</span>}
@@ -111,7 +128,10 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       {customer && view.outcomes.length > 0 && <Textarea aria-label="Outcome message" placeholder="Message (optional)"
         value={message} disabled={checking} onChange={(event) => setMessage(event.target.value)}
         className="min-h-12 rounded-[8px] border-0 bg-muted text-[12.5px] md:text-[12.5px]" />}
-      {(checking || pendingElsewhere) && <span role="status" className={EMPTY}>checking…</span>}
+      {(checking || pendingElsewhere) && <div className="flex items-center gap-2">
+        <span role="status" className={EMPTY}>checking…</span>
+        {pendingElsewhere && <Button type="button" variant="ghost" className="h-6 px-2 text-[12px]" onClick={onRefresh}>Refresh</Button>}
+      </div>}
       {shown && <OutcomeNotice notice={shown} onRefresh={onRefresh} />}
     </section>
   )
@@ -125,7 +145,7 @@ function OutcomeNotice({ notice, onRefresh }: { notice: Notice; onRefresh: () =>
     </div>
   }
   const text = notice.kind === "error" ? notice.message : notice.request.result_message
-  const label = notice.kind === "error" ? "Refused" : RESULT_LABEL[notice.request.state] ?? notice.request.state
+  const label = notice.kind === "error" ? notice.label : RESULT_LABEL[notice.request.state] ?? notice.request.state
   return <div role="alert" className={cn("flex min-w-0 flex-col gap-1 rounded-[8px] px-2.5 py-2 text-[12px]", DANGER_FILL)}>
     <span className="font-medium">{label}{notice.kind === "result" ? ` · ${notice.request.outcome}` : ""}</span>
     {text && <pre className="min-w-0 font-mono text-[11.5px] whitespace-pre-wrap break-words">{text}</pre>}

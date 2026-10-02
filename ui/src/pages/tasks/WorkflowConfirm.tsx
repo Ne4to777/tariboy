@@ -10,6 +10,8 @@ export interface ConfirmRequest {
   description: string
   action: string
   run: () => void
+  /** Declined (Go back, Escape, or outside click): settle whatever waits on it. */
+  onCancel?: () => void
 }
 
 /**
@@ -20,7 +22,11 @@ export interface ConfirmRequest {
 export function useWorkflowConfirm() {
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const dialog = (
-    <AlertDialog open={request !== null} onOpenChange={(open) => { if (!open) setRequest(null) }}>
+    <AlertDialog open={request !== null} onOpenChange={(open) => {
+      if (open) return
+      request?.onCancel?.()
+      setRequest(null)
+    }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{request?.title}</AlertDialogTitle>
@@ -28,7 +34,10 @@ export function useWorkflowConfirm() {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Go back</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={() => {
+          <AlertDialogAction variant="destructive" onClick={(event) => {
+            // Close here, not through onOpenChange, so a confirmed action never
+            // also reads as declined.
+            event.preventDefault()
             const run = request?.run
             setRequest(null)
             run?.()

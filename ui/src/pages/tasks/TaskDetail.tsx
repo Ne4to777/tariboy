@@ -168,7 +168,8 @@ export default function TaskDetail({
         priority,
         // A workflow owns its status: the panel changes it, Save never does.
         status: workflow ? undefined : status,
-        assignee: assignee.trim(),
+        // The workflow assigns its task: Save never sends an assignee for it.
+        assignee: workflow ? undefined : assignee.trim(),
         manual_block_reason: blockReason,
       })
       adopt(updated)
@@ -179,7 +180,10 @@ export default function TaskDetail({
     }
   }
 
-  const openWaits = detail.waiting_for.filter((wait) => !wait.resolved_at)
+  // The workflow's own wait (a customer status or a pause) is answered in the
+  // workflow panel, never by a comment, so it does not ask for one here.
+  const openWaits = detail.waiting_for.filter((wait) => !wait.resolved_at
+    && !(workflow && wait.requesting_principal === "system:workflow"))
   const editable = task.access !== "context" && task.access !== "respond"
 
   return (
@@ -313,7 +317,11 @@ export default function TaskDetail({
                 <option value="P2">P2 Normal</option>
                 <option value="P3">P3 Low</option>
               </SelectField>
-              {assigneeOptions && <SelectField label="Assignee" value={assignee} onChange={setAssignee} mono>
+              {workflow && <dl className="flex min-w-0 flex-col gap-[5px]">
+                <dt className={LABEL}>Assignee</dt>
+                <dd className={cn(MONO, "flex h-[30px] min-w-0 items-center truncate")}>{task.assignee || "Unassigned"}</dd>
+              </dl>}
+              {!workflow && assigneeOptions && <SelectField label="Assignee" value={assignee} onChange={setAssignee} mono>
                 <option value="">Unassigned</option>
                 {[task.assignee, principals?.customer ?? ""]
                   .filter((value, index, all) => value && all.indexOf(value) === index
@@ -321,7 +329,7 @@ export default function TaskDetail({
                   .map((value) => <option key={value} value={value}>{value}</option>)}
                 {assigneeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </SelectField>}
-              {!assigneeOptions && <label className="flex min-w-0 flex-col gap-[5px]">
+              {!workflow && !assigneeOptions && <label className="flex min-w-0 flex-col gap-[5px]">
                 <span className={LABEL}>Assignee</span>
                 <Input aria-label="Assignee" list="task-assignees" className={cn(FIELD, FIELD_MONO)}
                   value={assignee} onChange={(event) => setAssignee(event.target.value)} />

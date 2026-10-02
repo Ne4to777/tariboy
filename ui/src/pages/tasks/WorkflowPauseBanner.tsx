@@ -42,7 +42,7 @@ export default function WorkflowPauseBanner({ taskKey, reason, pool, target, onC
   }
   return (
     <div className={cn("flex flex-col gap-2 rounded-[8px] px-2.5 py-2", DANGER_FILL)}>
-      <div className="flex items-start gap-[9px]">
+      <div role="alert" className="flex items-start gap-[9px]">
         <PauseCircle className="mt-0.5 size-3.5 shrink-0 [stroke-width:1.4]" />
         <p className="min-w-0 flex-1 text-[12.5px] leading-[1.45] font-medium text-pretty">
           Paused: {REASONS[reason] ?? reason} The workflow waits for your decision.
