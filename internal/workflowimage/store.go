@@ -1,0 +1,571 @@
+package workflowimage
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/alekzonder/tariboy/internal/workflowfile"
+)
+
+const (
+	maxFiles     = 256
+	maxFileSize  = 4 << 20
+	maxTotalSize = 32 << 20
+
+	latestTag    = "latest"
+	manifestName = "manifest.json"
+	tmpPrefix    = ".tmp-"
+)
+
+var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// mu serializes publication and removal across every Store in the process.
+var mu sync.Mutex
+
+// Store is the on-disk store of workflow images. Dir is <base-dir>/workflows.
+//
+//	<Dir>/<name>/refs/<digest>/  copied source tree plus manifest.json
+//	<Dir>/<name>/tags/<tag>      file holding the digest
+type Store struct{ Dir string }
+
+// Listing is a manifest together with the tag that names it.
+type Listing struct {
+	Manifest
+	Tag string
+}
+
+// sourceFile is a file read from the source, held in memory until it is
+// copied so the digest and the stored bytes cannot differ.
+type sourceFile struct {
+	FileEntry
+	content []byte
+}
+
+func invalidf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+}
+
+// checkName rejects values that could escape the store when joined into a
+// path.
+func checkName(kind, v string) error {
+	if v == "" || v == "." || strings.ContainsAny(v, "/\\\x00") || strings.Contains(v, "..") {
+		return invalidf("%s %q is not a valid name", kind, v)
+	}
+	return nil
+}
+
+func (s *Store) nameDir(name string) string    { return filepath.Join(s.Dir, name) }
+func (s *Store) refsDir(name string) string    { return filepath.Join(s.Dir, name, "refs") }
+func (s *Store) tagsDir(name string) string    { return filepath.Join(s.Dir, name, "tags") }
+func (s *Store) tagPath(name, t string) string { return filepath.Join(s.tagsDir(name), t) }
+
+// ContentDir returns the absolute path of the unpacked tree, or "" when name
+// or digest is not a valid path component.
+func (s *Store) ContentDir(name, digest string) string {
+	if checkName("name", name) != nil || !digestPattern.MatchString(digest) {
+		return ""
+	}
+	p := filepath.Join(s.refsDir(name), digest)
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// FilePath returns the absolute path of a file inside the unpacked tree. It
+// refuses a path that is absolute or leaves the tree, and a file that is not
+// there.
+func (s *Store) FilePath(name, digest, rel string) (string, error) {
+	root := s.ContentDir(name, digest)
+	if root == "" {
+		return "", invalidf("invalid image reference %q %q", name, digest)
+	}
+	if rel == "" || !filepath.IsLocal(rel) || strings.Contains(rel, "\\") {
+		return "", invalidf("path %q is outside the image", rel)
+	}
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: file %q", ErrNotFound, rel)
+	}
+	return p, nil
+}
+
+// scan reads the whole source directory. It rejects anything but regular
+// files and directories, and enforces the source limits.
+func scan(root string) ([]sourceFile, error) {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, invalidf("source directory: %v", err)
+	}
+	var files []sourceFile
+	var total int64
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if rel == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return invalidf("%q is not a regular file (symlinks and special files are not allowed)", rel)
+		}
+		if rel == manifestName {
+			return invalidf("%q is reserved for the stored manifest", rel)
+		}
+		if len(files) >= maxFiles {
+			return invalidf("source has more than %d files", maxFiles)
+		}
+		if info.Size() > maxFileSize {
+			return invalidf("file %q is larger than %d bytes", rel, maxFileSize)
+		}
+		total += info.Size()
+		if total > maxTotalSize {
+			return invalidf("source is larger than %d bytes", maxTotalSize)
+		}
+		content, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(content)
+		files = append(files, sourceFile{
+			FileEntry: FileEntry{
+				Path:       rel,
+				SHA256:     hex.EncodeToString(sum[:]),
+				Executable: info.Mode().Perm()&0o111 != 0,
+				Size:       int64(len(content)),
+			},
+			content: content,
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("scan source: %w", err)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
+// Publish validates src, copies the whole source directory, and points the
+// version tag and "latest" at it. The digest covers the normalized definition
+// and every file's path, executable bit, and content, and nothing else. The
+// bool reports whether the content was new.
+func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+	if errs := workflowfile.Validate(src); len(errs) > 0 {
+		return Manifest{}, false, &InvalidError{Errors: errs}
+	}
+	if err := checkName("workflow name", src.Name); err != nil {
+		return Manifest{}, false, err
+	}
+	if err := checkName("workflow version", src.WorkflowVersion); err != nil {
+		return Manifest{}, false, err
+	}
+	files, err := scan(src.Dir)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+	entries := make([]FileEntry, len(files))
+	for i, f := range files {
+		entries[i] = f.FileEntry
+	}
+	digest, err := computeDigest(src, entries)
+	if err != nil {
+		return Manifest{}, false, err
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	name, version := src.Name, src.WorkflowVersion
+	prev, err := s.readTag(name, version)
+	switch {
+	case err == nil && prev == digest:
+		m, err := s.readManifest(name, digest)
+		return m, false, err
+	case err == nil:
+		return Manifest{}, false, fmt.Errorf("%w: %s %s is %s", ErrVersionPublished, name, version, prev)
+	case !errors.Is(err, ErrNotFound):
+		return Manifest{}, false, err
+	}
+
+	var m Manifest
+	created := false
+	if _, statErr := os.Stat(s.ContentDir(name, digest)); statErr == nil {
+		if m, err = s.readManifest(name, digest); err != nil {
+			return Manifest{}, false, err
+		}
+	} else if errors.Is(statErr, fs.ErrNotExist) {
+		def := *src
+		def.Dir = "" // the stored definition does not carry the source path
+		m = Manifest{
+			SchemaVersion: src.SchemaVersion,
+			Name:          name,
+			Version:       version,
+			Digest:        digest,
+			BuiltAt:       now.UTC().Format(time.RFC3339),
+			Definition:    def,
+			Files:         entries,
+		}
+		if err := s.install(m, files); err != nil {
+			return Manifest{}, false, err
+		}
+		created = true
+	} else {
+		return Manifest{}, false, statErr
+	}
+
+	if err := s.moveTags(name, digest, version, latestTag); err != nil {
+		if created {
+			removeAll(s.ContentDir(name, digest))
+		}
+		return Manifest{}, false, err
+	}
+	return m, created, nil
+}
+
+// install writes the tree into a temporary sibling directory, makes it
+// read-only, and renames it into place.
+func (s *Store) install(m Manifest, files []sourceFile) (err error) {
+	refs := s.refsDir(m.Name)
+	if err := os.MkdirAll(refs, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp(refs, tmpPrefix)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			removeAll(tmp)
+		}
+	}()
+	dirs := map[string]bool{tmp: true}
+	modes := map[string]fs.FileMode{}
+	write := func(rel string, content []byte, mode fs.FileMode) error {
+		p := filepath.Join(tmp, filepath.FromSlash(rel))
+		for d := filepath.Dir(p); !dirs[d]; d = filepath.Dir(d) {
+			dirs[d] = true
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, content, 0o600); err != nil {
+			return err
+		}
+		modes[p] = mode
+		return nil
+	}
+	for _, f := range files {
+		mode := fs.FileMode(0o400)
+		if f.Executable {
+			mode = 0o500
+		}
+		if err := write(f.Path, f.content, mode); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := write(manifestName, append(data, '\n'), 0o400); err != nil {
+		return err
+	}
+	for p, mode := range modes {
+		if err := os.Chmod(p, mode); err != nil {
+			return err
+		}
+	}
+	// Deepest directories first, so a parent is still writable while its
+	// children change.
+	list := make([]string, 0, len(dirs))
+	for d := range dirs {
+		list = append(list, d)
+	}
+	sort.Slice(list, func(i, j int) bool { return len(list[i]) > len(list[j]) })
+	for _, d := range list {
+		if err := os.Chmod(d, 0o500); err != nil {
+			return err
+		}
+	}
+	return os.Rename(tmp, s.ContentDir(m.Name, m.Digest))
+}
+
+// moveTags points every tag at digest. If one fails it puts the earlier tags
+// back as they were.
+func (s *Store) moveTags(name, digest string, tags ...string) error {
+	if err := os.MkdirAll(s.tagsDir(name), 0o700); err != nil {
+		return err
+	}
+	var done []tagState
+	for _, tag := range tags {
+		old, err := s.readTag(name, tag)
+		had := err == nil
+		if err == nil || errors.Is(err, ErrNotFound) {
+			err = s.writeTag(name, tag, digest)
+		}
+		if err != nil {
+			s.restoreTags(name, done)
+			return err
+		}
+		done = append(done, tagState{tag, old, had})
+	}
+	return nil
+}
+
+type tagState struct {
+	tag    string
+	digest string
+	had    bool
+}
+
+func (s *Store) restoreTags(name string, states []tagState) {
+	for _, st := range states {
+		if st.had {
+			_ = s.writeTag(name, st.tag, st.digest)
+		} else {
+			_ = os.Remove(s.tagPath(name, st.tag))
+		}
+	}
+}
+
+func (s *Store) writeTag(name, tag, digest string) error {
+	f, err := os.CreateTemp(s.tagsDir(name), tmpPrefix)
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(digest + "\n")
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(f.Name())
+		return err
+	}
+	if err := os.Rename(f.Name(), s.tagPath(name, tag)); err != nil {
+		_ = os.Remove(f.Name())
+		return err
+	}
+	return nil
+}
+
+// readTag returns the digest a tag names, or ErrNotFound.
+func (s *Store) readTag(name, tag string) (string, error) {
+	data, err := os.ReadFile(s.tagPath(name, tag))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("%w: %s %s", ErrNotFound, name, tag)
+	}
+	if err != nil {
+		return "", err
+	}
+	digest := strings.TrimSpace(string(data))
+	if !digestPattern.MatchString(digest) {
+		return "", fmt.Errorf("tag %s of %s holds %q, not a digest", tag, name, digest)
+	}
+	return digest, nil
+}
+
+func (s *Store) readManifest(name, digest string) (Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(s.ContentDir(name, digest), manifestName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Manifest{}, fmt.Errorf("%w: %s %s", ErrNotFound, name, digest)
+	}
+	if err != nil {
+		return Manifest{}, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return Manifest{}, fmt.Errorf("read manifest of %s %s: %w", name, digest, err)
+	}
+	return m, nil
+}
+
+// Resolve maps a tag, or a full digest that exists for name, to a digest. An
+// empty tag means "latest".
+func (s *Store) Resolve(name, tag string) (string, error) {
+	if err := checkName("name", name); err != nil {
+		return "", err
+	}
+	if tag == "" {
+		tag = latestTag
+	}
+	if err := checkName("tag", tag); err != nil {
+		return "", err
+	}
+	digest, err := s.readTag(name, tag)
+	if err == nil {
+		return digest, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
+	if digestPattern.MatchString(tag) {
+		if info, statErr := os.Stat(s.ContentDir(name, tag)); statErr == nil && info.IsDir() {
+			return tag, nil
+		}
+	}
+	return "", err
+}
+
+// Inspect returns the manifest a tag or digest names.
+func (s *Store) Inspect(name, tagOrDigest string) (Manifest, error) {
+	digest, err := s.Resolve(name, tagOrDigest)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return s.readManifest(name, digest)
+}
+
+// List returns one entry per name and tag, sorted by name and then tag.
+func (s *Store) List() ([]Listing, error) {
+	names, err := os.ReadDir(s.Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []Listing
+	for _, n := range names {
+		if !n.IsDir() || checkName("name", n.Name()) != nil {
+			continue
+		}
+		tags, err := s.tagNames(n.Name())
+		if err != nil {
+			return nil, err
+		}
+		for _, tag := range tags {
+			digest, err := s.readTag(n.Name(), tag)
+			if err != nil {
+				return nil, err
+			}
+			m, err := s.readManifest(n.Name(), digest)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, Listing{Manifest: m, Tag: tag})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Tag < out[j].Tag
+	})
+	return out, nil
+}
+
+// tagNames returns the tag file names of name, sorted.
+func (s *Store) tagNames(name string) ([]string, error) {
+	entries, err := os.ReadDir(s.tagsDir(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && !strings.HasPrefix(e.Name(), tmpPrefix) {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// Tags returns the tags of name that point at digest, sorted.
+func (s *Store) Tags(name, digest string) ([]string, error) {
+	if err := checkName("name", name); err != nil {
+		return nil, err
+	}
+	names, err := s.tagNames(name)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, tag := range names {
+		d, err := s.readTag(name, tag)
+		if err != nil {
+			return nil, err
+		}
+		if d == digest {
+			out = append(out, tag)
+		}
+	}
+	return out, nil
+}
+
+// RemoveTag deletes a tag. When no other tag names the same digest, the
+// content is deleted too.
+func (s *Store) RemoveTag(name, tag string) (string, bool, error) {
+	if err := checkName("name", name); err != nil {
+		return "", false, err
+	}
+	if err := checkName("tag", tag); err != nil {
+		return "", false, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	digest, err := s.readTag(name, tag)
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.Remove(s.tagPath(name, tag)); err != nil {
+		return "", false, err
+	}
+	rest, err := s.Tags(name, digest)
+	if err != nil {
+		return digest, false, err
+	}
+	if len(rest) > 0 {
+		return digest, false, nil
+	}
+	if err := removeAll(s.ContentDir(name, digest)); err != nil {
+		return digest, false, err
+	}
+	return digest, true, nil
+}
+
+// makeWritable restores owner write permission on a stored tree so it can be
+// deleted.
+func makeWritable(root string) {
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if d != nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+}
+
+// removeAll deletes a stored tree, restoring write permission first.
+func removeAll(path string) error {
+	makeWritable(path)
+	return os.RemoveAll(path)
+}
