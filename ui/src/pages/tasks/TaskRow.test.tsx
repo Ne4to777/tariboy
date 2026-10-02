@@ -14,6 +14,7 @@ const task: Task = {
   title: "Migrate store schema",
   description: "",
   status: "in_progress",
+  category: "in_progress",
   author: "user:owner",
   customer: "user:owner",
   group: "",

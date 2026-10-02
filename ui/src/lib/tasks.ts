@@ -1,6 +1,9 @@
-import { apiOn, resolveTarget, type ApiTarget } from "./api"
+import { ApiError, apiOn, resolveTarget, type ApiTarget } from "./api"
+import { taskStatusLabel as flexibleStatusLabel } from "./statusTone"
 
 export type TaskStatus = "open" | "in_progress" | "wait_customer" | "done" | "cancelled"
+export type TaskCategory = TaskStatus
+export type WaitingOn = "customer" | "script" | "pause"
 export type TaskStatusView = "active" | "closed" | "all"
 export type TaskAccess = "write" | "respond" | "context"
 export type TaskPriority = "P0" | "P1" | "P2" | "P3"
@@ -24,7 +27,14 @@ export interface Task {
   priority: TaskPriority
   title: string
   description: string
-  status: TaskStatus
+  // The flexible status, or the workflow status ID for a workflow task.
+  status: string
+  category: TaskCategory
+  waiting_on?: WaitingOn
+  workflow_name?: string
+  workflow_version?: string
+  workflow_digest?: string
+  workflow_paused_reason?: string
   pull_request?: string
   author: string
   customer: string
@@ -371,3 +381,167 @@ export const markTaskNotificationRead = (id: string, target?: ApiTarget) =>
     "POST",
     `/api/task-notifications/${encodeURIComponent(id)}/read`,
   )
+
+// Workflow tasks.
+
+export interface WorkflowOutcome { on: string; to: string; requires?: string[]; missing?: string[]; checks?: string[] }
+export interface WorkflowArtifact { id: number; name: string; value: string; author: string; created_at: string }
+export interface WorkflowVisit {
+  id: number
+  sequence: number
+  status: string
+  entered_at: string
+  entered_by: string
+  left_at?: string
+  outcome?: string
+  message?: string
+}
+export type TransitionState = "pending" | "applied" | "rejected" | "failed" | "cancelled"
+export interface TransitionRequest {
+  id: number
+  task_key: string
+  outcome: string
+  message?: string
+  actor: string
+  state: TransitionState
+  result_message?: string
+  created_at: string
+  finished_at?: string
+  // Only while pending: how long the checks may take, in seconds.
+  wait_seconds?: number
+}
+export type ScriptRunState = "pending" | "running" | "finished" | "interrupted" | "cancelled"
+export type ScriptRunVerdict = "pass" | "reject" | "outcome" | "quiet" | "failure"
+export interface ScriptRun {
+  id: number
+  task_key: string
+  kind: "check" | "watch"
+  script: string
+  run_as: "queue" | "agent"
+  state: ScriptRunState
+  verdict?: ScriptRunVerdict
+  exit_code?: number
+  holder?: string
+  message?: string
+  created_at: string
+  started_at?: string
+  finished_at?: string
+  log_path?: string
+}
+export interface WorkflowView {
+  name: string
+  version: string
+  digest: string
+  status: string
+  category: TaskCategory
+  waiting_on?: string
+  paused_reason?: string
+  owner: string
+  holder?: string
+  instructions_path?: string
+  outcomes: WorkflowOutcome[]
+  artifacts: WorkflowArtifact[]
+  visits: WorkflowVisit[]
+  last_request?: TransitionRequest
+  runs?: ScriptRun[]
+}
+export interface QueueWorkflow { queue: string; name: string; version: string; digest: string; revision: number; updated_at: string }
+export interface QueueSecretInfo { key: string; updated_at: string }
+export interface WorkflowImage { name: string; tag: string; version: string; digest: string; built_at: string }
+
+/** A workflow task reports a workflow status ID in `status`, a flexible task its own status. */
+export const isWorkflowTask = (task: Task): boolean => !!task.workflow_name
+
+/** The status as a person reads it, for either kind of task. */
+export function taskStatusLabel(task: Task): string {
+  if (!isWorkflowTask(task)) return flexibleStatusLabel(task.status)
+  const text = task.status.replace(/[_-]+/g, " ")
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+export const taskCategoryLabel = (category: TaskCategory): string => flexibleStatusLabel(category)
+export const isActiveCategory = (category: TaskCategory): boolean =>
+  category === "open" || category === "in_progress"
+
+const taskPath = (key: string) => `/api/tasks/${encodeURIComponent(key)}`
+const queuePath = (queue: string) => `/api/task-queues/${encodeURIComponent(queue)}`
+
+export const getTaskWorkflow = (key: string, target?: ApiTarget) =>
+  call<WorkflowView>(target, "GET", `${taskPath(key)}/workflow`)
+export const advanceTask = (
+  key: string,
+  outcome: string,
+  message: string,
+  from?: string,
+  target?: ApiTarget,
+) => call<TransitionRequest>(target, "POST", `${taskPath(key)}/advance`, {
+  outcome,
+  message,
+  ...(from ? { from } : {}),
+})
+export const getTransitionRequest = (key: string, id: number, target?: ApiTarget) =>
+  call<TransitionRequest>(target, "GET", `${taskPath(key)}/workflow/requests/${id}`)
+export const setTaskArtifact = (key: string, name: string, value: string, target?: ApiTarget) =>
+  call<WorkflowArtifact>(target, "PUT", `${taskPath(key)}/artifacts/${encodeURIComponent(name)}`, { value })
+export const getTaskArtifactHistory = async (key: string, name: string, target?: ApiTarget) =>
+  (await call<{ artifact: WorkflowArtifact; history: WorkflowArtifact[] }>(
+    target,
+    "GET",
+    `${taskPath(key)}/artifacts/${encodeURIComponent(name)}`,
+  )).history
+export const listTaskScriptRuns = async (key: string, target?: ApiTarget) =>
+  (await call<{ runs: ScriptRun[]; count: number }>(target, "GET", `${taskPath(key)}/workflow/runs`)).runs
+export const getTaskScriptRunLog = async (
+  key: string,
+  id: number,
+  maxBytes?: number,
+  target?: ApiTarget,
+): Promise<{ text: string; truncated: boolean }> => {
+  const { text, truncated } = await call<{ run_id: number; text: string; truncated: boolean }>(
+    target,
+    "GET",
+    queryPath(`${taskPath(key)}/workflow/runs/${id}/log`, { max_bytes: maxBytes }),
+  )
+  return { text, truncated }
+}
+export const moveTaskWorkflow = (key: string, to: string, reason: string, target?: ApiTarget) =>
+  call<Task>(target, "POST", `${taskPath(key)}/workflow/move`, { to, reason })
+export const cancelWorkflowTask = (key: string, target?: ApiTarget) =>
+  call<Task>(target, "POST", `${taskPath(key)}/cancel`)
+export const resumeTaskWorkflow = (
+  key: string,
+  decision: "continue" | "release",
+  target?: ApiTarget,
+) => call<Task>(target, "POST", `${taskPath(key)}/workflow/resume`, { decision })
+
+/** The workflow image a queue is bound to, or null when it is unbound. */
+export async function getQueueWorkflow(queue: string, target?: ApiTarget): Promise<QueueWorkflow | null> {
+  try {
+    return await call<QueueWorkflow>(target, "GET", `${queuePath(queue)}/workflow`)
+  } catch (err) {
+    if (err instanceof ApiError && err.code === "queue_workflow_not_found") return null
+    throw err
+  }
+}
+export const setQueueWorkflow = (queue: string, ref: string, revision: number, target?: ApiTarget) =>
+  call<QueueWorkflow>(target, "PUT", `${queuePath(queue)}/workflow`, { ref, revision })
+export const clearQueueWorkflow = async (queue: string, revision: number, target?: ApiTarget): Promise<void> => {
+  await call(target, "DELETE", queryPath(`${queuePath(queue)}/workflow`, { revision }))
+}
+
+// Secret values are write-only: a client lists keys and sets or removes them,
+// and never reads a value back.
+export const listQueueSecrets = async (queue: string, target?: ApiTarget) =>
+  (await call<{ secrets: QueueSecretInfo[]; count: number }>(target, "GET", `${queuePath(queue)}/secrets`)).secrets
+export const setQueueSecret = (queue: string, key: string, value: string, target?: ApiTarget) =>
+  call<{ queue: string; key: string; updated_at: string }>(
+    target,
+    "PUT",
+    `${queuePath(queue)}/secrets/${encodeURIComponent(key)}`,
+    { value },
+  )
+export const removeQueueSecret = async (queue: string, key: string, target?: ApiTarget): Promise<void> => {
+  await call(target, "DELETE", `${queuePath(queue)}/secrets/${encodeURIComponent(key)}`)
+}
+
+export const listWorkflowImages = async (target?: ApiTarget) =>
+  (await call<{ workflows: WorkflowImage[]; count: number }>(target, "GET", "/api/workflow-images")).workflows

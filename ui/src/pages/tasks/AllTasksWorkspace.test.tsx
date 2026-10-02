@@ -32,7 +32,7 @@ vi.mock("sonner", () => ({ toast }))
 function task(key: string, extra: Partial<Task> = {}): Task {
   return {
     key, queue: key.split("-")[0], parent_key: "", position: 0, priority: "P2", title: `Title ${key}`,
-    description: "", status: "open", author: "user:me", customer: "user:me", group: "", assignee: "",
+    description: "", status: "open", category: "open", author: "user:me", customer: "user:me", group: "", assignee: "",
     manual_block_reason: "", blocked: false, revision: 1, created_at: "2026-09-01T10:00:00Z",
     updated_at: "2026-09-01T10:00:00Z", completed_at: "", access: "write", ...extra,
   }

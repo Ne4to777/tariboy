@@ -43,6 +43,7 @@ const task: Task = {
   title: "Ship the drawer",
   description: "Open a task from chat",
   status: "open",
+  category: "open",
   pull_request: "",
   author: "user:owner",
   customer: "user:owner",

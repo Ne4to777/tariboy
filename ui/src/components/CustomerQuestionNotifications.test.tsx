@@ -187,6 +187,7 @@ function ActivatedTaskWorkspace() {
 function taskDetail(key: string, description: string): TaskDetail {
   const task: Task = {
     key,
+    category: "open",
     queue: "ASK",
     parent_key: "",
     position: 0,

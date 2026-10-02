@@ -73,6 +73,7 @@ const root: Task = {
   title: "Ship native tasks",
   description: "Central work system",
   status: "in_progress",
+  category: "in_progress",
   pull_request: "",
   author: "user:owner",
   customer: "user:owner",
@@ -92,6 +93,7 @@ const child: Task = {
   position: 0,
   title: "Desktop tree",
   status: "open",
+  category: "open",
   assignee: "",
   revision: 1,
 }
@@ -832,6 +834,7 @@ describe("TasksWorkspace", () => {
     api.updateTask.mockImplementation((_key: string, input: Partial<Task>) => Promise.resolve({
       ...root,
       ...input,
+      category: input.status ?? root.category,
       revision: Number(input.revision) + 1,
     }))
     render(<TasksWorkspace target={target} />)

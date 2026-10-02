@@ -15,7 +15,7 @@ vi.mock("@/lib/terminalsHost", () => ({
 function task(key: string, extra: Partial<Task> = {}): Task {
   return {
     key, queue: key.split("-")[0], parent_key: "", position: 0, priority: "P2", title: key,
-    description: "", status: "open", author: "", customer: "", group: "", assignee: "",
+    description: "", status: "open", category: "open", author: "", customer: "", group: "", assignee: "",
     manual_block_reason: "", blocked: false, revision: 1, created_at: "", updated_at: "",
     completed_at: "", ...extra,
   }

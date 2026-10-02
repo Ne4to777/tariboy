@@ -15,6 +15,7 @@ function task(
 ): Task {
   return {
     key,
+    category: "open",
     queue: "TEST",
     parent_key: parentKey,
     position,
