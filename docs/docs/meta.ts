@@ -8,6 +8,7 @@ export default defineMeta({
     "remote-hosts",
     "autopilot",
     "task-workflows",
+    "workflow-images",
     "security-controls",
     "support",
     "architecture",

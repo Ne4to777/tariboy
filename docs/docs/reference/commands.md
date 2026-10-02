@@ -108,6 +108,13 @@ tariboy has three command surfaces:
 | `tariboy store refresh NAME` | Reset a managed Git clone to its upstream, discarding local changes; fast-forward pull a local Git checkout; or reread a non-Git local directory |
 | `tariboy store auto NAME [--interval MINUTES] [--image IMAGE]` | Set the automatic refresh-and-build policy; the daemon refreshes every interval and rebuilds the selected images that need an update, and `--interval 0` disables it |
 | `tariboy store remove NAME` | Unregister a Store and remove only its managed clone; preserve local sources and built images |
+| `tariboy workflow validate [STORE/NAME] [--path DIR]` | Validate a workflow source directory without building it; reports every error with a stable code and path |
+| `tariboy workflow build [STORE/NAME] [--path DIR]` | Validate and publish a workflow image under its `workflow_version` and `latest`; an identical rebuild is a no-op, different content for a published version fails with `workflow_version_published` |
+| `tariboy workflow ls` | List built workflow images, one row per tag |
+| `tariboy workflow inspect NAME [TAG]` | Show a workflow image manifest; TAG is a tag or full digest and defaults to `latest` |
+| `tariboy workflow rm NAME TAG` | Remove one tag, and the stored content when no tag remains |
+| `tariboy workflow version get [--path FILE_OR_DIR]` | Print the local workflow_version; defaults to the current directory; no daemon required |
+| `tariboy workflow version update <major\|minor\|patch> [--path FILE_OR_DIR]` | Increment the local SemVer, reset lower components and remove suffixes; no daemon required |
 | `ttasks queue create` | Create a task queue |
 | `tariboy usage` | Aggregate AI usage and cost from ai_requests |
 | `tariboy user-prompt get` | Read the agent's standing user-prompt |

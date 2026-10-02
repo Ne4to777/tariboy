@@ -146,6 +146,11 @@ A local source such as `/srv/company-images` is used in place, without a copy.
 Stores are the source of canonical agent images and skills; the daemon no
 longer installs a separate built-in Store tree.
 
+A Store may also hold workflow sources at
+`workflows/<workflow_name>/Workflowfile.yaml`. Store detail lists them beside
+images, and `tariboy workflow build STORE/NAME` builds one. See
+[Workflow images](/docs/workflow-images).
+
 ### Automatic refresh and build
 
 A Store can refresh and rebuild itself on a schedule. `tariboy store auto NAME

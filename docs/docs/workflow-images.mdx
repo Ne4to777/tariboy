@@ -1,0 +1,311 @@
+---
+title: Workflow images
+description: Build, validate, store, and inspect versioned, immutable workflow images from a Workflowfile.yaml source directory.
+sidebar:
+  label: Workflow images
+  icon: package
+---
+
+A workflow image is a versioned, immutable artifact built from a source
+directory that holds a `Workflowfile.yaml`, status instructions, and scripts.
+The manifest declares a status graph: who owns each status, which outcomes lead
+to which next status, and which artifacts and checks a transition needs.
+
+:::note
+This release builds and stores workflow images. Queues do not execute them yet.
+Building, validating, storing, listing, inspecting, and removing a workflow
+image is all that works. The existing
+[Task workflows](/docs/task-workflows) engine is separate and unchanged.
+:::
+
+Fields such as `owner`, `watch`, `checks`, `requires_secrets`, `env`, and
+`limits` are manifest schema: they are validated and stored with the image.
+
+## Source layout
+
+A [Store](/docs/images#stores-on-a-server) holds workflow sources next to image
+sources. Any source directory works with `--path`.
+
+```text
+workflows/development/
+  Workflowfile.yaml
+  statuses/plan.md
+  statuses/implement.md
+  statuses/complete.md
+  scripts/pr-open.sh
+  scripts/pr-monitor.py
+  scripts/merged-on-base.sh
+```
+
+The whole directory is the image: every regular file in it is stored, not only
+the files the manifest names. A `.git` directory is skipped. A file named
+`manifest.json` at the source root is rejected because that name is reserved
+for the stored manifest.
+
+## `Workflowfile.yaml`
+
+The loader is strict: an unknown field is an error, and a second YAML document
+is an error.
+
+```yaml
+schema_version: 1
+name: development
+workflow_version: 0.1.0
+initial_status: plan
+
+requires_secrets: [GH_TOKEN]
+env:
+  PR_POLL_SECONDS: "60"
+
+limits:
+  idle_iterations: 3
+  rejected_requests: 5
+  script_failures: 3
+  unavailable_grace: 5m
+
+artifacts:
+  - name: plan
+    description: The implementation plan, as Markdown.
+  - name: pull_request
+    description: URL of the pull request for this task.
+  - name: merge_commit
+    description: Merge commit recorded by the monitor.
+
+statuses:
+  - id: plan
+    owner: { pool: developers }
+    instructions: ./statuses/plan.md
+    transitions:
+      - on: planned
+        to: approval
+        requires: [plan]
+
+  - id: approval
+    owner: customer
+    transitions:
+      - { on: approved, to: implement }
+      - { on: changes_requested, to: plan }
+
+  - id: implement
+    owner: { pool: developers }
+    instructions: ./statuses/implement.md
+    limits: { idle_iterations: 6 }
+    transitions:
+      - on: ready
+        to: review
+        requires: [pull_request]
+        checks:
+          - script: ./scripts/pr-open.sh
+            timeout: 60s
+
+  - id: review
+    owner: script
+    watch:
+      script: ./scripts/pr-monitor.py
+      every: 60s
+      timeout: 60s
+    transitions:
+      - { on: merged, to: complete }
+      - { on: changes_requested, to: implement }
+
+  - id: complete
+    owner: { pool: developers }
+    instructions: ./statuses/complete.md
+    transitions:
+      - on: cleaned
+        to: done
+        checks:
+          - script: ./scripts/merged-on-base.sh
+            run_as: agent
+
+  - id: done
+    terminal: true
+```
+
+### Root fields
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `schema_version` | yes | `1`. |
+| `name` | yes | Workflow name; matches `^[a-z0-9][a-z0-9._-]{0,63}$`. |
+| `workflow_version` | yes | SemVer 2.0.0 without a `v` prefix. |
+| `initial_status` | yes | ID of a non-terminal status. |
+| `statuses` | yes | The status graph; at least one status. |
+| `artifacts` | no | Declared artifact names with descriptions. |
+| `requires_secrets` | no | Names of secrets the scripts need; each matches `^[A-Za-z_][A-Za-z0-9_]*$` and is listed once. |
+| `env` | no | Non-secret environment defaults for scripts. A name matches `^[A-Za-z_][A-Za-z0-9_]*$` and must not start with `TARIBOY_`. |
+| `limits` | no | Workflow-wide defaults; see [Limits](#limits). |
+
+Status IDs, outcome names (`on`), artifact names, and pool names match
+`^[a-z][a-z0-9_-]{0,63}$`.
+
+### Status fields
+
+| Field | Applies to | Meaning |
+| --- | --- | --- |
+| `id` | all | Unique status ID. |
+| `owner` | non-terminal | `{pool: NAME}`, `customer`, or `script`. |
+| `instructions` | pool, customer | Source-relative Markdown file shown to the owner. Not allowed on a `script` status. |
+| `watch` | script | `script`, `every`, and `timeout` of the watch script. |
+| `transitions` | non-terminal | List of `on`, `to`, and, for pool statuses, `requires` and `checks`. |
+| `limits` | non-terminal | Per-status overrides of the workflow limits. |
+| `terminal` | terminal | `true`. A terminal status has no owner, transitions, watch, instructions, or limits. |
+| `cancelled` | terminal | `true` when the result counts as cancelled rather than done. Allowed only on a terminal status. |
+
+A watch has a required `script`, a required positive `every` duration, and an
+optional positive `timeout` that defaults to `60s`.
+
+A check has a required `script`, an optional `run_as` (`queue`, the default, or
+`agent`), and an optional `timeout` (default `60s`, maximum `30m`).
+
+### Paths
+
+A path in `instructions`, `watch.script`, or `checks[].script`:
+
+- starts with `./`, is not absolute, and stays inside the source directory;
+- names a regular file; a symlink anywhere on the path is rejected;
+- for a script, has an executable bit.
+
+### Limits
+
+| Limit | Default | Value |
+| --- | --- | --- |
+| `idle_iterations` | `3` | Positive integer. |
+| `rejected_requests` | `5` | Positive integer. |
+| `script_failures` | `3` | Positive integer. |
+| `unavailable_grace` | `5m` | Non-negative duration such as `5m`; `0` is allowed. |
+
+A status `limits` block overrides the workflow-wide block, which overrides the
+defaults. The limits are validated and stored; nothing enforces them until
+queues execute workflow images.
+
+### Validation
+
+`validate` and `build` report every independent error as an object with a
+stable `code`, a `path` that uses YAML field names and indexes (for example
+`statuses[2].transitions[0].to`), and a `message`. Errors are ordered by path,
+then code.
+
+| Code | Reported when |
+| --- | --- |
+| `schema_version_unsupported` | `schema_version` is not `1`. |
+| `name_invalid` | `name` does not match the workflow name rule. |
+| `version_invalid` | `workflow_version` is missing or not SemVer 2.0.0 without a `v`. |
+| `secret_name_invalid` | A `requires_secrets` name is malformed or repeated. |
+| `env_name_invalid` | An `env` name is malformed or starts with `TARIBOY_`. |
+| `limit_invalid` | A count limit is zero or negative. |
+| `duration_invalid` | `unavailable_grace`, `watch.every`, `watch.timeout`, or a check `timeout` is not a valid duration of the required sign. |
+| `artifact_name_invalid` | An artifact name does not match the identifier rule. |
+| `artifact_duplicate` | An artifact is declared twice. |
+| `artifact_unknown` | A `requires` entry names an undeclared artifact. |
+| `status_missing` | There are no statuses. |
+| `status_id_invalid` | A status ID does not match the identifier rule. |
+| `status_duplicate` | A status ID is used twice. |
+| `initial_status_unknown` | `initial_status` names no status. |
+| `initial_status_terminal` | `initial_status` is a terminal status. |
+| `status_unreachable` | No path from `initial_status` reaches the status. |
+| `terminal_unreachable` | No terminal status is reachable. |
+| `terminal_has_work` | A terminal status has an owner, transitions, watch, instructions, or limits. |
+| `cancelled_not_terminal` | `cancelled` is set on a non-terminal status. |
+| `owner_missing` | A non-terminal status has no owner. |
+| `owner_invalid` | A pool owner's name does not match the identifier rule. |
+| `watch_missing` | A `script` status has no `watch`. |
+| `watch_not_allowed` | A status that is not `script` has a `watch`. |
+| `instructions_not_allowed` | A `script` status has `instructions`. |
+| `transitions_missing` | A non-terminal status has no transition. |
+| `outcome_invalid` | An outcome name does not match the identifier rule. |
+| `outcome_duplicate` | An outcome is used twice in one status. |
+| `transition_target_unknown` | A `to` names no status. |
+| `requires_not_allowed` | `requires` appears on a transition out of a `customer` or `script` status. |
+| `checks_not_allowed` | `checks` appear on a transition out of a `customer` or `script` status. |
+| `run_as_invalid` | A check's `run_as` is neither `queue` nor `agent`. |
+| `timeout_too_long` | A check `timeout` exceeds `30m`. |
+| `path_invalid` | A path breaks the [path rule](#paths). |
+| `file_missing` | A named file does not exist or cannot be read. |
+| `file_not_regular` | A named path, or a component of it, is a symlink or not a regular file. |
+| `script_not_executable` | A named script has no executable bit. |
+
+A manifest that cannot be read or decoded (including an unknown field) is
+reported as `workflow_invalid` without a per-field list.
+
+## Build, storage, and versions
+
+`tariboy workflow build` validates the source and publishes it. The built
+artifact is stored once, addressed by a SHA-256 digest of the normalized
+definition plus each file's path, executable flag, and content hash.
+Timestamps, ownership, and other permission bits do not change the digest.
+
+```text
+<base-dir>/workflows/<name>/
+  refs/<digest>/        copied source tree plus manifest.json
+  tags/<tag>            file holding a digest
+```
+
+A build publishes two tags that point at the digest: the `workflow_version`
+and `latest`. The stored tree is owner-only and read-only: directories are
+`0500`, regular files `0400`, and executable files `0500`. `manifest.json`
+holds the schema version, name, version, digest, build time, the definition
+as parsed, and the path, SHA-256, executable flag, and size of every file.
+
+A source may hold at most 256 files, at most 4 MiB per file, and at most 32 MiB
+in total. Symlinks and special files anywhere in the source are rejected.
+
+A published `workflow_version` is immutable. Rebuilding the same version with
+identical content is a no-op and reports `created: false`. Rebuilding it with
+different content fails with `workflow_version_published`. This is stricter
+than agent images, where a rebuild moves the ref, because a workflow must stay
+reproducible. To change a workflow, bump the version with
+`tariboy workflow version update` and build again; `latest` then moves to the
+new digest.
+
+The manifest of every published digest is also recorded in the
+`task_workflow_images` table of the daemon's SQLite database. The daemon
+inserts any missing row for stored content at startup, so a crash between the
+two writes heals. See [State model](/docs/architecture/state-model).
+
+## Commands
+
+The daemon commands act on the selected daemon. `STORE/NAME` selects a
+workflow source in a registered Store; `--path` selects a `Workflowfile.yaml` or
+its directory. The two are mutually exclusive.
+
+```bash
+tariboy workflow validate --path DIR
+tariboy workflow validate team/development
+tariboy workflow build --path DIR
+tariboy workflow build team/development
+tariboy workflow ls
+tariboy workflow inspect development
+tariboy workflow inspect development 0.1.0
+tariboy workflow rm development 0.1.0
+tariboy workflow version get [--path DIR]
+tariboy workflow version update major|minor|patch [--path DIR]
+```
+
+| Command | HTTP route | Result |
+| --- | --- | --- |
+| `workflow validate` | `POST /api/workflow-images/validate` | `valid`, `name`, `version`, `pools`, `files`, and `errors` (empty when valid). Validation errors are returned in the result, not as a failure. |
+| `workflow build` | `POST /api/workflow-images/build` | `name`, `version`, `digest`, `tags`, and `created`. |
+| `workflow ls` | `GET /api/workflow-images` | `workflows` (one row per tag with `name`, `tag`, `version`, `digest`, `built_at`) and `count`. |
+| `workflow inspect NAME [TAG]` | `GET /api/workflow-images/{name}/{tag}` | The stored manifest. `TAG` is a tag or a full digest and defaults to `latest`. |
+| `workflow rm NAME TAG` | `DELETE /api/workflow-images/{name}/{tag}` | `name`, `tag`, `removed`, and `content_removed`. Removing the last tag that names a digest also deletes its content and database row. |
+
+`workflow version get` and `workflow version update` read and rewrite the local
+`workflow_version`, default to the current directory, and need no daemon.
+`update` increments the SemVer component, resets the lower ones, removes any
+suffix, and preserves the rest of the file.
+
+Errors:
+
+| Code | Meaning |
+| --- | --- |
+| `workflow_invalid` | The manifest failed validation or could not be parsed, or the source breaks a source limit. Validation failures carry the error list in `data.errors`. |
+| `workflow_version_published` | The `workflow_version` is already published with different content. |
+| `not_found` | No workflow image has that name and tag or digest. |
+| `bad_source` | Both a Store selector and `--path` were given. |
+| `missing_path` | Neither a Store selector nor `--path` was given. |
+
+## Not yet available
+
+Queues cannot bind or run a workflow image in this release, and there are no
+task commands for them. Those arrive in later releases.

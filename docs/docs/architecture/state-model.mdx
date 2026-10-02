@@ -264,6 +264,13 @@ stored as a second inventory. Store refresh and build preparation are
 serialized so a pull cannot race source freezing. Store builds then use the
 ordinary image snapshot and publication path below.
 
+Workflow images live on disk under `<base-dir>/workflows/<name>/`. Content is
+addressed by SHA-256 digest in `refs/<digest>/`, and tags are pointer files in
+`tags/` that hold a digest. The `task_workflow_images` table records the
+manifest of each published digest, so a manifest can be read from SQLite
+without touching the filesystem. The daemon reconciles missing rows from the
+stored content at startup. See [Workflow images](/docs/workflow-images).
+
 Directories left under `<base-dir>/store/versions/` by an older release are
 untouched legacy data. Current daemons neither read nor refresh them.
 
