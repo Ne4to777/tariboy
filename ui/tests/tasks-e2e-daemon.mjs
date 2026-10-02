@@ -61,8 +61,9 @@ function makeWritable(dir) {
 function removeState() {
   try {
     makeWritable(testRoot);
-  } catch {
-    // Nothing to unlock when the state is already gone.
+  } catch (error) {
+    // Nothing to unlock when the state is already gone; anything else is real.
+    if (error?.code !== "ENOENT") throw error;
   }
   rmSync(testRoot, { recursive: true, force: true });
 }

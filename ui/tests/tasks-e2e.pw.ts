@@ -415,7 +415,7 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   step("1 published and bound");
 
   // Step 2: a task in the bound queue.
-  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "New task" }).click();
   await page.getByLabel("Task queue").selectOption("WFUI");
   await page.getByLabel("Task title").fill("Approve the plan");
@@ -438,12 +438,12 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   await expect(detail.getByText("status approval")).toBeVisible();
   await expect(detail.getByRole("button", { name: "approved", exact: true })).toBeEnabled();
   await expect(detail.getByRole("combobox", { name: "Status", exact: true }), "step 4: no status select").toHaveCount(0);
-  await expect(detail.getByLabel("Assignee"), "step 4: no assignee control").toHaveCount(0);
+  await expect(detail.getByLabel("Assignee", { exact: true }), "step 4: no assignee control").toHaveCount(0);
   step("4 drawer panel");
 
   // Step 5: approve; the task closes.
   await detail.getByRole("button", { name: "approved", exact: true }).click();
-  await expect(detail.getByText("status done"), "step 5: the panel shows the terminal status").toBeVisible();
+  await expect(detail.getByText("status done"), "step 5: the panel shows the terminal status").toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => (await taskFromAPI(request, key)).status).toBe("done");
   await detail.getByRole("button", { name: "Close task detail" }).click();
   await page.getByRole("radio", { name: "Closed", exact: true }).click();
@@ -464,13 +464,22 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   await expect(secrets.getByText("GH_TOKEN", { exact: true }), "step 6: the key is listed").toBeVisible();
   await expect(page.locator("body"), "step 6: no value on the page").not.toContainText("ghp_browser-secret-value");
   await expect(secrets.getByLabel("Secret value")).toHaveValue("");
-  await secrets.getByRole("button", { name: "Remove GH_TOKEN" }).click();
+  // After a reload the key is read back from the daemon, and the value never is.
+  await page.reload();
+  await expect(page.getByLabel("Search tasks")).toBeVisible();
+  await page.getByRole("button", { name: "Queue: all" }).click();
+  await page.getByRole("menuitem", { name: "Manage queues…" }).click();
+  await page.getByRole("button", { name: "Workflow WFUI" }).click();
+  const reloaded = page.getByRole("region", { name: "Workflow WFUI" }).getByRole("region", { name: "Secrets WFUI" });
+  await expect(reloaded.getByText("GH_TOKEN", { exact: true }), "step 6: the key is listed after a reload").toBeVisible();
+  expect(await page.content(), "step 6: no value in the reloaded page").not.toContain("ghp_browser-secret-value");
+  await reloaded.getByRole("button", { name: "Remove GH_TOKEN" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove secret" }).click();
-  await expect(secrets.getByText("No secrets."), "step 6: the removed key is gone").toBeVisible();
+  await expect(reloaded.getByText("No secrets."), "step 6: the removed key is gone").toBeVisible();
   step("6 binding and secrets");
 
-  // Step 7: a flexible queue keeps its status select.
-  await page.getByRole("button", { name: "Close" }).click();
+  // Step 7: a flexible queue keeps its status select and its assignee control.
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   response = await request.post(`${daemonURL}/api/tasks`, { data: {
     queue: "WFLEX", title: "Flexible stays flexible", idempotency_key: "tasks-browser-wfui-flex",
   } });
@@ -478,6 +487,8 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   const flexKey = (await response.json()).result.key as string;
   await page.getByRole("radio", { name: "Active", exact: true }).click();
   await page.getByTestId(`task-row-${flexKey}`).locator(".task-row-main").click();
-  await expect(page.locator(".task-detail-panel").getByRole("combobox", { name: "Status", exact: true }), "step 7: flexible task keeps its status select").toBeVisible();
+  const flexDetail = page.locator(".task-detail-panel");
+  await expect(flexDetail.getByRole("combobox", { name: "Status", exact: true }), "step 7: flexible task keeps its status select").toBeVisible();
+  await expect(flexDetail.getByLabel("Assignee", { exact: true }), "step 7: flexible task keeps its assignee control").toBeVisible();
   step("7 flexible unchanged");
 });

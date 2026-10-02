@@ -194,8 +194,9 @@ or use its keyboard controls to resize it, and the chosen width survives reloads
 tree with its expansion and scroll position preserved. Unsaved task, comment,
 or relation drafts require confirmation before being discarded.
 
-For a workflow task the sheet has no status select, no Done action, and no
-assignee control; it shows the **Workflow** panel instead, where the customer
+For a workflow task the sheet has no status select, no Done action, no
+assignee control, and no **Move to another server…** (the daemon refuses to
+export a workflow task); it shows the **Workflow** panel instead, where the customer
 chooses outcomes, edits artifacts, reads script runs and logs, decides a pause,
 and moves or cancels the task. See [Desktop](/docs/task-workflows#desktop) in
 the workflow guide. Binding a queue to a workflow, its pools, and its secrets
@@ -244,18 +245,20 @@ when the server requests a reset. Revision conflicts (`409`) also refetch the
 authoritative tree/detail before another edit.
 
 The Tasks toolbar starts in **Active** view. Its `GET /api/tasks` request sends
-`status_view=active`, and the daemon applies that predicate before it builds the
-response: Active returns only `open` and `in_progress`; **Closed**
-(`status_view=closed`) returns only the canonical completed status, `done`; and
-**All** (`status_view=all`) returns every status, including `cancelled`. An
-omitted `status_view` is Active when no explicit `status` filter is present;
+`status_view=active`, and the daemon applies that predicate to the task's
+category before it builds the response. A flexible task's category equals its
+status; a workflow task's category is the one its workflow status maps to.
+Active returns only the categories `open` and `in_progress`; **Closed**
+(`status_view=closed`) returns only the completed category, `done`; and **All**
+(`status_view=all`) returns every category, including `cancelled`. An omitted
+`status_view` is Active when no explicit `status` filter is present;
 an explicit `status` without a view keeps its legacy authoritative semantics.
 When both are supplied, their predicates intersect. Other task filters and
 access rules are applied alongside the selected view, so excluded rows are
 never shipped to the client.
 An invalid view is rejected with `400 invalid_status_view`.
 
-Status filtering may exclude an otherwise visible parent while retaining an
+Filtering by category may exclude an otherwise visible parent while retaining an
 eligible child. In that response the child keeps its `parent_key`, but the
 client renders it as a root-level filtered orphan; the excluded parent is never
 included merely to reconstruct the tree. Switching views always refetches the

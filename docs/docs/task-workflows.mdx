@@ -1281,39 +1281,52 @@ How the list shows these tasks is in [Tasks](/docs/tasks#desktop).
 Opening a workflow task shows a **Workflow** panel in the task sheet in place of
 the status select. The header gives `name@version`, the status, the owner, and
 the holder; a pause banner comes first when the task is paused. The task's
-assignee is read-only, because the workflow assigns pool work. The panel has
+assignee is read-only, because the workflow assigns pool work, and the sheet
+has no **Move to another server…**, because the daemon refuses to export a
+workflow task. The panel follows the task's events as well as its revision: a
+rejected request, a script run, or another event refetches the view while the
+sheet is open, and an older response never replaces a newer one. The panel has
 these sections:
 
 - **Pause banner.** Appears when the task is paused. It explains the reason and
   offers **Continue** and **Cancel task**, plus **Release holder** when the
-  status is a pool status. Each asks for confirmation and sends
-  `POST /api/tasks/{key}/workflow/resume` or the cancel route.
+  status is a pool status. **Continue** keeps the same holder in a pool status
+  and resumes the task in its current status otherwise. Each asks for
+  confirmation and sends `POST /api/tasks/{key}/workflow/resume` or the cancel
+  route.
 - **Outcomes.** Each outcome shows its target status, the artifacts it
   requires (a name with no value is highlighted), and its checks. In a customer
-  status each outcome is a button, with an optional message; Desktop sends the
-  advance request and polls it until the checks finish, then shows an
-  `applied` result by reloading the task or a refusal with the daemon's
-  message. A button is disabled while a request is checking, while the task is
-  paused, and while a required artifact has no value. In a pool or script
-  status the outcomes are listed for reference, because the agent or the watch
-  script decides.
-- **Artifacts.** The current value of each artifact, collapsed when long, with
-  **Edit** (or **Set** for a required artifact with no value) and **History**,
-  which loads the earlier values on demand.
-- **Runs.** The newest script runs with kind, script, state, verdict, exit code,
-  and times, and a **Log** toggle that loads the log on demand and says when it
-  is truncated. Who may read a log is described in
+  status each outcome is a button, with an optional message of up to 4096
+  characters; Desktop sends the advance request and polls it until the checks
+  finish, then shows an `applied` result by reloading the task or a refusal
+  with the daemon's message. A button is disabled while a request is checking,
+  while a request made elsewhere is still pending (with **Refresh**), while the
+  task is paused, and while a required artifact has no value. A rejected or
+  failed last request is shown only when it was made in the current visit of an
+  open task, and a "still checking" notice goes once the request settles. In a
+  pool or script status the outcomes are listed for reference, because the
+  agent or the watch script decides.
+- **Artifacts.** Every artifact the image declares: the current value,
+  collapsed when long, with **Edit** and **History**, which loads the earlier
+  values on demand; a declared artifact with no value shows its description and
+  **Set**. Editing is disabled once the task is closed.
+- **Runs.** The latest 20 script runs with kind, script, state, verdict, exit
+  code, and times, and a **Log** toggle that loads the log on demand and says
+  when it is truncated; while a run is pending or running, an open log has
+  **Refresh**. Who may read a log is described in
   [Runs and logs](#runs-and-logs); a refusal is shown in place of the log.
-- **Visits.** Every stay in a status, with who entered it, who left it and by
-  which outcome, and the message.
-- **Move and cancel.** The panel's actions menu has **Move to status…** (a
-  target status and a required reason) and **Cancel task**. Both ask for
-  confirmation, because they skip outcomes, checks, and required artifacts and
-  stop the current scripts. They are shown only to a principal that may edit
-  the task.
+- **Visits.** Every stay in a status, with who entered it, when it was left and
+  by which outcome, and the message.
+- **Move and cancel.** The panel's actions menu has **Move to status…** (every
+  declared status but the current one, terminal statuses grouped last, and a
+  required reason) and **Cancel task**, which is hidden once the task is closed.
+  Both ask for confirmation, because they skip outcomes, checks, and required
+  artifacts and stop the current scripts. They are shown only to a principal
+  that may edit the task.
 
 Messages, artifact values, and logs are text; Desktop never interprets them as
-Markdown or HTML.
+Markdown or HTML. After an action in the sheet the task list reloads as well,
+so its row agrees with the sheet.
 
 ### Queue settings
 
@@ -1325,7 +1338,7 @@ Markdown or HTML.
   elsewhere (`revision_conflict`) is reloaded with a notice so you can retry.
 - **Pools.** The queue's agent pools editor sits in the same section. A bind
   refused with `workflow_pool_empty` lists the pools the image names above
-  it.
+  it; a pool leaves the list once the editor saves it with members.
 - **Secrets.** The secret keys with their update time, a form to **Set** one,
   and **Remove** with confirmation. A value is write-only: it is cleared from
   the form when sent and is never read back or shown. A bind refused with
@@ -1335,12 +1348,5 @@ Markdown or HTML.
 
 - There is no filter by workflow status. The Active, Closed, and All segment
   uses the daemon's categories.
-- It cannot set a declared artifact that has no value and that no current
-  outcome requires, because the task view does not list declared artifact
-  names.
-- **Move to status…** offers only statuses the view has revealed: those the
-  task visited, the current one, and the targets of its current outcomes. Use
-  `ttasks workflow move` or the REST route for another status; the daemon names
-  the declared statuses when it refuses an unknown one.
 - It does not list the pools an image needs when a bind succeeds; they appear
   only when a bind is refused for an empty pool.
