@@ -73,7 +73,7 @@ func Run(ctx context.Context, reg *registry.Registry, argv []string, call Caller
 		printCommandHelp(cmd, errOut)
 		return 2
 	}
-	if cmd.Path == "image.build" || cmd.Path == "image.validate" {
+	if cmd.Path == "image.build" || cmd.Path == "image.validate" || cmd.Path == "workflow.build" || cmd.Path == "workflow.validate" {
 		if path, ok := params["path"].(string); ok && path != "" {
 			absolutePath, absErr := filepath.Abs(path)
 			if absErr != nil {

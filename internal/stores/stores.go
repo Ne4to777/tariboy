@@ -49,11 +49,12 @@ type StoreImage struct {
 }
 
 type Detail struct {
-	Name   string       `json:"name"`
-	Source string       `json:"source"`
-	Path   string       `json:"path"`
-	Images []StoreImage `json:"images"`
-	Auto   AutoBuild    `json:"auto"`
+	Name      string          `json:"name"`
+	Source    string          `json:"source"`
+	Path      string          `json:"path"`
+	Images    []StoreImage    `json:"images"`
+	Workflows []StoreWorkflow `json:"workflows"`
+	Auto      AutoBuild       `json:"auto"`
 }
 
 type PreparedBuild struct {
@@ -324,11 +325,15 @@ func (c *Catalog) detail(ctx context.Context, name string) (Detail, error) {
 		}
 		images[i].UpdateNeeded = images[i].Error == "" && images[i].Version != "" && images[i].BuiltVersion != "" && images[i].Version != images[i].BuiltVersion
 	}
+	workflows, err := workflowInventory(store.Path)
+	if err != nil {
+		return Detail{}, err
+	}
 	auto, err := c.readAuto(store.Name)
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Name: store.Name, Source: store.Source, Path: store.Path, Images: images, Auto: auto}, nil
+	return Detail{Name: store.Name, Source: store.Source, Path: store.Path, Images: images, Workflows: workflows, Auto: auto}, nil
 }
 
 func (c *Catalog) get(name string) (Store, error) {
