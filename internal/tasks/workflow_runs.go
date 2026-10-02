@@ -48,6 +48,9 @@ type ScriptRun struct {
 	StartedAt  string `json:"started_at,omitempty"`
 	FinishedAt string `json:"finished_at,omitempty"`
 	LogPath    string `json:"log_path,omitempty"`
+	// Holder is the agent a run_as agent check ran as, fixed when the run was
+	// created; "" for queue and watch runs.
+	Holder string `json:"holder,omitempty"`
 }
 
 // RunJob is everything the worker needs to execute one pending run.
@@ -93,7 +96,7 @@ type scriptRunRecord struct {
 
 const scriptRunSelect = `
 	SELECT r.id, t.task_key, r.kind, r.script, r.run_as, r.state, r.verdict, r.exit_code, r.message,
-	       r.created_at, r.started_at, r.finished_at, r.log_path,
+	       r.created_at, r.started_at, r.finished_at, r.log_path, r.holder,
 	       r.task_id, r.visit_id, COALESCE(r.request_id, 0), r.check_index, r.cancel_requested
 	FROM task_script_runs r JOIN tasks t ON t.id = r.task_id`
 
@@ -101,7 +104,7 @@ func scanScriptRun(row interface{ Scan(...any) error }) (scriptRunRecord, error)
 	var r scriptRunRecord
 	var exit sql.NullInt64
 	if err := row.Scan(&r.ID, &r.TaskKey, &r.Kind, &r.Script, &r.RunAs, &r.State, &r.Verdict, &exit, &r.Message,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.LogPath,
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.LogPath, &r.Holder,
 		&r.taskID, &r.visitID, &r.requestID, &r.checkIndex, &r.cancelRequested); err != nil {
 		return scriptRunRecord{}, err
 	}
@@ -150,15 +153,15 @@ func scriptRunsTx(ctx context.Context, q queryer, taskID int64, limit int) ([]Sc
 }
 
 // insertScriptRunTx records a pending run. requestID is 0 for a watch run.
-func insertScriptRunTx(ctx context.Context, tx *sql.Tx, taskID, visitID, requestID int64, kind, script, runAs string, checkIndex int, now string) error {
+func insertScriptRunTx(ctx context.Context, tx *sql.Tx, taskID, visitID, requestID int64, kind, script, runAs, holder string, checkIndex int, now string) error {
 	var request any
 	if requestID != 0 {
 		request = requestID
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO task_script_runs(task_id, visit_id, request_id, kind, script, run_as, check_index, state, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-		taskID, visitID, request, kind, script, runAs, checkIndex, now)
+		INSERT INTO task_script_runs(task_id, visit_id, request_id, kind, script, run_as, holder, check_index, state, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+		taskID, visitID, request, kind, script, runAs, holder, checkIndex, now)
 	return err
 }
 
@@ -281,8 +284,8 @@ func (s *Service) runJob(ctx context.Context, run scriptRunRecord) (RunJob, erro
 		if transition, ok := statusTransition(status, job.Outcome); ok && run.checkIndex < len(transition.Checks) {
 			job.Timeout = scriptTimeout(transition.Checks[run.checkIndex].Timeout, workflowfile.DefaultCheckTimeout)
 		}
-		if run.RunAs == workflowfile.RunAsAgent && strings.HasPrefix(task.Assignee, "agent:") {
-			job.Holder = strings.TrimPrefix(task.Assignee, "agent:")
+		if run.RunAs == workflowfile.RunAsAgent {
+			job.Holder = run.Holder
 		}
 	default:
 		job.Timeout = workflowfile.DefaultWatchTimeout
@@ -515,7 +518,7 @@ func (s *Service) finishCheckTx(ctx context.Context, tx *sql.Tx, task *Task, run
 		if next := run.checkIndex + 1; next < len(transition.Checks) {
 			check := transition.Checks[next]
 			return insertScriptRunTx(ctx, tx, task.ID, request.visitID, request.id, "check", check.Script,
-				checkRunAs(check), next, s.now())
+				checkRunAs(check), checkHolder(check, task.Assignee), next, s.now())
 		}
 		// The last check passed. Required artifacts were present when the
 		// request was made; confirm nothing removed one since.
@@ -580,6 +583,16 @@ func (s *Service) failRequestTx(ctx context.Context, tx *sql.Tx, task Task, run 
 		"script": run.Script, "message": message, "log_path": logPath,
 	}, now)
 	return err
+}
+
+// checkHolder is the agent a check runs as, recorded when the run is created:
+// the task's assignee for a run_as agent check, "" for a queue check. The log
+// of such a run may hold the agent's own secrets.
+func checkHolder(check workflowfile.Check, assignee string) string {
+	if check.RunAs != workflowfile.RunAsAgent {
+		return ""
+	}
+	return strings.TrimPrefix(assignee, "agent:")
 }
 
 // checkRunAs is the run mode of a check; queue when it declares none.
@@ -885,7 +898,7 @@ func (s *Service) scheduleWatch(ctx context.Context, visitID int64, cutoff strin
 	created := ok && !status.Terminal && status.Owner.Kind == workflowfile.OwnerScript && status.Watch != nil
 	if created {
 		if err := insertScriptRunTx(ctx, tx, task.ID, visitID, 0, "watch", status.Watch.Script,
-			workflowfile.RunAsQueue, 0, s.now()); err != nil {
+			workflowfile.RunAsQueue, "", 0, s.now()); err != nil {
 			return false, err
 		}
 	}

@@ -270,6 +270,33 @@ func TestAdvanceWaitJSONPrintsTheFinalRequestAndKeepsTheExitCode(t *testing.T) {
 	}
 }
 
+func TestAdvanceWaitJSONPrintsTheLastPendingRequestOnTimeoutAndInterrupt(t *testing.T) {
+	fakeClock(t)
+	withCaller(t, &pollCaller{first: json.RawMessage(pendingRequest), polls: []func() (json.RawMessage, error){reply(pendingRequest)}})
+	var out strings.Builder
+	if code := Run(context.Background(), advanceArgs("--json"), agentEnv(), &out, io.Discard); code != 1 || strings.TrimSpace(out.String()) != pendingRequest {
+		t.Fatalf("timeout code %d stdout %q", code, &out)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	withCaller(t, &pollCaller{first: json.RawMessage(pendingRequest), polls: []func() (json.RawMessage, error){reply(pendingRequest)}})
+	out.Reset()
+	if code := Run(ctx, advanceArgs("--json"), agentEnv(), &out, io.Discard); code != 1 || strings.TrimSpace(out.String()) != pendingRequest {
+		t.Fatalf("interrupt code %d stdout %q", code, &out)
+	}
+}
+
+func TestAdvanceWaitReportsAnUnreadableReplyWithTheRequestID(t *testing.T) {
+	fakeClock(t)
+	withCaller(t, &pollCaller{first: json.RawMessage(pendingRequest), polls: []func() (json.RawMessage, error){reply(`not json`)}})
+	var errOut strings.Builder
+	if code := Run(context.Background(), advanceArgs(), agentEnv(), io.Discard, &errOut); code != 1 ||
+		strings.Contains(errOut.String(), "not reachable") || !strings.Contains(errOut.String(), "request 7") ||
+		!strings.Contains(errOut.String(), "could not be read") {
+		t.Fatalf("code %d stderr %q", code, &errOut)
+	}
+}
+
 func TestParseWorkflowRunsAndLog(t *testing.T) {
 	for argv, want := range map[string]request{
 		"workflow runs DEV-1":                        {action: "workflow_runs", payload: map[string]any{"key": "DEV-1"}},

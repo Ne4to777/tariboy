@@ -162,6 +162,20 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 	}
 }
 
+func TestRunLogRouteValidatesMaxBytes(t *testing.T) {
+	for query, wantStatus := range map[string]int{"?max_bytes=-1": 400, "?max_bytes=abc": 400, "?max_bytes=1.5": 400, "?max_bytes=0": 200, "": 200, "?max_bytes=": 200} {
+		stub := &workflowStub{}
+		httpServer := workflowServer(t, stub)
+		status, env := taskRequest(t, httpServer.Client(), "GET", httpServer.URL+"/api/tasks/DEV-1/workflow/runs/4/log"+query, nil)
+		if status != wantStatus {
+			t.Errorf("%q: status %d envelope %+v", query, status, env)
+		}
+		if wantStatus == 400 && (env.Error == nil || env.Error.Code != "invalid_request" || len(stub.calls) != 0) {
+			t.Errorf("%q: envelope %+v calls %v", query, env, stub.calls)
+		}
+	}
+}
+
 func TestWorkflowRoutesPassServiceErrorsThrough(t *testing.T) {
 	stub := &workflowStub{err: &tasks.Error{Status: http.StatusConflict, Code: "workflow_managed",
 		Msg: "task lifecycle is managed by its workflow", Data: map[string]any{"status": "develop", "outcomes": []string{"ready"}}}}

@@ -62,6 +62,9 @@ func waitForAdvance(ctx context.Context, parsed request, raw json.RawMessage, po
 	var lastErr error
 	for current.State == "pending" {
 		if err := waitClock.sleep(ctx, pollInterval); err != nil {
+			if jsonOut {
+				fmt.Fprintln(stdout, string(raw))
+			}
 			fmt.Fprintf(stderr, "tasks advance: interrupted; request %d of %s may still be pending\n", current.ID, key)
 			fmt.Fprintf(stderr, "hint: ttasks workflow get %s shows its state\n", key)
 			return 1
@@ -76,14 +79,23 @@ func waitForAdvance(ctx context.Context, parsed request, raw json.RawMessage, po
 		default:
 			var next tasks.TransitionRequest
 			if json.Unmarshal(polled, &next) != nil {
-				lastErr = errors.New("the daemon returned an unreadable request")
+				lastErr = unreadableReply{id: current.ID}
 				break
 			}
 			lastErr, raw, current = nil, polled, next
 		}
 		if current.State == "pending" && !waitClock.now().Before(deadline) {
+			var unreadable unreadableReply
+			if errors.As(lastErr, &unreadable) {
+				fmt.Fprintf(stderr, "request %d of %s: the daemon's reply could not be read\n", unreadable.id, key)
+				fmt.Fprintf(stderr, "hint: ttasks workflow get %s shows its state\n", key)
+				return 1
+			}
 			if lastErr != nil {
 				return fail(lastErr)
+			}
+			if jsonOut {
+				fmt.Fprintln(stdout, string(raw))
 			}
 			fmt.Fprintf(stderr, "still pending: request %d of %s did not finish within %d seconds\n", current.ID, key, int(wait/time.Second))
 			fmt.Fprintf(stderr, "hint: ttasks workflow get %s shows its state\n", key)
@@ -92,6 +104,11 @@ func waitForAdvance(ctx context.Context, parsed request, raw json.RawMessage, po
 	}
 	return printFinishedRequest(parsed, current, raw, jsonOut, stdout, stderr)
 }
+
+// unreadableReply is a poll answer that is not a transition request.
+type unreadableReply struct{ id int64 }
+
+func (e unreadableReply) Error() string { return "the daemon's reply could not be read" }
 
 // runLogPath finds the run id in the "log: <path>" line of a failed request:
 // the worker keeps a run's log at .../runs/<id>/run.log.

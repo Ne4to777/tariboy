@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +31,46 @@ func runLogUnavailable(id int64) error {
 	return domainError(http.StatusNotFound, "not_found", "script run "+strconv.FormatInt(id, 10)+" has no readable log")
 }
 
+func invalidMaxBytes() error {
+	return domainError(http.StatusBadRequest, "invalid_request", "max_bytes must be a non-negative whole number")
+}
+
+// ParseMaxBytes reads the max_bytes argument of a log request as it arrives
+// from JSON or a query string: absent, empty, or 0 means the default; anything
+// that is not a non-negative whole number is a 400.
+func ParseMaxBytes(value any) (int, error) {
+	switch v := value.(type) {
+	case nil:
+		return 0, nil
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n < 0 {
+			return 0, invalidMaxBytes()
+		}
+		return n, nil
+	case float64:
+		if v < 0 || v != math.Trunc(v) || v > math.MaxInt32 {
+			return 0, invalidMaxBytes()
+		}
+		return int(v), nil
+	case int:
+		if v < 0 {
+			return 0, invalidMaxBytes()
+		}
+		return v, nil
+	case int64:
+		if v < 0 || v > math.MaxInt32 {
+			return 0, invalidMaxBytes()
+		}
+		return int(v), nil
+	default:
+		return 0, invalidMaxBytes()
+	}
+}
+
 func runLogInvalid(id int64) error {
 	return domainError(http.StatusConflict, "run_log_invalid",
 		"the log of script run "+strconv.FormatInt(id, 10)+" is not where the worker writes it")
@@ -45,7 +86,10 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 	if err := validateActor(actor); err != nil {
 		return "", false, err
 	}
-	if maxBytes <= 0 {
+	if maxBytes < 0 {
+		return "", false, invalidMaxBytes()
+	}
+	if maxBytes == 0 {
 		maxBytes = defaultRunLogBytes
 	}
 	maxBytes = min(maxBytes, maxRunLogBytes)
@@ -58,6 +102,9 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 		return "", false, scriptRunNotFound(id)
 	}
 	if err != nil {
+		return "", false, err
+	}
+	if err := s.requireRunLogAccess(ctx, actor, task, run.ScriptRun); err != nil {
 		return "", false, err
 	}
 	if run.LogPath == "" {
@@ -86,6 +133,41 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 		text = string(cutTail([]byte(text), maxBytes))
 	}
 	return strings.ToValidUTF8(text, "�"), size > int64(maxBytes), nil
+}
+
+// requireRunLogAccess admits the customer, and an agent only when it is the
+// agent a run_as agent run ran as, or, for any other run, a holder of the task.
+// A run as the agent has that agent's own secrets in its environment, which the
+// queue-secret redaction does not cover.
+func (s *Service) requireRunLogAccess(ctx context.Context, actor Actor, task Task, run ScriptRun) error {
+	if actor.IsCustomer {
+		return nil
+	}
+	allowed := false
+	if run.Holder != "" {
+		allowed = actor.Principal == agentPrincipal(run.Holder)
+	} else {
+		rows, err := s.db.QueryContext(ctx, `SELECT agent FROM task_workflow_holders WHERE task_id = ?`, task.ID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var agent string
+			if err := rows.Scan(&agent); err != nil {
+				return err
+			}
+			allowed = allowed || actor.Principal == agentPrincipal(agent)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	if !allowed {
+		return domainError(http.StatusForbidden, "forbidden",
+			"the log of script run "+strconv.FormatInt(run.ID, 10)+" is available to the task's holder and the customer")
+	}
+	return nil
 }
 
 // verifiedRunLogPath returns the real path of the log of run id of task key,

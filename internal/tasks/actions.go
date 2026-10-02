@@ -144,7 +144,11 @@ func (s *Service) AgentAction(ctx context.Context, actor Actor, action string, b
 		if err != nil {
 			return nil, err
 		}
-		text, truncated, err := s.ScriptRunLog(ctx, actor, actionString(body, "key"), id, actionInt(body, "max_bytes"))
+		maxBytes, err := ParseMaxBytes(body["max_bytes"])
+		if err != nil {
+			return nil, err
+		}
+		text, truncated, err := s.ScriptRunLog(ctx, actor, actionString(body, "key"), id, maxBytes)
 		return map[string]any{"run_id": id, "text": text, "truncated": truncated}, err
 	default:
 		return nil, domainError(http.StatusBadRequest, "invalid_action",

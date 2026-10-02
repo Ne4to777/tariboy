@@ -147,7 +147,7 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	// and CompleteScriptRun moves the request on.
 	if len(transition.Checks) > 0 {
 		check := transition.Checks[0]
-		if err := insertScriptRunTx(ctx, tx, task.ID, visitID, id, "check", check.Script, checkRunAs(check), 0, now); err != nil {
+		if err := insertScriptRunTx(ctx, tx, task.ID, visitID, id, "check", check.Script, checkRunAs(check), checkHolder(check, task.Assignee), 0, now); err != nil {
 			return TransitionRequest{}, err
 		}
 		if err := tx.Commit(); err != nil {

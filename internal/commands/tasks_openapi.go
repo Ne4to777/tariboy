@@ -57,7 +57,7 @@ func taskOpenAPISchemas() map[string]map[string]any {
 			"run_as":    map[string]any{"type": "string", "enum": []string{"queue", "agent"}},
 			"state":     map[string]any{"type": "string", "enum": []string{"pending", "running", "finished", "interrupted", "cancelled"}},
 			"verdict":   map[string]any{"type": "string", "enum": []string{"pass", "reject", "outcome", "quiet", "failure"}},
-			"exit_code": integer, "message": str, "created_at": str, "started_at": str, "finished_at": str, "log_path": str}),
+			"exit_code": integer, "holder": str, "message": str, "created_at": str, "started_at": str, "finished_at": str, "log_path": str}),
 		"QueueWorkflowTrigger": objectSchema([]string{"id", "queue", "pattern", "action", "enabled", "created_by", "created_at", "updated_at"}, map[string]any{"id": integer, "queue": str, "pattern": str, "correlation_key": str, "action": str, "enabled": boolean, "created_by": str, "created_at": str, "updated_at": str}),
 		"TaskEvent":            objectSchema([]string{"sequence", "event_id", "queue", "kind", "actor", "task_revision", "payload", "created_at"}, map[string]any{"sequence": integer, "event_id": str, "task_key": str, "queue": str, "kind": str, "actor": str, "task_revision": integer, "payload": free, "created_at": str}),
 	}

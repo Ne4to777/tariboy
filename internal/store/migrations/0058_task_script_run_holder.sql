@@ -1,0 +1,1 @@
+ALTER TABLE task_script_runs ADD COLUMN holder TEXT NOT NULL DEFAULT '';

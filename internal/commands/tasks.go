@@ -262,7 +262,11 @@ func TaskOperatorCommands() []registry.Command {
 		taskRoute("tasks.workflow.runs.log", "GET", "/api/tasks/{key}/workflow/runs/{id}/log", "Read the tail of a script run's log",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				id := int64Param(p, "id")
-				text, truncated, err := control.ScriptRunLog(ctx, actor, stringParam(p, "key"), id, int(int64Param(p, "max_bytes")))
+				maxBytes, err := tasks.ParseMaxBytes(p["max_bytes"])
+				if err != nil {
+					return nil, err
+				}
+				text, truncated, err := control.ScriptRunLog(ctx, actor, stringParam(p, "key"), id, maxBytes)
 				return map[string]any{"run_id": id, "text": text, "truncated": truncated}, err
 			}),
 		taskRoute("tasks.workflow.move", "POST", "/api/tasks/{key}/workflow/move", "Move a workflow task to another status",
