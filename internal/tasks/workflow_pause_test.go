@@ -243,6 +243,9 @@ func TestPauseCommentBoundsAndQuotesTheDetail(t *testing.T) {
 	if n := strings.Count(joined, "é"); n == 0 || len(joined) > maxPauseDetailBytes+200 {
 		t.Fatalf("detail is not bounded: %d bytes, %d runes of é", len(joined), n)
 	}
+	if !strings.Contains(joined, "é"+CutMarker+"\n") {
+		t.Fatalf("the cut detail has no marker:\n%s", joined)
+	}
 	if strings.Count(body, "--decision release") != 2 {
 		t.Fatalf("release command count = %d", strings.Count(body, "--decision release"))
 	}
@@ -639,14 +642,23 @@ func TestPauseCommentNamesAnUnansweredQuestion(t *testing.T) {
 	holderAsks(t, svc, task)
 	pause(t, svc, task.Key, PauseIdleIterations, "")
 	if body := pauseCommentBody(t, svc, task); !strings.Contains(body,
-		"A question from agent:dev-1 is still unanswered; answering it in a comment before deciding is recommended.") {
+		"A question from `agent:dev-1` is still unanswered; answering it in a comment before deciding is recommended.") {
 		t.Fatalf("pause comment = %q", body)
 	}
 
 	svc, _, task = requestFixture(t)
-	seedOpenWait(t, svc, task, "agent:dev-1\n# forged\tline", task.Customer)
+	seedOpenWait(t, svc, task, "agent:dev-1\n# forged\tline `x`", task.Customer)
 	pause(t, svc, task.Key, PauseIdleIterations, "")
-	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, "A question from agent:dev-1 # forged line is still unanswered") {
+	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, "A question from `` agent:dev-1 # forged line `x` `` is still unanswered") {
+		t.Fatalf("pause comment = %q", body)
+	}
+
+	// The asker is cut to 200 bytes.
+	svc, _, task = requestFixture(t)
+	seedOpenWait(t, svc, task, "agent:"+strings.Repeat("ж", 200), task.Customer)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	want := "A question from `agent:" + strings.Repeat("ж", 97) + "` is still unanswered"
+	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, want) {
 		t.Fatalf("pause comment = %q", body)
 	}
 

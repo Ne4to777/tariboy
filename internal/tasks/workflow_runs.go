@@ -55,6 +55,10 @@ type ScriptRun struct {
 	// PID is the process a running run recorded, for the worker's recovery
 	// after a restart; it is never marshalled.
 	PID *int `json:"-"`
+	// RequestID is the transition request a check belongs to, 0 for a watch;
+	// the Goal block matches a failed request to its run by it. It is never
+	// marshalled.
+	RequestID int64 `json:"-"`
 }
 
 // RunJob is everything the worker needs to execute one pending run.
@@ -122,6 +126,7 @@ func scanScriptRun(row interface{ Scan(...any) error }) (scriptRunRecord, error)
 		p := int(pid.Int64)
 		r.PID = &p
 	}
+	r.RequestID = r.requestID
 	return r, nil
 }
 
@@ -240,19 +245,8 @@ const maxEchoedNameBytes = 64
 
 // boundRunMessage cuts message to maxRunMessageBytes on a rune boundary.
 func boundRunMessage(message string) string {
-	return cutRunes(message, maxRunMessageBytes)
-}
-
-// cutRunes cuts s to at most n bytes on a rune boundary.
-func cutRunes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
+	message, _ = CutBytes(message, maxRunMessageBytes)
+	return message
 }
 
 func scriptAuthor(script string) string { return "script:" + script }
@@ -689,7 +683,8 @@ func validateScriptArtifacts(manifest workflowimage.Manifest, artifacts map[stri
 		switch {
 		case !artifactDeclared(manifest, name):
 			// The name comes from the script; only a bounded part of it is echoed.
-			return fmt.Errorf("the script returned undeclared artifact %q", cutRunes(name, maxEchoedNameBytes))
+			echoed, _ := CutBytes(name, maxEchoedNameBytes)
+			return fmt.Errorf("the script returned undeclared artifact %q", echoed)
 		case value == "" || !utf8.ValidString(value):
 			return fmt.Errorf("the script returned artifact %q that is not non-empty UTF-8 text", name)
 		case len(value) > maxArtifactBytes:

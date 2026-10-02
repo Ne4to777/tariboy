@@ -24,8 +24,12 @@ const (
 	ResumeRelease  = "release"
 )
 
-// maxPauseDetailBytes bounds the untrusted detail a pause comment quotes.
-const maxPauseDetailBytes = 1 << 10
+// maxPauseDetailBytes bounds the untrusted detail a pause comment quotes, and
+// maxPauseAskerBytes the principal it names as the asker of an open question.
+const (
+	maxPauseDetailBytes = 1 << 10
+	maxPauseAskerBytes  = 200
+)
 
 // pauseReasonText says what a pause reason means, for the customer.
 func pauseReasonText(reason string) string {
@@ -101,12 +105,17 @@ func pauseComment(task Task, reason, detail, asker string, pool bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "@%s The workflow paused this task in status %q and waits for your decision.\n\n", task.Customer, task.WorkflowStatus)
 	fmt.Fprintf(&b, "Reason (`%s`): %s.\n", reason, pauseReasonText(reason))
-	if detail = strings.TrimSpace(cutRunes(cleanPauseDetail(detail), maxPauseDetailBytes)); detail != "" {
+	detail, cut := CutBytes(cleanPauseDetail(detail), maxPauseDetailBytes)
+	if detail = strings.TrimSpace(detail); detail != "" {
+		if cut {
+			detail += CutMarker
+		}
 		b.WriteString("\nDetails:\n\n")
 		b.WriteString(quoteBlock(detail))
 	}
 	if asker = strings.Join(strings.Fields(cleanPauseDetail(asker)), " "); asker != "" {
-		fmt.Fprintf(&b, "\nA question from %s is still unanswered; answering it in a comment before deciding is recommended.\n", asker)
+		asker, _ = CutBytes(asker, maxPauseAskerBytes)
+		fmt.Fprintf(&b, "\nA question from %s is still unanswered; answering it in a comment before deciding is recommended.\n", CodeSpan(asker))
 	}
 	resume := "Resume the task in its current status; counters are reset"
 	if pool {
@@ -143,16 +152,7 @@ func cleanPauseDetail(text string) string {
 // whose fence is longer than any backtick run in text, so headings, fences,
 // and mentions inside it render as plain text.
 func quoteBlock(text string) string {
-	longest, run := 0, 0
-	for _, r := range text {
-		if r == '`' {
-			run++
-			longest = max(longest, run)
-		} else {
-			run = 0
-		}
-	}
-	fence := strings.Repeat("`", max(3, longest+1))
+	fence := FenceFor(text, 3)
 	var b strings.Builder
 	b.WriteString("> " + fence + "text\n")
 	for _, line := range strings.Split(text, "\n") {
