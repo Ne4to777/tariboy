@@ -237,6 +237,9 @@ routes as the customer.
 | `ttasks queue workflow set QUEUE REF [--revision N]` | operator only | `PUT /api/task-queues/{queue}/workflow` |
 | `ttasks queue workflow get QUEUE` | operator only | `GET /api/task-queues/{queue}/workflow` |
 | `ttasks queue workflow clear QUEUE --revision N` | operator only | `DELETE /api/task-queues/{queue}/workflow` |
+| `ttasks queue secret set QUEUE KEY [--value V]` (stdin when absent, one trailing newline stripped; up to 64 KiB) | operator only | `PUT /api/task-queues/{queue}/secrets/{key}` |
+| `ttasks queue secret ls QUEUE` (keys only, never values) | operator only | `GET /api/task-queues/{queue}/secrets` |
+| `ttasks queue secret rm QUEUE KEY` | operator only | `DELETE /api/task-queues/{queue}/secrets/{key}` |
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the

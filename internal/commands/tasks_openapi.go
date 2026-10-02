@@ -43,6 +43,7 @@ func taskOpenAPISchemas() map[string]map[string]any {
 			"state": map[string]any{"type": "string", "enum": []string{"pending", "applied", "rejected", "failed", "cancelled"}, "description": "One of pending, applied, rejected, failed, cancelled"}, "result_message": str, "created_at": str, "finished_at": str}),
 		"Artifact":      objectSchema([]string{"id", "name", "value", "author", "created_at"}, map[string]any{"id": integer, "name": str, "value": str, "author": str, "created_at": str}),
 		"QueueWorkflow": objectSchema([]string{"queue", "name", "version", "digest", "revision", "updated_at"}, map[string]any{"queue": str, "name": str, "version": str, "digest": str, "revision": integer, "updated_at": str}),
+		"QueueSecret":   objectSchema([]string{"key", "updated_at"}, map[string]any{"key": str, "updated_at": str}),
 		"WorkflowView": objectSchema([]string{"name", "version", "digest", "status", "category", "owner", "outcomes", "artifacts", "visits"}, map[string]any{
 			"name": str, "version": str, "digest": str, "status": str, "category": status,
 			"waiting_on": str, "owner": str, "holder": str, "instructions_path": str,

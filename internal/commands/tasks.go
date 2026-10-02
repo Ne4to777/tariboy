@@ -270,6 +270,37 @@ func TaskOperatorCommands() []registry.Command {
 				}
 				return map[string]any{"queue": queue, "cleared": true}, nil
 			}),
+		taskRoute("tasks.queue.secret.set", "PUT", "/api/task-queues/{queue}/secrets/{key}", "Set a queue secret for workflow scripts",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				queue, key := stringParam(p, "queue"), stringParam(p, "key")
+				if err := control.SetQueueSecret(ctx, actor, queue, key, rawStringParam(p, "value")); err != nil {
+					return nil, err
+				}
+				items, err := control.ListQueueSecrets(ctx, actor, queue)
+				if err != nil {
+					return nil, err
+				}
+				updatedAt := ""
+				for _, item := range items {
+					if item.Key == key {
+						updatedAt = item.UpdatedAt
+					}
+				}
+				return map[string]any{"queue": strings.ToUpper(queue), "key": key, "updated_at": updatedAt}, nil
+			}),
+		taskRoute("tasks.queue.secret.ls", "GET", "/api/task-queues/{queue}/secrets", "List the keys of a queue's secrets",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				items, err := control.ListQueueSecrets(ctx, actor, stringParam(p, "queue"))
+				return map[string]any{"secrets": items, "count": len(items)}, err
+			}),
+		taskRoute("tasks.queue.secret.rm", "DELETE", "/api/task-queues/{queue}/secrets/{key}", "Remove a queue secret",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				queue, key := stringParam(p, "queue"), stringParam(p, "key")
+				if err := control.RemoveQueueSecret(ctx, actor, queue, key); err != nil {
+					return nil, err
+				}
+				return map[string]any{"queue": strings.ToUpper(queue), "key": key, "removed": true}, nil
+			}),
 	}
 }
 
@@ -394,6 +425,8 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "ref", Required: true, Help: "Workflow image reference, name:tag"}, {Name: "revision", Type: registry.Int, Help: "Expected current binding revision (zero for a new binding)"}}
 	case "tasks.queue.workflow.clear":
 		return []registry.Arg{{Name: "revision", Type: registry.Int, Required: true, Help: "Expected current binding revision"}}
+	case "tasks.queue.secret.set":
+		return []registry.Arg{{Name: "value", Help: "Secret value, stored as given; the CLI reads stdin when --value is absent"}}
 	case "tasks.events":
 		return []registry.Arg{{Name: "after", Type: registry.Int, Help: "Resume after sequence"}, {Name: "limit", Type: registry.Int, Help: "Maximum events"}}
 	default:
@@ -425,6 +458,12 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return schemaRef("Task")
 	case "tasks.queue.workflow.set", "tasks.queue.workflow.get":
 		return schemaRef("QueueWorkflow")
+	case "tasks.queue.secret.set":
+		return objectSchema([]string{"queue", "key", "updated_at"}, map[string]any{"queue": map[string]any{"type": "string"}, "key": map[string]any{"type": "string"}, "updated_at": map[string]any{"type": "string"}})
+	case "tasks.queue.secret.ls":
+		return objectSchema([]string{"secrets", "count"}, map[string]any{"secrets": arrayOf("QueueSecret"), "count": map[string]any{"type": "integer"}})
+	case "tasks.queue.secret.rm":
+		return objectSchema([]string{"queue", "key", "removed"}, map[string]any{"queue": map[string]any{"type": "string"}, "key": map[string]any{"type": "string"}, "removed": map[string]any{"type": "boolean"}})
 	case "tasks.queue.workflow.clear":
 		return objectSchema([]string{"queue", "cleared"}, map[string]any{"queue": map[string]any{"type": "string"}, "cleared": map[string]any{"type": "boolean"}})
 	default:

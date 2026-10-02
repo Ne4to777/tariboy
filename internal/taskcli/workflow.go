@@ -57,17 +57,80 @@ func resolveArtifactValue(parsed *request, stderr io.Writer) int {
 		source = file
 	}
 	delete(parsed.payload, "file")
+	value, ok := readText(source, name, "tasks artifacts set", "artifacts", stderr)
+	if !ok {
+		return 2
+	}
+	parsed.payload["value"] = value
+	return 0
+}
+
+// readText reads at most maxArtifactInput bytes of UTF-8 text from source, so
+// an oversize value is refused by the daemon rather than cut short here. It
+// prints a usage error naming command and reports false when the read fails or
+// the text is not UTF-8. noun names what holds only text.
+func readText(source io.Reader, name, command, noun string, stderr io.Writer) (string, bool) {
 	raw, err := io.ReadAll(io.LimitReader(source, maxArtifactInput))
 	if err != nil {
-		fmt.Fprintf(stderr, "tasks artifacts set: %v\n", err)
-		return 2
+		fmt.Fprintf(stderr, "%s: %v\n", command, err)
+		return "", false
 	}
 	if !utf8.Valid(raw) {
-		fmt.Fprintf(stderr, "tasks artifacts set: %s is not valid UTF-8 text; artifacts hold text only\n", name)
-		return 2
+		fmt.Fprintf(stderr, "%s: %s is not valid UTF-8 text; %s hold text only\n", command, name, noun)
+		return "", false
 	}
-	parsed.payload["value"] = string(raw)
-	return 0
+	return string(raw), true
+}
+
+// secretSetPositionals is "queue secret set QUEUE KEY".
+const secretSetPositionals = 2
+
+// resolveQueueSecretValue completes "queue secret set QUEUE KEY" when no
+// --value is given by reading the value from stdin and adding it to args, which
+// stay in this process. One trailing newline is stripped, because a token piped
+// in almost always carries one. A value is never accepted as a positional
+// argument, so it cannot land in a shell history by accident. Other commands
+// pass through unchanged.
+func resolveQueueSecretValue(args []string, stderr io.Writer) ([]string, int) {
+	if len(args) < 3 || args[0] != "queue" || args[1] != "secret" || args[2] != "set" {
+		return args, 0
+	}
+	positionals := 0
+	for i := 3; i < len(args); i++ {
+		switch {
+		case args[i] == "--value" || strings.HasPrefix(args[i], "--value="):
+			return args, 0
+		case args[i] == "--json":
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			positionals++
+		}
+	}
+	if positionals > secretSetPositionals {
+		fmt.Fprintln(stderr, "tasks queue secret set: pass the value with --value or on stdin, not as an argument")
+		return nil, 2
+	}
+	if positionals < secretSetPositionals {
+		return args, 0 // the command reports the missing QUEUE or KEY
+	}
+	if isTerminal(stdin) {
+		fmt.Fprintln(stderr, "tasks queue secret set: pass --value VALUE or pipe the value on stdin")
+		return nil, 2
+	}
+	value, ok := readText(stdin, "stdin", "tasks queue secret set", "secrets", stderr)
+	if !ok {
+		return nil, 2
+	}
+	if strings.HasSuffix(value, "\r\n") {
+		value = strings.TrimSuffix(value, "\r\n")
+	} else {
+		value = strings.TrimSuffix(value, "\n")
+	}
+	if value == "" {
+		fmt.Fprintln(stderr, "tasks queue secret set: the value is empty; pass --value VALUE or pipe it on stdin")
+		return nil, 2
+	}
+	return append(append([]string{}, args...), "--value", value), 0
 }
 
 // printWorkflowManagedHint explains a workflow_managed refusal: the workflow

@@ -120,9 +120,26 @@ the revision shown by `queue workflow get` for a rebind or a `clear`. Binding
 the digest that is already bound changes nothing and keeps the revision,
 whatever revision is given, so a retried bind succeeds.
 
+Secrets the image lists in `requires_secrets` live per queue. Set them before
+binding:
+
+```bash
+printf '%s' "$TOKEN" | ttasks queue secret set DEV GH_TOKEN
+ttasks queue secret ls DEV
+```
+
+The value comes from `--value` or stdin; prefer stdin, since an argument shows
+in the process list. One trailing newline of stdin is stripped, unlike
+artifacts, because a piped token almost always carries one. A key matches
+`[A-Za-z_][A-Za-z0-9_]*` and does not start with `TARIBOY_`; a value is
+non-empty UTF-8 text of at most 64 KiB. Values are never returned by a command
+or route and are not written to events. Database backups hold them in plaintext,
+as they hold agent secrets.
+
 | Error | Meaning |
 | --- | --- |
 | `workflow_pool_empty` | A pool the image names is missing or has no agents. The error lists the pools. Emptying a pool that the bound image uses, or that the pinned version of an unfinished task in the queue uses, is refused with the same code. |
+| `workflow_secret_missing` | A secret the image lists in `requires_secrets` has no value in the queue. The error lists the names. Removing a secret the bound image requires is refused with the same code. |
 | `revision_conflict` | The revision is not the current one; read the binding again and retry. |
 | `not_found` | No published image matches the reference. |
 | `invalid_workflow_ref` | The reference is malformed. |
@@ -369,6 +386,7 @@ became flexible tasks and keep a `workflow.removed` event.
 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
 | `workflow_in_use` | 409 | A queue binds the image or a task, open or closed, pins it. |
 | `workflow_pool_empty` | 409 | A pool the image names is missing or has no agents. |
+| `workflow_secret_missing` | 409 | A secret the image requires has no value in the queue. |
 | `workflow_unavailable` | 503 | The workflow image store is not available. |
 | `queue_workflow_not_found` | 404 | The queue has no binding. |
 | `not_holder` | 403 | The caller does not own the current status. |

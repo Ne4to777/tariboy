@@ -70,6 +70,19 @@ func (s *workflowStub) ClearQueueWorkflow(_ context.Context, a tasks.Actor, queu
 	return s.err
 }
 
+func (s *workflowStub) SetQueueSecret(_ context.Context, a tasks.Actor, queue, key, value string) error {
+	s.record(a, "queue_secret_set %s %s %q", queue, key, value)
+	return s.err
+}
+func (s *workflowStub) ListQueueSecrets(_ context.Context, a tasks.Actor, queue string) ([]tasks.QueueSecretInfo, error) {
+	s.record(a, "queue_secret_ls %s", queue)
+	return []tasks.QueueSecretInfo{{Key: "GH_TOKEN", UpdatedAt: "2026-10-02T00:00:00Z"}}, s.err
+}
+func (s *workflowStub) RemoveQueueSecret(_ context.Context, a tasks.Actor, queue, key string) error {
+	s.record(a, "queue_secret_rm %s %s", queue, key)
+	return s.err
+}
+
 func workflowServer(t *testing.T, stub *workflowStub) *httptest.Server {
 	t.Helper()
 	server := api.NewServer(BuildRegistry(), &registry.Ctx{
@@ -104,6 +117,10 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 		{"queue workflow get", "GET", "/api/task-queues/DEV/workflow", nil, `queue_workflow_get DEV`, `"queue":"DEV"`},
 		{"queue workflow clear", "DELETE", "/api/task-queues/DEV/workflow?revision=3", nil, `queue_workflow_clear DEV 3`,
 			`"cleared":true`},
+		{"queue secret ls", "GET", "/api/task-queues/DEV/secrets", nil, `queue_secret_ls DEV`,
+			`"secrets":[{"key":"GH_TOKEN","updated_at":"2026-10-02T00:00:00Z"}]`},
+		{"queue secret rm", "DELETE", "/api/task-queues/DEV/secrets/GH_TOKEN", nil, `queue_secret_rm DEV GH_TOKEN`,
+			`"removed":true`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

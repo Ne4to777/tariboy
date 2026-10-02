@@ -53,6 +53,11 @@ func Run(ctx context.Context, argv []string, getenv func(string) string, stdout,
 			if jsonOut {
 				args = append(args, "--json")
 			}
+			resolvedArgs, code := resolveQueueSecretValue(args, stderr)
+			if code != 0 {
+				return code
+			}
+			args = resolvedArgs
 			return runOperatorCommand(ctx, args, getenv, stdout, stderr)
 		}
 		fmt.Fprintln(stderr, err)

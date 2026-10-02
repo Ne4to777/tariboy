@@ -373,6 +373,11 @@ func (s *Service) SetQueueWorkflow(ctx context.Context, actor Actor, queue, ref 
 	} else if len(missing) > 0 {
 		return QueueWorkflow{}, poolsEmptyError(missing)
 	}
+	if missing, err := missingQueueSecrets(ctx, tx, queue, manifest.Definition.RequiresSecrets); err != nil {
+		return QueueWorkflow{}, err
+	} else if len(missing) > 0 {
+		return QueueWorkflow{}, queueSecretsMissingError(missing)
+	}
 	now := s.now()
 	next := QueueWorkflow{
 		Queue: queue, Name: manifest.Name, Version: manifest.Version,
