@@ -9,6 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// developmentManifest is the development example of the design spec
+// (docs/superpowers/specs/2026-10-02-workflow-images-design.md, section
+// "Workflow image source"), copied exactly.
 const developmentManifest = `schema_version: 1
 name: development
 workflow_version: 0.1.0
@@ -29,6 +32,8 @@ artifacts:
     description: The implementation plan, as Markdown.
   - name: pull_request
     description: URL of the pull request for this task.
+  - name: merge_commit
+    description: Merge commit recorded by the monitor.
 
 statuses:
   - id: plan
@@ -106,7 +111,7 @@ func TestParseDevelopmentExample(t *testing.T) {
 		*f.Limits.ScriptFailures != 3 || f.Limits.UnavailableGrace != "5m" {
 		t.Fatalf("limits: %+v", f.Limits)
 	}
-	if len(f.Artifacts) != 2 || f.Artifacts[1].Name != "pull_request" || f.Artifacts[0].Description == "" {
+	if len(f.Artifacts) != 3 || f.Artifacts[1].Name != "pull_request" || f.Artifacts[0].Description == "" {
 		t.Fatalf("artifacts: %+v", f.Artifacts)
 	}
 	if len(f.Statuses) != 6 {
@@ -153,6 +158,48 @@ func TestParseAcceptsFileAndDirectory(t *testing.T) {
 	}
 }
 
+func TestParseRejectsOtherManifestFileName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alt.yaml")
+	if err := os.WriteFile(path, []byte(developmentManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Parse(path)
+	if err == nil || !strings.Contains(err.Error(), "must be named Workflowfile.yaml") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestDevelopmentExampleValidates parses and validates the development example
+// of the design spec, section "Workflow image source", with every file it
+// names present.
+func TestDevelopmentExampleValidates(t *testing.T) {
+	dir := writeManifest(t, developmentManifest)
+	for rel, mode := range map[string]os.FileMode{
+		"statuses/plan.md":          0o644,
+		"statuses/implement.md":     0o644,
+		"statuses/complete.md":      0o644,
+		"scripts/pr-open.sh":        0o755,
+		"scripts/pr-monitor.py":     0o755,
+		"scripts/merged-on-base.sh": 0o755,
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errs := Validate(f); len(errs) != 0 {
+		t.Fatalf("errors = %+v", errs)
+	}
+}
+
 func TestParseRejectsUnknownFields(t *testing.T) {
 	cases := map[string]struct{ body, field string }{
 		"root":       {"schema_version: 1\nbogus_root: x\nstatuses: []\n", "bogus_root"},
@@ -183,6 +230,8 @@ func TestParseRejectsBadOwner(t *testing.T) {
 		"unknown key":    "{ team: a }",
 		"sequence":       "[a]",
 		"empty pool":     "{ pool: \"\" }",
+		"null pool":      "{ pool: null }",
+		"tilde pool":     "{ pool: ~ }",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse(writeManifest(t, "schema_version: 1\nstatuses:\n  - id: a\n    owner: "+owner+"\n"))

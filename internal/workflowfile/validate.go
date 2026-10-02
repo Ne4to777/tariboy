@@ -85,6 +85,8 @@ func (v *validator) secretsAndEnv(f *File) {
 		switch {
 		case !envNamePattern.MatchString(name):
 			v.add("secret_name_invalid", p, "secret name %q must match %s", name, envNamePattern)
+		case strings.HasPrefix(name, "TARIBOY_"):
+			v.add("secret_name_invalid", p, "secret name %q must not start with TARIBOY_", name)
 		case seen[name]:
 			v.add("secret_name_invalid", p, "secret %q is repeated", name)
 		}
@@ -269,13 +271,18 @@ func (v *validator) status(f *File, i int, ids map[string]int, artifacts map[str
 }
 
 func (v *validator) watch(p string, w *Watch) {
-	if d, err := time.ParseDuration(w.Every); err != nil || d <= 0 {
-		v.add("duration_invalid", p+".every", "every %q must be a positive duration", w.Every)
+	if d, err := time.ParseDuration(w.Every); err != nil || d < MinWatchEvery {
+		v.add("duration_invalid", p+".every", "every %q must be a duration of at least %s", w.Every, MinWatchEvery)
 	}
-	if w.Timeout != "" {
-		if d, err := time.ParseDuration(w.Timeout); err != nil || d <= 0 {
-			v.add("duration_invalid", p+".timeout", "timeout %q must be a positive duration", w.Timeout)
-		}
+	if w.Timeout == "" {
+		return
+	}
+	d, err := time.ParseDuration(w.Timeout)
+	switch {
+	case err != nil || d <= 0:
+		v.add("duration_invalid", p+".timeout", "timeout %q must be a positive duration", w.Timeout)
+	case d > MaxWatchTimeout:
+		v.add("timeout_too_long", p+".timeout", "timeout %q exceeds %s", w.Timeout, MaxWatchTimeout)
 	}
 }
 
@@ -348,14 +355,18 @@ func (f *File) refs() []fileRef {
 }
 
 // cleanSourcePath applies the path rule: the path starts with "./", is not
-// absolute, and stays inside the source directory. It returns the cleaned
-// path without the leading "./".
+// absolute, stays inside the source directory, and is not under the top-level
+// .git directory, which the build does not store. It returns the cleaned path
+// without the leading "./".
 func cleanSourcePath(p string) (string, bool) {
 	if !strings.HasPrefix(p, "./") || path.IsAbs(p) {
 		return "", false
 	}
 	clean := path.Clean(p)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	if clean == ".git" || strings.HasPrefix(clean, ".git/") {
 		return "", false
 	}
 	return clean, true
@@ -373,7 +384,7 @@ func (v *validator) files(f *File) {
 	for _, r := range f.refs() {
 		clean, ok := cleanSourcePath(r.value)
 		if !ok {
-			v.add("path_invalid", r.field, "path %q must start with ./ and stay inside the source directory", r.value)
+			v.add("path_invalid", r.field, "path %q must start with ./, stay inside the source directory, and not be under .git", r.value)
 			continue
 		}
 		t := byPath[clean]

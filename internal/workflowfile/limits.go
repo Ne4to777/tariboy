@@ -6,6 +6,8 @@ const (
 	DefaultCheckTimeout = 60 * time.Second
 	MaxCheckTimeout     = 30 * time.Minute
 	DefaultWatchTimeout = 60 * time.Second
+	MaxWatchTimeout     = 30 * time.Minute
+	MinWatchEvery       = time.Second
 )
 
 const (

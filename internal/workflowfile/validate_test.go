@@ -116,6 +116,16 @@ func TestValidateCodes(t *testing.T) {
 		{"path_invalid no prefix", func(t *testing.T, f *File) { f.Statuses[0].Instructions = "statuses/plan.md" }, "path_invalid", "statuses[0].instructions"},
 		{"path_invalid absolute", func(t *testing.T, f *File) { f.Statuses[0].Instructions = "/etc/passwd" }, "path_invalid", "statuses[0].instructions"},
 		{"path_invalid escape", func(t *testing.T, f *File) { f.Statuses[2].Watch.Script = "./scripts/../../outside.sh" }, "path_invalid", "statuses[2].watch.script"},
+		{"path_invalid git", func(t *testing.T, f *File) {
+			if err := os.MkdirAll(filepath.Join(f.Dir, ".git", "hooks"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(f.Dir, ".git", "hooks", "check.sh"), []byte("x\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.Statuses[0].Transitions[0].Checks[0].Script = "./.git/hooks/check.sh"
+		}, "path_invalid", "statuses[0].transitions[0].checks[0].script"},
+		{"path_invalid git directory", func(t *testing.T, f *File) { f.Statuses[0].Instructions = "./.git" }, "path_invalid", "statuses[0].instructions"},
 		{"path_invalid check", func(t *testing.T, f *File) { f.Statuses[0].Transitions[0].Checks[0].Script = "" }, "path_invalid", "statuses[0].transitions[0].checks[0].script"},
 		{"file_missing", func(t *testing.T, f *File) { f.Statuses[0].Instructions = "./statuses/none.md" }, "file_missing", "statuses[0].instructions"},
 		{"file_not_regular directory", func(t *testing.T, f *File) { f.Statuses[0].Instructions = "./statuses" }, "file_not_regular", "statuses[0].instructions"},
@@ -139,6 +149,8 @@ func TestValidateCodes(t *testing.T) {
 		{"duration_invalid every", func(t *testing.T, f *File) { f.Statuses[2].Watch.Every = "soon" }, "duration_invalid", "statuses[2].watch.every"},
 		{"duration_invalid every missing", func(t *testing.T, f *File) { f.Statuses[2].Watch.Every = "" }, "duration_invalid", "statuses[2].watch.every"},
 		{"duration_invalid every zero", func(t *testing.T, f *File) { f.Statuses[2].Watch.Every = "0s" }, "duration_invalid", "statuses[2].watch.every"},
+		{"duration_invalid every below minimum", func(t *testing.T, f *File) { f.Statuses[2].Watch.Every = "500ms" }, "duration_invalid", "statuses[2].watch.every"},
+		{"timeout_too_long watch", func(t *testing.T, f *File) { f.Statuses[2].Watch.Timeout = "31m" }, "timeout_too_long", "statuses[2].watch.timeout"},
 		{"duration_invalid watch timeout", func(t *testing.T, f *File) { f.Statuses[2].Watch.Timeout = "-1s" }, "duration_invalid", "statuses[2].watch.timeout"},
 		{"duration_invalid check timeout", func(t *testing.T, f *File) { f.Statuses[0].Transitions[0].Checks[0].Timeout = "x" }, "duration_invalid", "statuses[0].transitions[0].checks[0].timeout"},
 		{"duration_invalid grace", func(t *testing.T, f *File) { f.Limits.UnavailableGrace = "-5m" }, "duration_invalid", "limits.unavailable_grace"},
@@ -150,6 +162,7 @@ func TestValidateCodes(t *testing.T) {
 		{"limit_invalid script_failures", func(t *testing.T, f *File) { n := -2; f.Limits.ScriptFailures = &n }, "limit_invalid", "limits.script_failures"},
 		{"secret_name_invalid", func(t *testing.T, f *File) { f.RequiresSecrets = []string{"GH_TOKEN", "1BAD"} }, "secret_name_invalid", "requires_secrets[1]"},
 		{"secret_name_invalid repeat", func(t *testing.T, f *File) { f.RequiresSecrets = []string{"GH_TOKEN", "GH_TOKEN"} }, "secret_name_invalid", "requires_secrets[1]"},
+		{"secret_name_invalid prefix", func(t *testing.T, f *File) { f.RequiresSecrets = []string{"TARIBOY_RESULT_FILE"} }, "secret_name_invalid", "requires_secrets[0]"},
 		{"env_name_invalid", func(t *testing.T, f *File) { f.Env = map[string]string{"bad-name": "x"} }, "env_name_invalid", "env.bad-name"},
 		{"env_name_invalid prefix", func(t *testing.T, f *File) { f.Env = map[string]string{"TARIBOY_X": "x"} }, "env_name_invalid", "env.TARIBOY_X"},
 	}

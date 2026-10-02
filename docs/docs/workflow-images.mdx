@@ -132,7 +132,7 @@ statuses:
 | `initial_status` | yes | ID of a non-terminal status. |
 | `statuses` | yes | The status graph; at least one status. |
 | `artifacts` | no | Declared artifact names with descriptions. |
-| `requires_secrets` | no | Names of secrets the scripts need; each matches `^[A-Za-z_][A-Za-z0-9_]*$` and is listed once. |
+| `requires_secrets` | no | Names of secrets the scripts need; each matches `^[A-Za-z_][A-Za-z0-9_]*$`, must not start with `TARIBOY_`, and is listed once. |
 | `env` | no | Non-secret environment defaults for scripts. A name matches `^[A-Za-z_][A-Za-z0-9_]*$` and must not start with `TARIBOY_`. |
 | `limits` | no | Workflow-wide defaults; see [Limits](#limits). |
 
@@ -152,8 +152,8 @@ Status IDs, outcome names (`on`), artifact names, and pool names match
 | `terminal` | terminal | `true`. A terminal status has no owner, transitions, watch, instructions, or limits. |
 | `cancelled` | terminal | `true` when the result counts as cancelled rather than done. Allowed only on a terminal status. |
 
-A watch has a required `script`, a required positive `every` duration, and an
-optional positive `timeout` that defaults to `60s`.
+A watch has a required `script`, a required `every` duration of at least `1s`,
+and an optional positive `timeout` (default `60s`, maximum `30m`).
 
 A check has a required `script`, an optional `run_as` (`queue`, the default, or
 `agent`), and an optional `timeout` (default `60s`, maximum `30m`).
@@ -163,6 +163,7 @@ A check has a required `script`, an optional `run_as` (`queue`, the default, or
 A path in `instructions`, `watch.script`, or `checks[].script`:
 
 - starts with `./`, is not absolute, and stays inside the source directory;
+- is not inside the top-level `.git` directory, which a build does not store;
 - names a regular file; a symlink anywhere on the path is rejected;
 - for a script, has an executable bit.
 
@@ -191,10 +192,10 @@ then code.
 | `schema_version_unsupported` | `schema_version` is not `1`. |
 | `name_invalid` | `name` does not match the workflow name rule. |
 | `version_invalid` | `workflow_version` is missing or not SemVer 2.0.0 without a `v`. |
-| `secret_name_invalid` | A `requires_secrets` name is malformed or repeated. |
+| `secret_name_invalid` | A `requires_secrets` name is malformed, starts with `TARIBOY_`, or is repeated. |
 | `env_name_invalid` | An `env` name is malformed or starts with `TARIBOY_`. |
 | `limit_invalid` | A count limit is zero or negative. |
-| `duration_invalid` | `unavailable_grace`, `watch.every`, `watch.timeout`, or a check `timeout` is not a valid duration of the required sign. |
+| `duration_invalid` | `unavailable_grace`, `watch.timeout`, or a check `timeout` is not a valid duration of the required sign, or `watch.every` is not a duration of at least `1s`. |
 | `artifact_name_invalid` | An artifact name does not match the identifier rule. |
 | `artifact_duplicate` | An artifact is declared twice. |
 | `artifact_unknown` | A `requires` entry names an undeclared artifact. |
@@ -219,7 +220,7 @@ then code.
 | `requires_not_allowed` | `requires` appears on a transition out of a `customer` or `script` status. |
 | `checks_not_allowed` | `checks` appear on a transition out of a `customer` or `script` status. |
 | `run_as_invalid` | A check's `run_as` is neither `queue` nor `agent`. |
-| `timeout_too_long` | A check `timeout` exceeds `30m`. |
+| `timeout_too_long` | A check `timeout` or `watch.timeout` exceeds `30m`. |
 | `path_invalid` | A path breaks the [path rule](#paths). |
 | `file_missing` | A named file does not exist or cannot be read. |
 | `file_not_regular` | A named path, or a component of it, is a symlink or not a regular file. |
@@ -267,7 +268,8 @@ two writes heals. See [State model](/docs/architecture/state-model).
 
 The daemon commands act on the selected daemon. `STORE/NAME` selects a
 workflow source in a registered Store; `--path` selects a `Workflowfile.yaml` or
-its directory. The two are mutually exclusive.
+its directory. A manifest file under any other name is refused. The two are
+mutually exclusive.
 
 ```bash
 tariboy workflow validate --path DIR
@@ -299,7 +301,7 @@ Errors:
 
 | Code | Meaning |
 | --- | --- |
-| `workflow_invalid` | The manifest failed validation or could not be parsed, or the source breaks a source limit. Validation failures carry the error list in `data.errors`. |
+| `workflow_invalid` | The manifest failed validation or could not be parsed, or the source breaks a source limit. Validation failures carry the error list in `error.details.errors`. |
 | `workflow_version_published` | The `workflow_version` is already published with different content. |
 | `not_found` | No workflow image has that name and tag or digest. |
 | `bad_source` | Both a Store selector and `--path` were given. |

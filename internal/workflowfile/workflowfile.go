@@ -87,7 +87,9 @@ type Check struct {
 }
 
 // Parse reads a Workflowfile.yaml, or the one inside a directory. It decodes
-// strictly and sets Dir. It does not validate the graph; call Validate.
+// strictly and sets Dir. It does not validate the graph; call Validate. A file
+// under any other name is refused, because the build stores the file named
+// Workflowfile.yaml and its bytes must be the ones parsed.
 func Parse(path string) (*File, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -95,6 +97,8 @@ func Parse(path string) (*File, error) {
 	}
 	if info.IsDir() {
 		path = filepath.Join(path, DefaultFilename)
+	} else if filepath.Base(path) != DefaultFilename {
+		return nil, fmt.Errorf("parse %s: the manifest must be named %s", path, DefaultFilename)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -136,7 +140,7 @@ func (o *Owner) UnmarshalYAML(node *yaml.Node) error {
 			if key.Value != OwnerPool || seen {
 				return fmt.Errorf("line %d: owner mapping allows only the key %q once, got %q", key.Line, OwnerPool, key.Value)
 			}
-			if val.Kind != yaml.ScalarNode || val.Value == "" {
+			if val.Kind != yaml.ScalarNode || val.Value == "" || val.ShortTag() == "!!null" {
 				return fmt.Errorf("line %d: owner pool must be a non-empty name", val.Line)
 			}
 			seen = true
