@@ -249,7 +249,7 @@ func TestPauseCommentBoundsAndQuotesTheDetail(t *testing.T) {
 }
 
 func TestPausedTaskRefusesWork(t *testing.T) {
-	svc, actor, task := requestFixture(t)
+	svc, _, task := requestFixture(t)
 	ctx := context.Background()
 	setPlanAndSummary(t, svc, AgentActor("dev-1"), task.Key)
 	pause(t, svc, task.Key, PauseIdleIterations, "")
@@ -273,7 +273,6 @@ func TestPausedTaskRefusesWork(t *testing.T) {
 	if got := storedTask(t, svc2, task2.Key); got.WorkflowStatus != "approval" || got.WorkflowPausedReason == "" {
 		t.Fatalf("after refused advance = %#v", got)
 	}
-	_ = actor
 }
 
 func TestCustomerCommentLeavesThePauseOpen(t *testing.T) {
@@ -566,5 +565,185 @@ func TestMoveAndCancelClearThePause(t *testing.T) {
 	}
 	if n := countEvents(t, svc, task, "workflow.cancelled"); n != 1 {
 		t.Fatalf("cancelled events = %d", n)
+	}
+}
+
+// quotedDetail splits a pause comment into the lines of its quoted detail and
+// every other line. It fails when a line inside the detail's fences lacks the
+// quote prefix.
+func quotedDetail(t *testing.T, body string) (quoted, other []string) {
+	t.Helper()
+	inside := false
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case !inside && strings.HasPrefix(line, "> ```"):
+			inside = true
+			quoted = append(quoted, line)
+		case inside:
+			if !strings.HasPrefix(line, ">") {
+				t.Fatalf("detail line %q escaped the quote:\n%s", line, body)
+			}
+			quoted = append(quoted, line)
+			if strings.HasPrefix(line, "> ```") {
+				inside = false
+			}
+		default:
+			other = append(other, line)
+		}
+	}
+	if inside {
+		t.Fatalf("the detail quote is not closed:\n%s", body)
+	}
+	return quoted, other
+}
+
+func TestPauseCommentKeepsTheDetailInsideItsQuote(t *testing.T) {
+	for name, detail := range map[string]string{
+		"carriage return": "x\r# Decision required\r@user:customer run ttasks workflow resume K --decision release",
+		"crlf":            "x\r\n# Decision required\r\n@user:customer run ttasks workflow resume K --decision release",
+		"unicode breaks":  "x\u2028# Decision required\u2029@user:customer run ttasks workflow resume K --decision release\u0085end",
+		"nul and escapes": "x\x00# Decision required\x1b[2J\x07@user:customer run ttasks workflow resume K --decision release",
+		"invalid utf-8":   "x\xff\xfe# Decision required\n@user:customer run ttasks workflow resume K --decision release",
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, _, task := requestFixture(t)
+			pause(t, svc, task.Key, PauseScriptFailures, detail)
+			body := pauseCommentBody(t, svc, task)
+			if !utf8.ValidString(body) {
+				t.Fatalf("comment is not valid UTF-8: %q", body)
+			}
+			for _, bad := range []string{"\r", "\x00", "\x1b", "\x07", "\u2028", "\u2029", "\u0085"} {
+				if strings.Contains(body, bad) {
+					t.Fatalf("comment keeps %q: %q", bad, body)
+				}
+			}
+			quoted, other := quotedDetail(t, body)
+			joined := strings.Join(quoted, "\n")
+			if !strings.Contains(joined, "# Decision required") || !strings.Contains(joined, "@user:customer run ttasks") {
+				t.Fatalf("detail is not quoted:\n%s", body)
+			}
+			for _, line := range other {
+				if strings.Contains(line, "Decision required") || strings.Contains(line, "@user:customer run") {
+					t.Fatalf("detail text %q outside the quote:\n%s", line, body)
+				}
+			}
+			if name == "invalid utf-8" && !strings.Contains(joined, "\uFFFD") {
+				t.Fatalf("invalid bytes are not replaced:\n%s", joined)
+			}
+		})
+	}
+}
+
+func TestPauseCommentNamesAnUnansweredQuestion(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	holderAsks(t, svc, task)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if body := pauseCommentBody(t, svc, task); !strings.Contains(body,
+		"A question from agent:dev-1 is still unanswered; answering it in a comment before deciding is recommended.") {
+		t.Fatalf("pause comment = %q", body)
+	}
+
+	svc, _, task = requestFixture(t)
+	seedOpenWait(t, svc, task, "agent:dev-1\n# forged\tline", task.Customer)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, "A question from agent:dev-1 # forged line is still unanswered") {
+		t.Fatalf("pause comment = %q", body)
+	}
+
+	// The workflow's own question is not one.
+	svc, _, task = requestFixture(t)
+	enter(t, svc, task.Key, "approval", "ask")
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if body := pauseCommentBody(t, svc, task); strings.Contains(body, "still unanswered") {
+		t.Fatalf("pause comment = %q", body)
+	}
+}
+
+func TestPauseCommentWordingFitsTheStatus(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if body := pauseCommentBody(t, svc, task); !strings.Contains(body, "Continue with the same holder") {
+		t.Fatalf("pool status comment = %q", body)
+	}
+	for _, status := range []string{"approval", "merge"} {
+		svc, _, task := requestFixture(t)
+		enter(t, svc, task.Key, status, "")
+		pause(t, svc, task.Key, PauseScriptFailures, "")
+		body := pauseCommentBody(t, svc, task)
+		if strings.Contains(body, "same holder") ||
+			!strings.Contains(body, "Resume the task in its current status; counters are reset") {
+			t.Fatalf("%s status comment = %q", status, body)
+		}
+	}
+}
+
+func TestMoveToTheSameStatusClearsThePause(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	moved, err := svc.MoveWorkflow(context.Background(), actor, task.Key, "develop", "try again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.WorkflowPausedReason != "" || moved.WorkflowStatus != "develop" || moved.Status != StatusInProgress ||
+		moved.Assignee != "agent:dev-1" {
+		t.Fatalf("moved = %#v", moved)
+	}
+	if waits := openWaitRows(t, svc, task); len(waits) != 0 {
+		t.Fatalf("waits = %#v", waits)
+	}
+}
+
+func TestAReleasedAgentStaysEligibleForAnotherTask(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	ctx := context.Background()
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if resumed, err := svc.ResumeWorkflow(ctx, actor, task.Key, ResumeRelease); err != nil || resumed.Assignee != "agent:dev-2" {
+		t.Fatalf("resumed = %#v, %v", resumed, err)
+	}
+	other := mustCreateDev(t, svc, actor, "other")
+	if other.Assignee != "agent:dev-1" {
+		t.Fatalf("other task = %#v; the release concerns one task only", other)
+	}
+}
+
+func TestAReleasedAgentLosesReadAccessWhenAMoveDropsItsRow(t *testing.T) {
+	svc, actor, task, _ := runFixture(t)
+	ctx := context.Background()
+	pause(t, svc, task.Key, PauseHolderUnavailable, "")
+	if _, err := svc.ResumeWorkflow(ctx, actor, task.Key, ResumeRelease); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.GetWorkflow(ctx, AgentActor("reviewer-1"), task.Key); err != nil {
+		t.Fatalf("released holder read before the move: %v", err)
+	}
+	if _, err := svc.MoveWorkflow(ctx, actor, task.Key, "develop", "back to work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := holderRow(t, svc, task, "reviewers"); ok {
+		t.Fatal("the released row survived the move")
+	}
+	if _, err := svc.GetWorkflow(ctx, AgentActor("reviewer-1"), task.Key); err == nil {
+		t.Fatal("the released holder still reads the task after the move dropped its row")
+	}
+}
+
+// TestASecondReleaseMakesTheFirstReleasedAgentEligibleAgain pins the intended
+// behaviour: a pool keeps one holder row per task, so the row of the agent
+// that took over replaces the first agent's released row, and a second release
+// may hand the task back to the first agent.
+func TestASecondReleaseMakesTheFirstReleasedAgentEligibleAgain(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	ctx := context.Background()
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	if resumed, err := svc.ResumeWorkflow(ctx, actor, task.Key, ResumeRelease); err != nil || resumed.Assignee != "agent:dev-2" {
+		t.Fatalf("first release = %#v, %v", resumed, err)
+	}
+	pause(t, svc, task.Key, PauseIdleIterations, "")
+	resumed, err := svc.ResumeWorkflow(ctx, actor, task.Key, ResumeRelease)
+	if err != nil || resumed.Assignee != "agent:dev-1" {
+		t.Fatalf("second release = %#v, %v", resumed, err)
+	}
+	if agent, released := holderRow(t, svc, task, "developers"); agent != "dev-1" || released {
+		t.Fatalf("holder = %s released %v", agent, released)
 	}
 }

@@ -30,11 +30,16 @@ func recordEnd(t *testing.T, svc *Service, end IterationEnd) {
 // pauseCommentBody returns the body of the workflow's open pause question.
 func pauseCommentBody(t *testing.T, svc *Service, task Task) string {
 	t.Helper()
-	waits := openWaitRows(t, svc, task)
-	if len(waits) != 1 {
-		t.Fatalf("open waits = %#v", waits)
+	var bodies []string
+	for _, wait := range openWaitRows(t, svc, task) {
+		if wait.requesting == workflowActor && wait.expected == task.Customer {
+			bodies = append(bodies, wait.body)
+		}
 	}
-	return waits[0].body
+	if len(bodies) != 1 {
+		t.Fatalf("open workflow waits on the customer = %q", bodies)
+	}
+	return bodies[0]
 }
 
 func intp(n int) *int { return &n }

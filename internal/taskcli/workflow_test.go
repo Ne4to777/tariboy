@@ -403,7 +403,7 @@ func TestWorkflowCommandsAreDocumentedInHelp(t *testing.T) {
 		{[]string{"workflow", "runs"}, []string{"KEY", "newest first"}},
 		{[]string{"workflow", "log"}, []string{"KEY", "RUN", "--max-bytes", "[redacted]"}},
 		{[]string{"workflow", "move"}, []string{"--to", "--reason", "operator-only"}},
-		{[]string{"workflow", "resume"}, []string{"--decision", "continue", "release", "ttasks cancel", "operator-only"}},
+		{[]string{"workflow", "resume"}, []string{"--decision", "continue", "resumes the task in its current status with the status counters reset", "release", "ttasks cancel", "operator-only"}},
 		{[]string{"cancel"}, []string{"operator-only"}},
 		{[]string{"queue", "workflow", "set"}, []string{"operator-only", "--ref", "--revision"}},
 		{[]string{"queue", "workflow", "get"}, []string{"operator-only"}},

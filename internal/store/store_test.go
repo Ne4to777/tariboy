@@ -173,6 +173,15 @@ func holderMigrationFixture(t *testing.T, first string) *Store {
 	return s
 }
 
+func TestHolderReleasedMigrationDefaultsToHeld(t *testing.T) {
+	requireColumn(t, open(t).DB, "task_workflow_holders", "released")
+	s := holderMigrationFixture(t, "0060_task_workflow_holder_released.sql")
+	var released int
+	if err := s.DB.QueryRow(`SELECT released FROM task_workflow_holders WHERE task_id = 1`).Scan(&released); err != nil || released != 0 {
+		t.Fatalf("released = %d, %v; want 0", released, err)
+	}
+}
+
 func TestHolderUnavailableSinceMigrationDefaultsToEmpty(t *testing.T) {
 	requireColumn(t, open(t).DB, "task_workflow_holders", "unavailable_since")
 	s := holderMigrationFixture(t, "0061_task_workflow_holder_unavailable.sql")

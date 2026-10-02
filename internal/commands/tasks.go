@@ -454,7 +454,7 @@ func taskHTTPArgs(path string) []registry.Arg {
 	case "tasks.workflow.move":
 		return []registry.Arg{{Name: "to", Required: true, Help: "Target status id"}, {Name: "reason", Required: true, Help: "Why the task is moved"}}
 	case "tasks.workflow.resume":
-		return []registry.Arg{{Name: "decision", Required: true, Help: "continue keeps the holder; release dispatches the task to another pool member", Schema: map[string]any{
+		return []registry.Arg{{Name: "decision", Required: true, Help: "continue resumes the task in its current status with counters reset; release dispatches the task to another pool member", Schema: map[string]any{
 			"type": "string", "enum": []string{tasks.ResumeContinue, tasks.ResumeRelease},
 		}}}
 	case "tasks.queue.workflow.set":

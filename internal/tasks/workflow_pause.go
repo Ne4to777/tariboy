@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,6 +56,18 @@ func (s *Service) pauseTx(ctx context.Context, tx *sql.Tx, task *Task, manifest 
 	if err := stopVisitScriptsTx(ctx, tx, *task, "the task was paused: "+reason, now); err != nil {
 		return err
 	}
+	// The customer has one open wait per task: the pause question takes over
+	// a question someone else asked, so the comment names its asker.
+	var asker string
+	err := tx.QueryRowContext(ctx, `
+		SELECT requesting_principal FROM task_waiting_for
+		WHERE task_id = ? AND expected_principal = ? AND resolved_at = '' AND requesting_principal <> ?`,
+		task.ID, task.Customer, workflowActor).Scan(&asker)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	status, known := currentStatus(manifest, task.WorkflowStatus)
+	pool := known && !status.Terminal && status.Owner.Kind == workflowfile.OwnerPool
 	task.WorkflowPausedReason, task.Status = reason, StatusWaitCustomer
 	task.Revision++
 	task.UpdatedAt = now
@@ -68,11 +81,11 @@ func (s *Service) pauseTx(ctx context.Context, tx *sql.Tx, task *Task, manifest 
 	}, now); err != nil {
 		return err
 	}
-	if err := s.askCustomerTx(ctx, tx, *task, pauseComment(*task, reason, detail), now); err != nil {
+	if err := s.askCustomerTx(ctx, tx, *task, pauseComment(*task, reason, detail, asker, pool), now); err != nil {
 		return err
 	}
 	owner := ""
-	if status, ok := currentStatus(manifest, task.WorkflowStatus); ok && !status.Terminal {
+	if known && !status.Terminal {
 		owner = status.Owner.Kind
 	}
 	task.WaitingOn = ""
@@ -81,21 +94,49 @@ func (s *Service) pauseTx(ctx context.Context, tx *sql.Tx, task *Task, manifest 
 }
 
 // pauseComment is the workflow's question to the customer on a paused task.
-// detail is untrusted: it is bounded and quoted as text.
-func pauseComment(task Task, reason, detail string) string {
+// detail is untrusted: it is cleaned, bounded, and quoted as text. asker is
+// who asked the customer an open question the pause wait took over, or "";
+// pool says whether the status is owned by an agent pool.
+func pauseComment(task Task, reason, detail, asker string, pool bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "@%s The workflow paused this task in status %q and waits for your decision.\n\n", task.Customer, task.WorkflowStatus)
 	fmt.Fprintf(&b, "Reason (`%s`): %s.\n", reason, pauseReasonText(reason))
-	if detail = strings.TrimSpace(cutRunes(detail, maxPauseDetailBytes)); detail != "" {
+	if detail = strings.TrimSpace(cutRunes(cleanPauseDetail(detail), maxPauseDetailBytes)); detail != "" {
 		b.WriteString("\nDetails:\n\n")
 		b.WriteString(quoteBlock(detail))
 	}
+	if asker = strings.Join(strings.Fields(cleanPauseDetail(asker)), " "); asker != "" {
+		fmt.Fprintf(&b, "\nA question from %s is still unanswered; answering it in a comment before deciding is recommended.\n", asker)
+	}
+	resume := "Resume the task in its current status; counters are reset"
+	if pool {
+		resume = "Continue with the same holder; counters are reset"
+	}
 	fmt.Fprintf(&b, "\nDecide with one of:\n\n"+
-		"- Continue with the same holder: `ttasks workflow resume %[1]s --decision continue`\n"+
+		"- %[2]s: `ttasks workflow resume %[1]s --decision continue`\n"+
 		"- Release the holder and dispatch the task again (pool statuses only): `ttasks workflow resume %[1]s --decision release`\n"+
 		"- Cancel the task: `ttasks cancel %[1]s`\n\n"+
-		"A plain reply does not resume the task.", task.Key)
+		"A plain reply does not resume the task.", task.Key, resume)
 	return b.String()
+}
+
+// cleanPauseDetail makes untrusted text safe to quote line by line: CRLF and
+// CR become LF, every other C0 control but tab and LF, and the Unicode line
+// breaks U+0085, U+2028, and U+2029, become a space, and invalid UTF-8
+// becomes U+FFFD. Every line break left is an LF, which quoteBlock prefixes.
+func cleanPauseDetail(text string) string {
+	text = strings.ToValidUTF8(text, "\uFFFD")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20 || r == '\u0085' || r == '\u2028' || r == '\u2029':
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 // quoteBlock renders text as a Markdown block quote holding a fenced block
