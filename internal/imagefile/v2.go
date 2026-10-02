@@ -48,12 +48,16 @@ type V2 struct {
 }
 
 func sourcePath(path string) (string, error) {
+	return sourcePathFor(path, DefaultFilename)
+}
+
+func sourcePathFor(path, filename string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		path = filepath.Join(path, DefaultFilename)
+		path = filepath.Join(path, filename)
 	}
 	return path, nil
 }
