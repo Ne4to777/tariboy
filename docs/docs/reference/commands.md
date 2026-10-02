@@ -240,7 +240,8 @@ routes as the customer.
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the
-status's outcomes and the `ttasks advance` form to use. `ttasks show` prints
+status's outcomes and the `ttasks advance` form to use. An outcome that declares
+checks is refused with `checks_unavailable` because scripts do not run yet. `ttasks show` prints
 `status` (the workflow status), `category`, and `waiting_on`.
 
 The following administration roots are operator-only and are documented by

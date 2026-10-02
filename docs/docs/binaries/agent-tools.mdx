@@ -40,6 +40,13 @@ daemon socket as the customer actor. Images that enable `plugins: [{name:
 tasks}]` also get the bare `tasks` legacy compatibility shim. See [Native
 Tasks](/docs/tasks) for the command flow.
 
+On a task that follows a queue's [workflow](/docs/task-workflows) the daemon
+assigns the work, and `ttasks done`, `ttasks update --status`, and
+`ttasks ready --claim` do not apply. The agent reads `ttasks workflow get KEY`,
+sets declared artifacts with `ttasks artifacts set|ls|show`, and leaves its
+status with `ttasks advance KEY --outcome NAME`. `ttasks workflow move`,
+`ttasks cancel`, and `ttasks queue workflow` are operator-only.
+
 `tariboyd` normally selects and persists one sticky assigned task per enabled
 agent, then stamps its key and top-level root onto the AI-proxy lease before the
 harness starts. If an iteration starts without a task, the agent may create or

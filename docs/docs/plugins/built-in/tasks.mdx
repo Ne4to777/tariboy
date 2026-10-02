@@ -47,6 +47,28 @@ relations, symmetric related links, and explicit completion despite active
 descendants. Access follows task assignment, authorship rules, queue ownership,
 group membership, ancestry, and scoped answer requests.
 
+## Workflow tasks
+
+A task in a queue bound to a [workflow image](/docs/task-workflows) follows the
+image's statuses. The daemon assigns it, so `ttasks done`, `ttasks update
+--status`, `ttasks assign`, and `ttasks ready --claim` are refused with
+`workflow_managed`. An agent drives such a task with:
+
+```bash
+ttasks workflow get OPS-12
+ttasks artifacts set OPS-12 plan --file plan.md
+ttasks artifacts ls OPS-12
+ttasks artifacts show OPS-12 plan
+ttasks advance OPS-12 --outcome planned --message "Plan ready"
+```
+
+`workflow get` lists the outcomes, the artifacts each still needs, and the
+checks it declares. An agent may set artifacts and advance only while it holds
+the task in a pool status. `ttasks workflow move`, `ttasks cancel`, and
+`ttasks queue workflow` are operator-only and unavailable to an agent. Scripts
+do not run yet, so an outcome that declares checks is refused with
+`checks_unavailable`.
+
 ## Durable state and notifications
 
 Queues, nested tasks, comments, priorities, dependencies, and answer waits are

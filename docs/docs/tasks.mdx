@@ -15,9 +15,12 @@ absent and records a `task.queue_created` event by `system:tariboyd`; an
 existing `TASK` queue, whether created by hand or by compose, is left
 unchanged.
 
-Every task follows the flexible model described below. Binding a queue to a
-workflow is being rebuilt on [workflow images](/docs/workflow-images); see
-[Task workflows](/docs/task-workflows) for what remains.
+A queue with no workflow holds flexible tasks, the model described below. A
+queue can instead be bound to a [workflow image](/docs/workflow-images): a task
+created there pins that version and follows its statuses, each owned by an agent
+pool, the customer, or a script. See [Task workflows](/docs/task-workflows).
+Every task has a `category` field, which is one of the five statuses below and
+equals `status` for a flexible task.
 
 ## Work model
 
@@ -68,6 +71,16 @@ Flexible tasks use `open`, `in_progress`, `wait_customer`, `done`, or
 the same comment transaction moves a non-terminal task to `wait_customer`.
 The last customer answer returns it to `in_progress`, unless an operator made an
 intervening status change. Questions for another principal do not change status.
+
+A task that follows a workflow reports the workflow status (`plan`, `review`, ...)
+as `status` and one of those five values as `category`, which the daemon derives
+from the status owner; `waiting_on` says whether a `wait_customer` task waits on
+the `customer` or on a `script`. The daemon assigns the task, so `ttasks done`,
+`ttasks update --status`, `ttasks assign`, and `ttasks ready --claim` are
+refused with `workflow_managed`. The agent or customer that owns the status
+leaves it with `ttasks advance`. Status filters, blocking relations, and the
+active-descendants check use the category for every task. See
+[Task workflows](/docs/task-workflows).
 
 ## Filing a task into a queue
 
@@ -326,6 +339,18 @@ ttasks block TEST-fkt3 --by TEST-2xwv
 ttasks relate TEST-fkt3 TEST-hb4k
 ttasks done TEST-fkt3
 ```
+
+On a task in a queue bound to a workflow, use the workflow commands instead of
+`done`, `update --status`, and `ready --claim`:
+
+```bash
+ttasks workflow get TEST-fkt3
+ttasks artifacts set TEST-fkt3 plan --file plan.md
+ttasks advance TEST-fkt3 --outcome planned --message "Plan ready"
+```
+
+`workflow move`, `cancel`, and `queue workflow` are operator-only. See
+[Task workflows](/docs/task-workflows) for the full flow.
 
 Create, comment, and relation actions accept stable idempotency keys internally
 so transport retries return the original result without duplicating a task,

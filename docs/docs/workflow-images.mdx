@@ -12,14 +12,17 @@ The manifest declares a status graph: who owns each status, which outcomes lead
 to which next status, and which artifacts and checks a transition needs.
 
 :::note
-This release builds and stores workflow images. Queues do not execute them yet.
-Building, validating, storing, listing, inspecting, and removing a workflow
-image is all that works. The existing
-[Task workflows](/docs/task-workflows) engine is separate and unchanged.
+A queue can bind a workflow image, and its tasks then follow the image's
+statuses; see [Task workflows](/docs/task-workflows). Scripts are not executed
+yet (a transition with `checks` is refused and a script-owned status waits for
+an operator), and queue secrets, pause and resume, the Goal prompt block, the
+Desktop UI, and Compose binding are still to come.
 :::
 
-Fields such as `owner`, `watch`, `checks`, `requires_secrets`, `env`, and
-`limits` are manifest schema: they are validated and stored with the image.
+Fields such as `watch`, `checks`, `requires_secrets`, `env`, and `limits` are
+manifest schema: they are validated and stored with the image, but nothing
+runs or enforces them yet. `owner`, `transitions`, `requires`, and `artifacts`
+drive queue tasks today.
 
 ## Source layout
 
@@ -177,8 +180,7 @@ A path in `instructions`, `watch.script`, or `checks[].script`:
 | `unavailable_grace` | `5m` | Non-negative duration such as `5m`; `0` is allowed. |
 
 A status `limits` block overrides the workflow-wide block, which overrides the
-defaults. The limits are validated and stored; nothing enforces them until
-queues execute workflow images.
+defaults. The limits are validated and stored; nothing enforces them yet.
 
 ### Validation
 
@@ -303,6 +305,12 @@ tariboy workflow version update major|minor|patch [--path DIR]
 | `workflow inspect NAME [TAG]` | `GET /api/workflow-images/{name}/{tag}` | The stored manifest. `TAG` is a tag or a full digest and defaults to `latest`. |
 | `workflow rm NAME TAG` | `DELETE /api/workflow-images/{name}/{tag}` | `name`, `tag`, `removed`, and `content_removed`. Removing the last tag that names a digest also deletes its content and database row. |
 
+Removing the last tag that names a digest is refused with `workflow_in_use`
+(HTTP 409) while a queue is bound to that digest or a task that is not `done`
+or `cancelled` is pinned to it. Removing one of several tags is not guarded,
+because the content stays and tasks keep running from it. Unbind the queue
+(`ttasks queue workflow clear`) and finish or cancel its tasks first.
+
 `workflow version get` and `workflow version update` read and rewrite the local
 `workflow_version`, default to the current directory, and need no daemon.
 `update` increments the SemVer component, resets the lower ones, removes any
@@ -314,11 +322,22 @@ Errors:
 | --- | --- |
 | `workflow_invalid` | The manifest failed validation or could not be parsed, or the source breaks a source limit. Validation failures carry the error list in `error.details.errors`. |
 | `workflow_version_published` | The `workflow_version` is already published with different content. |
+| `workflow_in_use` | `workflow rm` would delete a digest that a queue binds or an unfinished task pins. |
 | `not_found` | No workflow image has that name and tag or digest. |
 | `bad_source` | Both a Store selector and `--path` were given. |
 | `missing_path` | Neither a Store selector nor `--path` was given. |
 
+## Using an image
+
+A published image is bound to a queue with `ttasks queue workflow set`; tasks
+created in that queue pin the version and follow its statuses. See
+[Task workflows](/docs/task-workflows) for binding, dispatch, artifacts,
+outcomes, and the operator commands.
+
 ## Not yet available
 
-Queues cannot bind or run a workflow image in this release, and there are no
-task commands for them. Those arrive in later releases.
+Still to come: running scripts (a transition that declares `checks` is refused
+with `checks_unavailable`, and a script-owned status waits for an operator
+move), queue secrets for `requires_secrets`, pause and resume and the stall
+limits, the workflow guidance in the agent's Goal prompt, the Desktop workflow
+UI, and binding a workflow image from Compose.

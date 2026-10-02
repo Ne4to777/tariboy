@@ -1,37 +1,405 @@
 ---
 title: Task workflows
-description: Queue workflows are being rebuilt on workflow images; queue triggers and agent pools remain.
+description: Bind a workflow image to a queue so its tasks move through statuses with one owner each; agent pools, dispatch, artifacts, outcomes, operator moves, and queue triggers.
 sidebar:
   label: Task workflows
   icon: git-branch
 ---
 
-Queue workflows are being rebuilt on [workflow images](/docs/workflow-images).
-The earlier task workflow engine, with its pinned workflow versions,
-requirements, leased assignments, work packets, workflow questions, and
-observations, has been removed. A task no longer carries
-`workflow_version_id`, `workflow_version`, `workflow_status`, or
-`workflow_revision`, and Compose rejects a non-empty `workflows:` map and a
-`task_queues.<prefix>.workflow` value.
+A queue can follow a [workflow image](/docs/workflow-images). Tasks created in
+that queue then move through the image's statuses instead of the free-form
+`open`, `in_progress`, `wait_customer`, `done`, and `cancelled` lifecycle. Each
+status has exactly one owner: a pool of agents, the customer, or a script. The
+daemon assigns pool work, stores artifacts, and applies the transition an owner
+asks for.
 
-Workflow images can already be built and stored: `tariboy workflow validate`,
-`build`, `ls`, `inspect`, `rm`, and `version` work today. See
-[Workflow images](/docs/workflow-images) for the manifest and the commands. A
-queue cannot yet be bound to an image, so every task is an ordinary
-[Native Task](/docs/tasks) with a free-form status.
+:::note
+This page documents what works today. Scripts are not executed yet, so a
+transition that declares `checks` is refused and a status owned by a script
+waits for an operator. There are no queue secrets, no pause and resume, and no
+Desktop workflow UI. See [Not yet available](#not-yet-available).
+:::
 
-Two parts of the earlier design remain and are unchanged: agent pools and queue
-triggers. Both are operator-only.
+## How it fits together
+
+1. A **workflow image** is built and published with `tariboy workflow build`.
+   See [Workflow images](/docs/workflow-images).
+2. An operator **binds** the image to a queue and gives every pool the image
+   names at least one agent.
+3. A task created in the bound queue **pins** the image version (its digest) in
+   the transaction that creates it and enters the image's `initial_status`.
+   Moving a tag later changes nothing for existing tasks, and a task is never
+   migrated to another version.
+4. Every non-terminal **status** has one owner. The owner leaves the status by
+   naming an **outcome**, which the status declares as a **transition** to the
+   next status.
+
+A task in a queue with no binding is a flexible task and behaves as described in
+[Native Tasks](/docs/tasks). Binding a queue never changes tasks that already
+exist; unbinding it never changes the tasks that follow the workflow.
+
+### Example
+
+The examples on this page use the `development` image from
+[Workflow images](/docs/workflow-images), bound to a queue `DEV` whose pool
+`developers` holds the agents `worker` and `reviewer`:
+
+| Status | Owner | Outcome | Next status | Needs |
+| --- | --- | --- | --- | --- |
+| `plan` | pool `developers` | `planned` | `approval` | artifact `plan` |
+| `approval` | customer | `approved` | `implement` | |
+| | | `changes_requested` | `plan` | |
+| `implement` | pool `developers` | `ready` | `review` | artifact `pull_request` and a check |
+| `review` | script | `merged` | `complete` | |
+| | | `changes_requested` | `implement` | |
+| `complete` | pool `developers` | `cleaned` | `done` | a check |
+| `done` | terminal | | | |
+
+Two things in this table cannot happen yet. The transitions `ready` and
+`cleaned` declare `checks`, and checks run scripts, so `ttasks advance` refuses
+them with `checks_unavailable` before it writes anything. And `review` is owned
+by a script whose watch script never runs, so a task entering `review` stays
+there until an operator moves it with
+[`ttasks workflow move`](#operator-move-and-cancel), for example to `complete`
+(the `merged` outcome) or back to `implement`. The `plan`, `approval`, and
+`changes_requested` transitions work fully.
+
+## Status and category
+
+A workflow task has two state fields. `status` is the workflow status
+(`plan`, `approval`, ...). `category` is one of the five familiar values, and it
+is what filters, blocking relations, and the active-descendants check use.
+Nobody sets a category; the daemon derives it from the status owner:
+
+| State | `category` | `assignee` | `waiting_on` |
+| --- | --- | --- | --- |
+| Pool status, an agent holds the task | `in_progress` | the holder | |
+| Pool status, no eligible agent | `open` | empty | |
+| Pool status, the holder asked the customer a question | `wait_customer` | the holder | `customer` |
+| Customer status | `wait_customer`, with an open customer wait | unchanged | `customer` |
+| Script status | `wait_customer`, with no customer wait | empty | `script` |
+| Terminal status | `done`, or `cancelled` when the status declares `cancelled: true` | unchanged | |
+
+`waiting_on` is non-empty only while the category is `wait_customer`. It takes
+the values `customer` and `script` today; `pause` is reserved for a later
+release and never appears. A flexible task has `category` equal to `status` and
+an empty `waiting_on`.
+
+In the task JSON a workflow task also carries `workflow_digest`,
+`workflow_name`, `workflow_version`, and `workflow_paused_reason`. The last is
+always empty today.
+
+Storage keeps the category in the existing `tasks.status` column and the
+workflow status in `tasks.workflow_status`; see
+[State model](/docs/architecture/state-model).
+
+On a workflow task `ttasks done`, `ttasks update --status`, `ttasks assign`
+(and `--assignee` on update or create), and `ttasks ready --claim` are refused
+with `workflow_managed`. The error lists the current status and its outcomes.
+Re-sending the current status or assignee is accepted and changes nothing. The
+daemon assigns work; there is no claim command for a workflow task.
+
+## Binding a queue
+
+Binding, unbinding, and reading a binding are operator-only (the host daemon
+acting as the customer), as are pools and triggers.
+
+```bash
+ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key pool-1
+ttasks queue workflow set DEV development:latest --revision 0
+ttasks queue workflow get DEV
+ttasks queue workflow clear DEV --revision 1
+```
+
+The reference is `NAME`, `NAME:TAG`, or `NAME:<digest>` and is resolved to a
+digest when the binding is set; `NAME` means `latest`. To move a queue to a
+newer version, run `queue workflow set` again with the current binding
+revision: the task already created keeps its old version, and only tasks
+created afterwards pin the new one. `--revision` is `0` for a first binding and
+the revision shown by `queue workflow get` for a rebind or a `clear`. Binding
+the digest that is already bound changes nothing and keeps the revision.
+
+| Error | Meaning |
+| --- | --- |
+| `workflow_pool_empty` | A pool the image names is missing or has no agents. The error lists the pools. Emptying a pool that the bound image uses is refused with the same code. |
+| `revision_conflict` | The revision is not the current one; read the binding again and retry. |
+| `not_found` | No published image matches the reference. |
+| `invalid_workflow_ref` | The reference is malformed. |
+| `queue_workflow_not_found` | `get` or `clear` on a queue with no binding. |
+| `queue_not_found` | The queue does not exist. |
+| `workflow_unavailable` | The daemon has no workflow image store. |
+| `forbidden` | The caller is not the daemon customer; agents cannot administer workflows. |
+
+A binding emits `queue.workflow_bound` and `queue.workflow_cleared` queue
+events carrying the image name, version, and digest.
+
+Removing a workflow image that a queue binds, or that a task not yet `done` or
+`cancelled` pins, is refused with `workflow_in_use`; see
+[Workflow images](/docs/workflow-images).
+
+### Creating a task in a bound queue
+
+A task created in a bound queue, as a root or as a child of a task in that
+queue, pins the queue's current digest, enters `initial_status`, and is assigned
+or left `open` as described under [Dispatch](#dispatch). The creation is refused
+with `workflow_managed` when it names an explicit assignee, because the workflow
+assigns. A task cannot enter a bound queue by import, and a tree that contains a
+workflow task cannot be exported; both are refused with `workflow_managed`.
+
+## Dispatch
+
+Entering a pool status assigns a **holder** in the same transaction. The
+holder is recorded per task and pool, `assignee` becomes `agent:<name>`, and the
+usual assignment notification is sent. From there Goal wakes the agent as for
+any assigned task.
+
+1. **The sticky rule.** If the task already had a holder for this pool and that
+   agent is still a member, the same agent is assigned again, whatever it is
+   doing. It keeps its worktree and context across a loop such as `plan` to
+   `approval` and back to `plan`.
+2. **Otherwise an eligible member.** A new holder must be enabled, have its
+   loop and Goal enabled, not be halted, have no current Goal, and have no
+   other assigned `open` or `in_progress` task that Goal could select (a task
+   that is manually blocked, or blocked by an unfinished task, does not count).
+   Ties go to the member dispatched least recently in this queue, then to pool
+   order.
+3. **Nobody eligible.** The task waits in category `open` with an empty
+   assignee. The daemon retries when a task changes, when an agent finishes an
+   iteration, and every minute. Pool membership is read at dispatch time; there
+   is no frozen snapshot. A task that is manually blocked, or has an unfinished
+   blocker, is not assigned until it is free.
+
+One pass assigns at most one task to each agent, in priority and creation order,
+so a single free agent does not collect every waiting task.
+
+Entering a customer status keeps the assignee, sets the category to
+`wait_customer`, and opens a wait for the customer through a comment by
+`system:workflow` that mentions the customer, lists the outcomes, and includes
+the status instructions. The customer gets the usual question notification.
+Entering a script status sets `wait_customer`, clears the assignee, and opens no
+customer wait. Entering a terminal status sets `done` (or `cancelled`) and
+records `completed_at`.
+
+## Artifacts
+
+An image declares artifact names. A task stores text under those names; a
+transition can require some of them.
+
+```bash
+ttasks artifacts set DEV-ab12 plan --file plan.md
+ttasks artifacts set DEV-ab12 pull_request https://github.com/org/repo/pull/42
+ttasks artifacts ls DEV-ab12
+ttasks artifacts show DEV-ab12 plan
+```
+
+- Only declared names are accepted (`artifact_unknown`, with the declared
+  names in the error). A value is non-empty UTF-8 text up to 64 KiB
+  (`invalid_artifact`, `artifact_too_large`). It is stored as given, including
+  a trailing newline. Without `VALUE` or `--file` the CLI reads stdin.
+- The holder of a pool status may set artifacts while it holds the task. The
+  customer and the operator may set one on any task that is not finished.
+  Anyone else is refused with `not_holder`, and a finished task with
+  `workflow_closed`.
+- Every write is a new row with its author and time. The newest is current;
+  `artifacts show` prints it and the earlier values, newest first.
+- An `artifact.set` event records the name, author, and size, never the value.
+- The daemon checks that a required artifact has a value. It never parses one.
+
+## Advancing a task
+
+`ttasks advance KEY --outcome NAME [--message TEXT]` leaves the current status
+by one of its outcomes. An agent may advance a task it holds in a pool status;
+the customer or operator may advance a task in a customer status. Nobody can
+advance a script or terminal status.
+
+```bash
+ttasks artifacts set DEV-ab12 plan --file plan.md
+ttasks advance DEV-ab12 --outcome planned --message "Plan ready for review"
+# as the customer, at the approval status
+ttasks advance DEV-ab12 --outcome approved
+```
+
+A transition without checks applies in the request's own transaction: the
+request is stored as `applied`, the visit of the old status is closed with the
+outcome and message, the new status is entered, and `workflow.transition_requested`
+and `workflow.transitioned` events are recorded together. The command prints
+the request. A message is limited to 4 KiB.
+
+The daemon applies these refusals in this order, so the first one that fits is
+the one reported:
+
+| Order | Code | HTTP | Meaning |
+| --- | --- | --- | --- |
+| 1 | `invalid_message` | 400 | The message exceeds 4 KiB. |
+| 2 | `not_found` | 404 | The task is unknown or not visible to the caller. |
+| 3 | `workflow_not_bound` | 409 | The task has no workflow (a flexible task). |
+| 4 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
+| 5 | `workflow_paused` | 409 | The task is paused. Reserved; it does not occur today. |
+| 6 | `status_unknown` | 409 | The pinned image does not declare the task's status. |
+| 7 | `not_holder` | 403 | The caller does not own the status: an agent that is not the holder, an agent in a customer status, or anyone in a script status. |
+| 8 | `outcome_unknown` | 400 | The status does not declare the outcome; the error lists the outcomes. |
+| 9 | `artifact_missing` | 409 | A required artifact has no value; the error lists the missing names. |
+| 10 | `transition_pending` | 409 | Another request of the task is still pending. |
+| 11 | `checks_unavailable` | 409 | The transition declares `checks`, which cannot run yet. Nothing is written. |
+| 12 | `revision_conflict` | 409 | The task changed while the request was running. Retry. |
+
+## Operator move and cancel
+
+The operator, and the customer, can override a workflow. Both commands are
+operator-only: an agent receives `forbidden`.
+
+```bash
+ttasks workflow move DEV-ab12 --to implement --reason 'review found a regression'
+ttasks cancel DEV-ab12
+```
+
+`workflow move` moves the task to any status of its pinned image regardless of
+outcomes, requirements, and checks. It needs `--to` and a non-empty `--reason`
+(`reason_required`); an unknown status fails with `status_unknown` and lists the
+declared statuses. The move closes the current visit, enters the target as an
+ordinary status entry (so it dispatches or opens a customer wait just as an
+advance would), and records `workflow.moved` with the reason. A move out of a
+terminal status reopens the task. Moving to a script-owned status leaves the
+task waiting, and the move is how a task leaves one today: from the example,
+`ttasks workflow move DEV-ab12 --to complete --reason 'PR merged'`.
+
+`cancel` closes any unfinished task as `cancelled` (`workflow_closed` when it is
+already closed), cancels a pending request, and resolves the workflow's own
+wait and the holder's questions. The workflow status stays as the record of
+where the task stopped. It records `workflow.cancelled`.
+
+## Questions on a workflow task
+
+Agents still use `ttasks ask` and `ttasks comment`.
+
+- **In a pool status** the holder's question to the customer moves the category
+  to `wait_customer` with `waiting_on: customer`, as for a flexible task, and
+  the customer's answer returns it to `in_progress`. Leaving the status by any
+  route, an advance, a move, or a cancel, resolves the holder's open questions
+  to the customer as moot.
+- **In a customer status** the task already waits on the customer through the
+  workflow's own wait. A comment that mentions the customer does not add a
+  second wait, and a comment does not answer the workflow's question: only an
+  outcome does. Leaving the status by any route resolves that wait.
+- **In a script status** a comment does not change the category.
+
+## The task view
+
+`ttasks workflow get KEY` (`--json` for the whole view) shows where a task is
+and what it may do next. Both agents and the operator can read it.
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `version`, `digest` | The pinned image. |
+| `status`, `category`, `waiting_on` | As described in [Status and category](#status-and-category). |
+| `owner` | `pool:<name>`, `customer`, `script`, or empty for a finished task. |
+| `holder` | The assigned `agent:<name>` of a pool status. |
+| `instructions_path` | The status instruction file inside the image. |
+| `outcomes` | Each outcome with `to`, `requires`, `missing` (required artifacts with no value), and `checks` (script paths). A finished task has none. |
+| `artifacts` | The current value of each artifact. |
+| `visits` | Every stay in a status with who entered it, when it was left, and by which outcome and message. |
+| `last_request` | The latest transition request and its state. |
+
+## REST routes
+
+Responses use the daemon's success envelope `{"ok":true,"result":...}`; the
+generated OpenAPI document is the authority for request and response schemas.
+
+| Method | Route | Purpose | Callers |
+| --- | --- | --- | --- |
+| `PUT` | `/api/task-queues/{queue}/workflow` | bind an image (`ref`, `revision`) | operator |
+| `GET` | `/api/task-queues/{queue}/workflow` | read the binding | operator |
+| `DELETE` | `/api/task-queues/{queue}/workflow` | unbind (`revision`) | operator |
+| `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`) | agent, operator |
+| `PUT` | `/api/tasks/{key}/artifacts/{name}` | set an artifact (`value`) | agent, operator |
+| `GET` | `/api/tasks/{key}/artifacts` | list current artifacts | agent, operator |
+| `GET` | `/api/tasks/{key}/artifacts/{name}` | read an artifact and its history | agent, operator |
+| `GET` | `/api/tasks/{key}/workflow` | the task view | agent, operator |
+| `POST` | `/api/tasks/{key}/workflow/move` | move to a status (`to`, `reason`) | operator |
+| `POST` | `/api/tasks/{key}/cancel` | cancel | operator |
+
+Agents reach the same operations through `advance`, `artifact_set`,
+`artifact_ls`, `artifact_show`, and `workflow_get` over their identity-bound
+socket.
+
+## Stored state
+
+Migration `0055` adds the following. See
+[State model](/docs/architecture/state-model).
+
+| Table or column | Holds |
+| --- | --- |
+| `tasks.workflow_digest` | The pinned image digest; `NULL` for a flexible task. |
+| `tasks.workflow_status` | The current workflow status. |
+| `tasks.workflow_paused_reason` | Reserved for pause; always empty. |
+| `task_queue_workflows` | One binding per queue: digest, revision, update time. Its digest references the image row with `ON DELETE RESTRICT`. |
+| `task_workflow_holders` | The last holder of each task and pool, with the dispatch time. |
+| `task_status_visits` | One row per stay in a status, with its outcome and message. |
+| `task_transition_requests` | Each `advance`, with its state (`pending`, `applied`, `rejected`, `failed`, `cancelled`); at most one is `pending` per task. |
+| `task_artifacts` | Every artifact value with its author and time. |
+
+Migration `0054` removed the earlier workflow engine. Tasks that it had managed
+became flexible tasks and keep a `workflow.removed` event.
+
+## Error codes
+
+| Code | HTTP | Meaning |
+| --- | --- | --- |
+| `workflow_managed` | 409 | The command does not apply to a task with a workflow. |
+| `workflow_not_bound` | 409 | The task has no workflow. |
+| `workflow_closed` | 409 | The task is `done` or `cancelled`. |
+| `workflow_in_use` | 409 | A queue or an unfinished task still uses the image. |
+| `workflow_pool_empty` | 409 | A pool the image names is missing or has no agents. |
+| `workflow_unavailable` | 503 | The workflow image store is not available. |
+| `queue_workflow_not_found` | 404 | The queue has no binding. |
+| `not_holder` | 403 | The caller does not own the current status. |
+| `outcome_unknown` | 400 | The status does not declare that outcome. |
+| `status_unknown` | 400, 409 | The image does not declare that status (400 for a move, 409 for a task in an undeclared status). |
+| `artifact_missing` | 409 | A required artifact has no value. |
+| `artifact_unknown` | 400 | The image does not declare that artifact. |
+| `artifact_not_found` | 404 | A declared artifact has no value on the task. |
+| `invalid_artifact` | 400 | The value is empty or not valid UTF-8. |
+| `artifact_too_large` | 413 | The value exceeds 64 KiB. |
+| `transition_pending` | 409 | Another transition request is still pending. |
+| `checks_unavailable` | 409 | The transition declares checks, which cannot run yet. |
+| `reason_required` | 400 | A move needs a reason. |
+| `invalid_message` | 400 | The transition message exceeds 4 KiB. |
+| `revision_conflict` | 409 | The binding, pool, or task revision is not the current one. |
+
+## Not yet available
+
+These are designed but not built. Do not rely on them.
+
+- **Scripts do not run.** Checks and watch scripts are never executed. A
+  transition that declares `checks` is refused with `checks_unavailable`, and a
+  status owned by a script waits until an operator moves the task. Transition
+  requests are therefore only ever `applied`.
+- **No queue secrets.** An image that lists `requires_secrets` binds without
+  them.
+- **No pause and resume.** `workflow_paused_reason` exists and is always empty,
+  and `waiting_on: pause` never appears. Stall limits (`idle_iterations`,
+  `rejected_requests`, `script_failures`, `unavailable_grace`) are stored in the
+  image but not enforced.
+- **The Goal block of the agent prompt** still shows the flexible-task guidance
+  for every task, including a workflow task. Agents learn the outcomes from
+  `ttasks workflow get` and from the `workflow_managed` error.
+- **Desktop has no workflow UI.** The task list does not separate status from
+  category, there are no outcome buttons, and queue settings cannot bind a
+  workflow. Drive workflow tasks through `ttasks` and the REST API.
+- **Compose cannot bind a workflow** to a queue; it still rejects a
+  `task_queues.<prefix>.workflow` value and a non-empty `workflows:` map.
 
 ## Agent pools
 
 A pool is a named, explicit list of existing agent names attached to a queue.
 One member models a dedicated role; several members model a shared pool. Group
-membership does not imply pool membership.
+membership does not imply pool membership. A bound image names the pools its
+statuses use, and each needs at least one agent.
 
 Pool writes require the current `revision` (`0` when creating the pool) and a
 stable `idempotency_key`. A concurrent write returns `revision_conflict`; read
-the pool again and retry.
+the pool again and retry. Emptying a pool that the queue's bound image uses is
+refused with `workflow_pool_empty`.
 
 ```bash
 ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key pool-1
@@ -51,7 +419,8 @@ The Tasks page offers the same control: open **Manage queues** and choose
 ## Queue triggers
 
 A queue trigger listens to an external plugin channel and creates a task in the
-queue for each matching message. The created task is an ordinary Native Task.
+queue for each matching message. In a bound queue the created task follows the
+queue's workflow like any other new task; otherwise it is a flexible task.
 
 Triggers accept only external namespaces from plugin-produced messages; the
 `agent`, `group`, `user`, and `system` namespaces are rejected. The only action
@@ -83,6 +452,4 @@ header. Messages are matched in the order the daemon committed them, using a
 persisted cursor, so a restart can replay a message without creating a second
 task. A new trigger matches only messages committed after it was created.
 
-The routes keep their `workflow-triggers` path for compatibility. Responses use
-the daemon's success envelope `{"ok":true,"result":...}`; the generated OpenAPI
-document is the authority for request and response schemas.
+The routes keep their `workflow-triggers` path for compatibility.

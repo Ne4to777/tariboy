@@ -248,7 +248,27 @@ Queues also own agent pools and queue triggers, and the daemon keeps a
 persisted bus-ingress cursor that startup reconciles so a trigger never creates
 a task twice. The earlier task workflow engine tables were dropped by migration
 `0054`; tasks that had been managed became ordinary tasks and keep a
-`workflow.removed` event that records what they ran on. See
+`workflow.removed` event that records what they ran on. The unused
+`tasks.workflow_version_id` and `workflow_revision` columns and the empty
+`task_workflow_versions` table stay in place, always `NULL` or empty, because
+SQLite cannot drop a column with a foreign key without rebuilding `tasks`.
+
+Migration `0055` adds the workflow image engine. `tasks.workflow_digest` pins
+the image a task follows, set in the transaction that creates the task from the
+queue's binding; the task is never migrated to another version, and the image
+row (`task_workflow_images`) cannot be removed while a queue binds it or an
+unfinished task pins it. `tasks.workflow_status` holds the workflow status
+(and `tasks.workflow_paused_reason`, always empty today), while `tasks.status`
+keeps holding the category for every task. Task JSON shows the
+workflow status as `status` and the stored value as `category`; for a task
+without a workflow both are the stored status. New tables: `task_queue_workflows`
+(one binding per queue, with a revision and an `ON DELETE RESTRICT` reference to
+the image), `task_workflow_holders` (the last holder per task and pool),
+`task_status_visits`, `task_transition_requests` (at most one `pending` per
+task), and `task_artifacts`. Workflow mutations append `workflow.transitioned`,
+`workflow.transition_requested`, `workflow.moved`, `workflow.cancelled`, and
+`artifact.set` task events, and queue bindings append `queue.workflow_bound` and
+`queue.workflow_cleared`, in the same transaction as the change. See
 [Task workflows](/docs/task-workflows).
 
 ## Image assignment state
