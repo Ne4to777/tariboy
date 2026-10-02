@@ -147,6 +147,24 @@ type workflowDispatcher interface {
 
 const workflowDispatchInterval = time.Minute
 
+type goalHooks interface {
+	Signal()
+	IterationCompleted(agentName, iterationID string)
+}
+
+// withWorkflowDispatch wraps the goal reconciler's hooks so each also wakes the
+// workflow dispatcher, after the goal call: IterationCompleted reconciles
+// synchronously, so the dispatch pass then sees the agent's Goal cleared.
+func withWorkflowDispatch(goal goalHooks, dispatch func()) (signal func(), iterationCompleted func(string, string)) {
+	return func() {
+			goal.Signal()
+			dispatch()
+		}, func(agentName, iterationID string) {
+			goal.IterationCompleted(agentName, iterationID)
+			dispatch()
+		}
+}
+
 // runWorkflowDispatcher assigns pool work to workflow tasks at startup, on each
 // task change signal, and on the interval, until ctx ends.
 func runWorkflowDispatcher(ctx context.Context, dispatcher workflowDispatcher, signals <-chan struct{}, interval time.Duration, log *slog.Logger) {
@@ -285,12 +303,11 @@ func Run(ctx context.Context, o Options) error {
 	})
 	goalStore := taskgoal.NewStore(st)
 	currentGoal := goalStore.Current
-	// A task change wakes both the goal reconciler and the workflow dispatcher.
+	// A task change, an agent change, and a finished iteration wake both the
+	// goal reconciler and the workflow dispatcher.
 	workflowDispatch := newWorkflowIngressSignal()
-	taskService.SetGoalSignal(func() {
-		goalReconciler.Signal()
-		workflowDispatch.Signal()
-	})
+	goalSignal, goalIterationCompleted := withWorkflowDispatch(goalReconciler, workflowDispatch.Signal)
+	taskService.SetGoalSignal(goalSignal)
 	if err := taskService.EnsureDefaultQueue(context.Background()); err != nil {
 		log.Error("seed default task queue", "err", err)
 	}
@@ -568,8 +585,8 @@ func Run(ctx context.Context, o Options) error {
 		ExternalPlugins:    plugins.ResolveEnabledInstalledMetadata(p.PluginsDir(), pluginStore),
 		Spawner:            o.Spawner,
 		OnIterationClose:   onIterationClose,
-		GoalSignal:         goalReconciler.Signal,
-		IterationCompleted: goalReconciler.IterationCompleted,
+		GoalSignal:         goalSignal,
+		IterationCompleted: goalIterationCompleted,
 		CurrentGoal:        currentGoal,
 		SetGoal: func(agent, key string, activate func() (func(), error)) error {
 			_, err := goalStore.Set(agent, key, time.Now().UTC(), activate)

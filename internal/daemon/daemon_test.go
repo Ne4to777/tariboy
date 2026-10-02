@@ -143,6 +143,25 @@ func TestWorkflowIngressSignalProcessesPromptlyAndCoalescesWithoutBlockingPublis
 	}
 }
 
+type fakeGoalHooks struct{ calls []string }
+
+func (f *fakeGoalHooks) Signal() { f.calls = append(f.calls, "goal.signal") }
+
+func (f *fakeGoalHooks) IterationCompleted(agent, iterationID string) {
+	f.calls = append(f.calls, "goal.iteration:"+agent+":"+iterationID)
+}
+
+func TestGoalHooksAlsoWakeTheWorkflowDispatcher(t *testing.T) {
+	goal := &fakeGoalHooks{}
+	signal, iterationCompleted := withWorkflowDispatch(goal, func() { goal.calls = append(goal.calls, "dispatch") })
+	signal()
+	iterationCompleted("dev-1", "it-1")
+	want := []string{"goal.signal", "dispatch", "goal.iteration:dev-1:it-1", "dispatch"}
+	if strings.Join(goal.calls, ",") != strings.Join(want, ",") {
+		t.Fatalf("calls = %v; want %v (goal first, so dispatch sees the cleared Goal)", goal.calls, want)
+	}
+}
+
 type fakeDispatcher struct {
 	calls chan struct{}
 	err   error

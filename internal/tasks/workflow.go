@@ -46,9 +46,23 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 	if err := requireWrite(ctx, tx, actor, task); err != nil {
 		return Task{}, err
 	}
-	// The workflow owns the status and the assignee of its task.
-	if task.WorkflowDigest != "" && (in.Status != nil || in.Assignee != nil) {
-		return Task{}, workflowManagedErrorFor(ctx, tx, task)
+	// The workflow owns the status and the assignee of its task. A client that
+	// resends the current values (as status, the workflow status or the category)
+	// changes nothing, so only a real change is refused.
+	if task.WorkflowDigest != "" {
+		if in.Status != nil {
+			status := strings.TrimSpace(*in.Status)
+			if status != task.Status && status != task.WorkflowStatus {
+				return Task{}, workflowManagedErrorFor(ctx, tx, task)
+			}
+			in.Status = nil
+		}
+		if in.Assignee != nil {
+			if normalizeAssignee(*in.Assignee) != task.Assignee {
+				return Task{}, workflowManagedErrorFor(ctx, tx, task)
+			}
+			in.Assignee = nil
+		}
 	}
 	if in.Revision <= 0 || in.Revision != task.Revision {
 		return Task{}, &Error{Status: http.StatusConflict, Code: "revision_conflict",
@@ -146,6 +160,17 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 
 func (s *Service) CompleteTask(ctx context.Context, actor Actor, key string, in CompleteInput) (Task, error) {
 	if !in.CompleteAnyway {
+		// UpdateTask accepts an unchanged status on a workflow task, so a
+		// workflow task already closed is refused here rather than there.
+		if task, err := taskByKey(s.db, strings.TrimSpace(key)); err == nil && task.WorkflowDigest != "" {
+			if err := validateActor(actor); err != nil {
+				return Task{}, err
+			}
+			if err := requireWrite(ctx, s.db, actor, task); err != nil {
+				return Task{}, err
+			}
+			return Task{}, workflowManagedErrorFor(ctx, s.db, task)
+		}
 		status := StatusDone
 		return s.UpdateTask(ctx, actor, key, UpdateTaskInput{Status: &status, Revision: in.Revision})
 	}

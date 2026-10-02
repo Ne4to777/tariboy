@@ -105,7 +105,7 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 		if agent == "" {
 			task.Status, task.Assignee = StatusOpen, ""
 		} else {
-			if err := recordHolderTx(ctx, tx, *task, next.Owner.Pool, agent, now); err != nil {
+			if err := s.recordHolderTx(ctx, tx, *task, next.Owner.Pool, agent); err != nil {
 				return err
 			}
 			task.Status, task.Assignee = StatusInProgress, agentPrincipal(agent)

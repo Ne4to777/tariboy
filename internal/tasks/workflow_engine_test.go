@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 	"github.com/alekzonder/tariboy/internal/workflowimage"
@@ -330,18 +331,92 @@ func TestEnterPoolStatusBreaksTiesByLastDispatchThenPoolOrder(t *testing.T) {
 	if first.Assignee != "agent:dev-1" {
 		t.Fatalf("first = %q; want pool order", first.Assignee)
 	}
+	enter(t, svc, first.Key, "done", "merged")
 	// dev-1 now has a dispatch time and dev-2 has none, so dev-2 comes first.
 	second := mustCreateDev(t, svc, actor, "second")
 	if second.Assignee != "agent:dev-2" {
 		t.Fatalf("second = %q; want the never-dispatched member", second.Assignee)
 	}
+	enter(t, svc, second.Key, "done", "merged")
 	// dev-2 was dispatched more recently than dev-1.
-	if _, err := svc.db.Exec(`UPDATE task_workflow_holders SET dispatched_at = '2026-01-01T00:00:00Z' WHERE agent = 'dev-1'`); err != nil {
+	if _, err := svc.db.Exec(`UPDATE task_workflow_holders SET dispatched_at = '2026-01-01T00:00:00.000000000Z' WHERE agent = 'dev-1'`); err != nil {
 		t.Fatal(err)
 	}
 	third := mustCreateDev(t, svc, actor, "third")
 	if third.Assignee != "agent:dev-1" {
 		t.Fatalf("third = %q; want the least recently dispatched member", third.Assignee)
+	}
+}
+
+func TestEnterPoolStatusOrdersDispatchesWithinOneSecond(t *testing.T) {
+	svc, actor, _ := engineFixture(t)
+	at := func(ms int) {
+		svc.clock = func() time.Time { return time.Date(2026, 7, 31, 12, 0, 0, ms*int(time.Millisecond), time.UTC) }
+	}
+	at(100)
+	first := mustCreateDev(t, svc, actor, "first")
+	enter(t, svc, first.Key, "done", "merged")
+	at(150)
+	second := mustCreateDev(t, svc, actor, "second")
+	enter(t, svc, second.Key, "done", "merged")
+	if first.Assignee != "agent:dev-1" || second.Assignee != "agent:dev-2" {
+		t.Fatalf("first = %q, second = %q", first.Assignee, second.Assignee)
+	}
+	at(200)
+	// dev-1 was dispatched at .100 and dev-2 at .150, so dev-1 is least recent.
+	if third := mustCreateDev(t, svc, actor, "third"); third.Assignee != "agent:dev-1" {
+		t.Fatalf("third = %q; want dev-1", third.Assignee)
+	}
+}
+
+func TestEnterPoolStatusLeavesTaskOpenWhileTheOnlyMemberHasWork(t *testing.T) {
+	for name, release := range map[string]string{"closed": "done", "script status": "merge"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, actor, _ := engineFixture(t)
+			setAgent(t, svc, "dev-2", `enabled = 0`)
+			first := mustCreateDev(t, svc, actor, "first")
+			second := mustCreateDev(t, svc, actor, "second")
+			if first.Assignee != "agent:dev-1" || second.Assignee != "" || second.Status != StatusOpen {
+				t.Fatalf("first = %q, second = %q/%s; want the second open", first.Assignee, second.Assignee, second.Status)
+			}
+			if n, err := svc.DispatchPending(ctx); err != nil || n != 0 {
+				t.Fatalf("dispatch while dev-1 is busy = %d, %v", n, err)
+			}
+			enter(t, svc, first.Key, release, "merged")
+			if n, err := svc.DispatchPending(ctx); err != nil || n != 1 {
+				t.Fatalf("dispatch after release = %d, %v", n, err)
+			}
+			if got, _ := taskByKey(svc.db, second.Key); got.Assignee != "agent:dev-1" || got.Status != StatusInProgress {
+				t.Fatalf("second after dispatch = %#v", got)
+			}
+		})
+	}
+}
+
+func TestCreateTaskRollsBackWhenTheInitialStatusCannotBeEntered(t *testing.T) {
+	svc, actor := workflowFixture(t)
+	mustRebindPool(t, svc, actor, "developers", []string{"dev-1"}, 0)
+	mustRebindPool(t, svc, actor, "reviewers", []string{"reviewer-1"}, 0)
+	def := engineDefinition()
+	def.InitialStatus = "nowhere"
+	seedEngineImage(t, svc, def)
+	if _, err := svc.SetQueueWorkflow(context.Background(), actor, "DEV", "development:0.1.0", 0); err != nil {
+		t.Fatal(err)
+	}
+	events := countRows(t, svc, `SELECT COUNT(*) FROM task_events`)
+	if _, err := svc.CreateTask(context.Background(), actor, CreateTaskInput{Queue: "DEV", Title: "x"}); err == nil {
+		t.Fatal("create succeeded with an unknown initial status")
+	}
+	for query, want := range map[string]int{
+		`SELECT COUNT(*) FROM tasks`:                 0,
+		`SELECT COUNT(*) FROM task_status_visits`:    0,
+		`SELECT COUNT(*) FROM task_workflow_holders`: 0,
+		`SELECT COUNT(*) FROM task_events`:           events,
+	} {
+		if got := countRows(t, svc, query); got != want {
+			t.Fatalf("%s = %d; want %d", query, got, want)
+		}
 	}
 }
 
@@ -422,6 +497,9 @@ func TestEnterTerminalStatusClosesTheTaskDespiteActiveChildren(t *testing.T) {
 	done := enter(t, svc, task.Key, "done", "merged")
 	if done.Status != StatusDone || done.CompletedAt == "" || done.Assignee != "agent:dev-1" {
 		t.Fatalf("done = %#v", done)
+	}
+	if _, err := svc.CompleteTask(context.Background(), actor, task.Key, CompleteInput{Revision: done.Revision}); ErrorCode(err) != "workflow_managed" {
+		t.Fatalf("complete of a closed workflow task = %v", err)
 	}
 	other := mustCreateDev(t, svc, actor, "other")
 	dropped := enter(t, svc, other.Key, "dropped", "")
@@ -629,5 +707,40 @@ func TestCommentsKeepTheWorkflowQuestionAndHolderQuestionsWork(t *testing.T) {
 	}
 	if got.Status != StatusWaitCustomer || len(waits) != 1 || waits[0].RequestingPrincipal != workflowActor {
 		t.Fatalf("customer status after comments = %#v, waits %#v", got, waits)
+	}
+}
+
+func TestUpdateTaskAcceptsUnchangedWorkflowStatusAndAssignee(t *testing.T) {
+	ctx := context.Background()
+	svc, actor, _ := engineFixture(t)
+	task := mustCreateDev(t, svc, actor, "t")
+	revision := task.Revision
+	for _, status := range []string{"develop", StatusInProgress} {
+		title, assignee, status := "edited with "+status, "dev-1", status
+		updated, err := svc.UpdateTask(ctx, actor, task.Key, UpdateTaskInput{
+			Title: &title, Status: &status, Assignee: &assignee, Revision: revision,
+		})
+		if err != nil {
+			t.Fatalf("resend of %q: %v", status, err)
+		}
+		if updated.Title != title || updated.Status != StatusInProgress || updated.WorkflowStatus != "develop" ||
+			updated.Assignee != "agent:dev-1" {
+			t.Fatalf("resend of %q = %#v", status, updated)
+		}
+		revision = updated.Revision
+	}
+	stored, err := taskByKey(svc.db, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != StatusInProgress || stored.WorkflowStatus != "develop" || stored.Title != "edited with in_progress" {
+		t.Fatalf("stored = %#v", stored)
+	}
+	title, otherStatus, otherAssignee := "x", "review", "dev-2"
+	if _, err := svc.UpdateTask(ctx, actor, task.Key, UpdateTaskInput{Title: &title, Status: &otherStatus, Revision: revision}); ErrorCode(err) != "workflow_managed" {
+		t.Fatalf("status change = %v", err)
+	}
+	if _, err := svc.UpdateTask(ctx, actor, task.Key, UpdateTaskInput{Title: &title, Assignee: &otherAssignee, Revision: revision}); ErrorCode(err) != "workflow_managed" {
+		t.Fatalf("assignee change = %v", err)
 	}
 }

@@ -12,8 +12,8 @@ import (
 // pickHolderTx chooses the agent for a task entering or waiting in a status
 // owned by pool. The task's previous holder for the pool wins while it is still
 // a member, whatever it is doing. Otherwise the first eligible member wins:
-// enabled, loop enabled, Goal enabled, not halted, with no current Goal, and
-// not in busy; ties go to the member dispatched least recently in this queue,
+// enabled, loop enabled, Goal enabled, not halted, with no current Goal, with
+// no other assigned task that Goal could select, and not in busy; ties go to the member dispatched least recently in this queue,
 // then to pool order. It returns "" when nobody is eligible.
 func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy map[string]bool) (string, error) {
 	var holder string
@@ -29,7 +29,10 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 		return "", err
 	}
 	// The halt test mirrors agent.HaltReason: an error reason, or a status
-	// message that starts with the idle-stop prefix.
+	// message that starts with the idle-stop prefix. The assigned-work test is
+	// the one taskgoal's reconcileAgent selects a Goal by, read in this
+	// transaction: current_goal_task_key is filled only after the reconciler
+	// runs, so without it one free agent would collect every new task.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.agent
 		FROM task_agent_pools p
@@ -39,12 +42,23 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 		  AND a.enabled = 1 AND a.loop_enabled = 1 AND a.goal_enabled = 1
 		  AND a.error_reason = '' AND substr(a.status_message, 1, length(?)) <> ?
 		  AND a.current_goal_task_key = ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks t
+			WHERE t.assignee = 'agent:' || m.agent AND t.id <> ?
+			  AND t.status IN ('in_progress', 'open')
+			  AND t.manual_block_reason = ''
+			  AND NOT EXISTS (
+				SELECT 1 FROM task_relations r JOIN tasks b ON b.id = r.source_id
+				WHERE r.target_id = t.id AND r.type = 'blocks'
+				  AND b.status NOT IN ('done', 'cancelled')
+			  )
+		  )
 		ORDER BY COALESCE((
 			SELECT MAX(h.dispatched_at) FROM task_workflow_holders h
 			JOIN tasks ht ON ht.id = h.task_id
 			WHERE h.agent = m.agent AND ht.queue_prefix = p.queue_prefix
 		), ''), m.position`,
-		task.Queue, pool, agent.IdleStopPrefix, agent.IdleStopPrefix)
+		task.Queue, pool, agent.IdleStopPrefix, agent.IdleStopPrefix, task.ID)
 	if err != nil {
 		return "", err
 	}
@@ -61,12 +75,17 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 	return "", rows.Err()
 }
 
+// dispatchedAtLayout is fixed width, so dispatch times order correctly as
+// strings; RFC3339Nano trims trailing zeros and misorders times within a second.
+const dispatchedAtLayout = "2006-01-02T15:04:05.000000000Z"
+
 // recordHolderTx records name as the task's holder for pool, dispatched now.
-func recordHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool, name, now string) error {
+// It is the only writer of task_workflow_holders.dispatched_at.
+func (s *Service) recordHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool, name string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO task_workflow_holders(task_id, pool, agent, dispatched_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT(task_id, pool) DO UPDATE SET agent = excluded.agent, dispatched_at = excluded.dispatched_at`,
-		task.ID, pool, name, now)
+		task.ID, pool, name, s.clock().UTC().Format(dispatchedAtLayout))
 	return err
 }
 
@@ -152,7 +171,7 @@ func (s *Service) dispatchTask(ctx context.Context, id int64, busy map[string]bo
 		return "", err
 	}
 	now := s.now()
-	if err := recordHolderTx(ctx, tx, task, status.Owner.Pool, name, now); err != nil {
+	if err := s.recordHolderTx(ctx, tx, task, status.Owner.Pool, name); err != nil {
 		return "", err
 	}
 	previousAssignee, previousRevision := task.Assignee, task.Revision
