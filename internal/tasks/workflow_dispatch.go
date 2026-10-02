@@ -9,6 +9,32 @@ import (
 	"github.com/alekzonder/tariboy/internal/workflowfile"
 )
 
+// Why a pool member cannot work, as holderUnavailableCauseSQL names it.
+const (
+	causeDeleted      = "deleted"
+	causeDisabled     = "disabled"
+	causeLoopDisabled = "loop_disabled"
+	causeHalted       = "halted"
+	causeLeftPool     = "left_pool"
+)
+
+// holderUnavailableCauseSQL is the one reading of whether an agent can work on
+// pool work: it yields "" when it can, or one of the cause constants. It reads
+// the agents row as a and the pool membership row as m, either of which may be
+// missing (NULL) under a LEFT JOIN, and takes agent.IdleStopPrefix twice. The
+// halt test mirrors agent.HaltReason: an error reason, or a status message
+// that starts with the idle-stop prefix; it comes before the loop test because
+// a halt also turns the loop off. The dispatcher's eligibility and the
+// holder check both use it; Goal settings and the current Goal are not part of
+// it.
+const holderUnavailableCauseSQL = `CASE
+		WHEN a.name IS NULL THEN '` + causeDeleted + `'
+		WHEN a.enabled = 0 THEN '` + causeDisabled + `'
+		WHEN a.error_reason <> '' OR substr(a.status_message, 1, length(?)) = ? THEN '` + causeHalted + `'
+		WHEN a.loop_enabled = 0 THEN '` + causeLoopDisabled + `'
+		WHEN m.agent IS NULL THEN '` + causeLeftPool + `'
+		ELSE '' END`
+
 // pickHolderTx chooses the agent for a task entering or waiting in a status
 // owned by pool. The task's previous holder for the pool wins while it is still
 // a member, whatever it is doing, unless the customer released it: a released
@@ -31,19 +57,17 @@ func pickHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool string, busy 
 	if err != sql.ErrNoRows {
 		return "", err
 	}
-	// The halt test mirrors agent.HaltReason: an error reason, or a status
-	// message that starts with the idle-stop prefix. The assigned-work test is
-	// the one taskgoal's reconcileAgent selects a Goal by, read in this
-	// transaction: current_goal_task_key is filled only after the reconciler
-	// runs, so without it one free agent would collect every new task.
+	// The assigned-work test is the one taskgoal's reconcileAgent selects a
+	// Goal by, read in this transaction: current_goal_task_key is filled only
+	// after the reconciler runs, so without it one free agent would collect
+	// every new task.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT m.agent
 		FROM task_agent_pools p
 		JOIN task_agent_pool_members m ON m.pool_id = p.id
 		JOIN agents a ON a.name = m.agent
 		WHERE p.queue_prefix = ? AND p.name = ?
-		  AND a.enabled = 1 AND a.loop_enabled = 1 AND a.goal_enabled = 1
-		  AND a.error_reason = '' AND substr(a.status_message, 1, length(?)) <> ?
+		  AND (`+holderUnavailableCauseSQL+`) = '' AND a.goal_enabled = 1
 		  AND a.current_goal_task_key = ''
 		  AND NOT EXISTS (
 			SELECT 1 FROM task_workflow_holders r
@@ -88,11 +112,13 @@ const dispatchedAtLayout = "2006-01-02T15:04:05.000000000Z"
 
 // recordHolderTx records name as the task's holder for pool, dispatched now,
 // replacing a released holder. It is the only writer of
-// task_workflow_holders.dispatched_at.
+// task_workflow_holders.dispatched_at; a dispatch starts the holder's
+// availability afresh, so it clears unavailable_since.
 func (s *Service) recordHolderTx(ctx context.Context, tx *sql.Tx, task Task, pool, name string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO task_workflow_holders(task_id, pool, agent, dispatched_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(task_id, pool) DO UPDATE SET agent = excluded.agent, dispatched_at = excluded.dispatched_at, released = 0`,
+		ON CONFLICT(task_id, pool) DO UPDATE SET agent = excluded.agent, dispatched_at = excluded.dispatched_at,
+			released = 0, unavailable_since = ''`,
 		task.ID, pool, name, s.clock().UTC().Format(dispatchedAtLayout))
 	return err
 }

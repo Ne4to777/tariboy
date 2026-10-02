@@ -383,6 +383,10 @@ type RunnerConfig struct {
 	// task; nil renders the flexible text with a notice.
 	WorkflowGoals WorkflowGoalSource
 	Tasks         nativeTaskReader
+	// GoalRead, if set, hears the Goal key an iteration's prompt was assembled
+	// with ("" for none) and when it was read; the manager reports it when the
+	// iteration ends.
+	GoalRead func(agent, iterationID, key string, at time.Time)
 	// HasTmuxSession reports whether an interactive agent's tmux session is already
 	// alive. Injectable so tests avoid a real tmux. Defaults to tmuxHasSession.
 	HasTmuxSession func(session string) bool
@@ -746,9 +750,17 @@ func (r *ShimRunner) prepare(ctx context.Context, tr oteltrace.Tracer, ag agent.
 	}
 	currentGoal, hasCurrentGoal := tasks.Task{}, false
 	if r.cfg.CurrentGoal != nil && !bare {
-		currentGoal, hasCurrentGoal, err = r.cfg.CurrentGoal(ag.Name, r.cfg.Clock().UTC())
+		goalAt := r.cfg.Clock().UTC()
+		currentGoal, hasCurrentGoal, err = r.cfg.CurrentGoal(ag.Name, goalAt)
 		if err != nil {
 			return fail(fmt.Errorf("read current agent goal: %w", err))
+		}
+		if r.cfg.GoalRead != nil {
+			key := ""
+			if hasCurrentGoal {
+				key = currentGoal.Key
+			}
+			r.cfg.GoalRead(ag.Name, iterationID, key, goalAt)
 		}
 	}
 

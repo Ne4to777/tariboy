@@ -132,6 +132,10 @@ func (s *Service) Advance(ctx context.Context, actor Actor, key string, in Advan
 	if err != nil {
 		return TransitionRequest{}, err
 	}
+	// A request, whatever becomes of it, ends a run of idle iterations.
+	if _, err := tx.ExecContext(ctx, `UPDATE task_status_visits SET idle_iterations = 0 WHERE id = ?`, visitID); err != nil {
+		return TransitionRequest{}, err
+	}
 	request := TransitionRequest{ID: id, TaskKey: task.Key, Outcome: in.Outcome, Message: in.Message,
 		Actor: actor.Principal, State: "applied", CreatedAt: now, FinishedAt: now}
 	if len(transition.Checks) > 0 {

@@ -148,6 +148,40 @@ func TestOpenCreatesScriptRunSchema(t *testing.T) {
 	}
 }
 
+// holderMigrationFixture opens a database migrated up to before migration
+// first, with one task and its holder row, and reopens it with every
+// migration.
+func holderMigrationFixture(t *testing.T, first string) *Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "holder-migration.db")
+	legacy := openBeforeMigration(t, path, first)
+	if _, err := legacy.DB.Exec(`
+		INSERT INTO task_queues(prefix, name, created_at, updated_at) VALUES ('DEV', 'Dev', 'now', 'now');
+		INSERT INTO tasks(task_key, queue_prefix, title, author, customer, created_at, updated_at)
+		VALUES ('DEV-1', 'DEV', 'one', 'user:c', 'user:c', 'now', 'now');
+		INSERT INTO task_workflow_holders(task_id, pool, agent, dispatched_at) VALUES (1, 'developers', 'dev-1', 'now');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func TestHolderUnavailableSinceMigrationDefaultsToEmpty(t *testing.T) {
+	requireColumn(t, open(t).DB, "task_workflow_holders", "unavailable_since")
+	s := holderMigrationFixture(t, "0061_task_workflow_holder_unavailable.sql")
+	var since string
+	if err := s.DB.QueryRow(`SELECT unavailable_since FROM task_workflow_holders WHERE task_id = 1`).Scan(&since); err != nil || since != "" {
+		t.Fatalf("unavailable_since = %q, %v; want empty", since, err)
+	}
+}
+
 func TestOpenRemovesJudgeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remove-judge.db")
 	db := createDatabaseBeforeMigration(t, path, "0043_remove_judge.sql")

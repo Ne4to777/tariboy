@@ -144,6 +144,7 @@ func runWorkflowObservationReconciler(ctx context.Context, reconciler workflowOb
 
 type workflowDispatcher interface {
 	DispatchPending(context.Context) (int, error)
+	CheckHolders(context.Context, time.Time) (int, error)
 }
 
 const workflowDispatchInterval = time.Minute
@@ -167,11 +168,15 @@ func withWorkflowDispatch(goal goalHooks, dispatch func()) (signal func(), itera
 }
 
 // runWorkflowDispatcher assigns pool work to workflow tasks at startup, on each
-// task change signal, and on the interval, until ctx ends.
+// task change signal, and on the interval, until ctx ends. After each dispatch
+// pass it checks that the holders of active pool statuses can work.
 func runWorkflowDispatcher(ctx context.Context, dispatcher workflowDispatcher, signals <-chan struct{}, interval time.Duration, log *slog.Logger) {
 	dispatch := func() {
 		if _, err := dispatcher.DispatchPending(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("workflow dispatch", "err", err)
+		}
+		if _, err := dispatcher.CheckHolders(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			log.Warn("workflow holders", "err", err)
 		}
 	}
 	dispatch()
@@ -591,6 +596,7 @@ func Run(ctx context.Context, o Options) error {
 		OnIterationClose:   onIterationClose,
 		GoalSignal:         goalSignal,
 		IterationCompleted: goalIterationCompleted,
+		RecordIterationEnd: taskService.RecordIterationEnd,
 		CurrentGoal:        currentGoal,
 		WorkflowGoals:      loop.TaskWorkflowGoals{Tasks: taskService, Images: workflowImages.Store, Log: log},
 		SetGoal: func(agent, key string, activate func() (func(), error)) error {

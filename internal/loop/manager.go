@@ -105,6 +105,10 @@ type ManagerConfig struct {
 	GoalSignal func()
 	// IterationCompleted requests the next goal wake after terminal persistence.
 	IterationCompleted func(agent, iterationID string)
+	// RecordIterationEnd reports each terminal iteration with the Goal it ran
+	// with, just before IterationCompleted, so a workflow task this iteration
+	// paused is not woken again. An error is logged and changes nothing else.
+	RecordIterationEnd func(context.Context, tasks.IterationEnd) error
 	CurrentGoal        func(string, time.Time) (tasks.Task, bool, error)
 	// WorkflowGoals supplies the workflow data for the Goal block of a workflow
 	// task; nil renders the flexible text with a notice.
@@ -174,6 +178,18 @@ type Manager struct {
 	scriptsWake   chan struct{}
 	scriptRuns    map[string]*exec.Cmd
 	scriptCancels map[string]bool
+	// goals holds, per agent, the Goal its latest prepared iteration runs
+	// with, until that iteration is reported finished. It is memory only: an
+	// iteration adopted after a daemon restart reports no Goal.
+	goalsMu sync.Mutex
+	goals   map[string]iterationGoal
+}
+
+// iterationGoal is the Goal one iteration runs with and when it was read.
+type iterationGoal struct {
+	iterationID string
+	key         string
+	readAt      time.Time
 }
 
 // ExtendIterationTimeout makes an extension durable before attempting the
@@ -247,7 +263,52 @@ func (m *Manager) signalGoals() {
 	}
 }
 
+// noteIterationGoal records the Goal an iteration of agentName runs with, read
+// at readAt when its prompt was assembled; key is "" when it has none.
+func (m *Manager) noteIterationGoal(agentName, iterationID, key string, readAt time.Time) {
+	m.goalsMu.Lock()
+	defer m.goalsMu.Unlock()
+	if m.goals == nil {
+		m.goals = map[string]iterationGoal{}
+	}
+	m.goals[agentName] = iterationGoal{iterationID: iterationID, key: key, readAt: readAt}
+}
+
+// noteSelectedGoal records a Goal the agent selected during an iteration that
+// started without one.
+func (m *Manager) noteSelectedGoal(agentName, iterationID, key string) {
+	m.goalsMu.Lock()
+	defer m.goalsMu.Unlock()
+	if goal, ok := m.goals[agentName]; ok && goal.iterationID == iterationID && goal.key == "" {
+		goal.key = key
+		m.goals[agentName] = goal
+	}
+}
+
+// recordIterationEnd reports a terminal iteration with the Goal it ran with.
+func (m *Manager) recordIterationEnd(agentName, iterationID string) {
+	m.goalsMu.Lock()
+	goal, ok := m.goals[agentName]
+	if ok && goal.iterationID == iterationID {
+		delete(m.goals, agentName)
+	} else {
+		goal = iterationGoal{}
+	}
+	m.goalsMu.Unlock()
+	if m.cfg.RecordIterationEnd == nil {
+		return
+	}
+	end := tasks.IterationEnd{Agent: agentName, IterationID: iterationID, GoalTaskKey: goal.key,
+		StartedAt: goal.readAt, FinishedAt: m.cfg.Clock().UTC()}
+	if err := m.cfg.RecordIterationEnd(context.Background(), end); err != nil && m.cfg.Log != nil {
+		m.cfg.Log.Warn("record iteration end", "agent", agentName, "id", iterationID, "goal", goal.key, "err", err)
+	}
+}
+
+// iterationCompleted is the single report of a terminal iteration: the
+// workflow hears of it first, then the Goal reconciler decides the next wake.
 func (m *Manager) iterationCompleted(agentName, iterationID string) {
+	m.recordIterationEnd(agentName, iterationID)
 	if m.cfg.IterationCompleted != nil {
 		m.cfg.IterationCompleted(agentName, iterationID)
 	}
@@ -315,6 +376,7 @@ func (m *Manager) runnerFor(ag agent.Agent) IterationRunner {
 		ImgStore: m.cfg.ImgStore, Store: m.cfg.Store, Spawner: m.cfg.Spawner, Clock: m.cfg.Clock,
 		DoneGrace: m.cfg.DoneGrace, Logger: m.cfg.Log, Bus: m.cfg.Bus, Proxy: m.cfg.Proxy, AuditFor: m.cfg.AuditFor,
 		CurrentGoal: m.cfg.CurrentGoal, WorkflowGoals: m.cfg.WorkflowGoals, Tasks: m.cfg.Tasks,
+		GoalRead: m.noteIterationGoal,
 	})
 }
 
@@ -975,7 +1037,13 @@ func (m *Manager) newToolsAPIServer(ag agent.Agent, l agentdir.Layout) *agentapi
 			if !ok {
 				return nil, fmt.Errorf("goal selection is unavailable")
 			}
-			return setGoal(context.Background(), m.cfg.Tasks, m.cfg.SetGoal, proxy, iteration, agName, key)
+			result, err := setGoal(context.Background(), m.cfg.Tasks, m.cfg.SetGoal, proxy, iteration, agName, key)
+			if err == nil {
+				if taskID, _ := result["task_id"].(string); taskID != "" {
+					m.noteSelectedGoal(agName, iteration, taskID)
+				}
+			}
+			return result, err
 		},
 		Publish: func(msg bus.Message) (bus.Message, error) {
 			if m.cfg.Bus == nil {

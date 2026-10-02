@@ -1315,9 +1315,13 @@ func TestRunnerSchemaV2RendersAuthoritativeGoal(t *testing.T) {
 	}
 	t.Setenv("TARIBOY_STUB_HARNESS", "/usr/bin/true")
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	var goalReads []string
 	r := NewShimRunner(RunnerConfig{
 		AgentsDir: agentsDir, Store: as, ShimBin: "/opt/tariboy-shim", Clock: func() time.Time { return now },
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		GoalRead: func(agentName, iterationID, key string, at time.Time) {
+			goalReads = append(goalReads, fmt.Sprintf("%s/%s/%s/%s", agentName, iterationID, key, at.Format(time.RFC3339)))
+		},
 		CurrentGoal: func(agentName string, at time.Time) (tasks.Task, bool, error) {
 			if agentName != "alice" || !at.Equal(now) {
 				t.Fatalf("CurrentGoal(%q, %s)", agentName, at)
@@ -1334,6 +1338,10 @@ func TestRunnerSchemaV2RendersAuthoritativeGoal(t *testing.T) {
 	body, err := os.ReadFile(l.PromptPath(iterID))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The runner reports the Goal the iteration runs with, read at prompt time.
+	if want := "alice/" + iterID + "/TARI-43/2026-09-03T12:00:00Z"; len(goalReads) != 1 || goalReads[0] != want {
+		t.Fatalf("goal reads = %v; want [%s]", goalReads, want)
 	}
 	for _, want := range []string{"# Task Processing Order", "## Goal", "key: TARI-43\ntitle: Render goal\npriority: P1\nstatus: in_progress\ndescription: line one\nline two", "do not merge it yourself"} {
 		if !strings.Contains(string(body), want) {

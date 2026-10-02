@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,14 +166,60 @@ func TestGoalHooksAlsoWakeTheWorkflowDispatcher(t *testing.T) {
 type fakeDispatcher struct {
 	calls chan struct{}
 	err   error
+	// order records the passes' calls; mu guards it.
+	mu    sync.Mutex
+	order []string
 }
 
 func (f *fakeDispatcher) DispatchPending(context.Context) (int, error) {
+	f.mu.Lock()
+	f.order = append(f.order, "dispatch")
+	f.mu.Unlock()
 	select {
 	case f.calls <- struct{}{}:
 	default:
 	}
 	return 0, f.err
+}
+
+func (f *fakeDispatcher) CheckHolders(context.Context, time.Time) (int, error) {
+	f.mu.Lock()
+	f.order = append(f.order, "holders")
+	f.mu.Unlock()
+	return 0, f.err
+}
+
+func TestWorkflowDispatcherChecksHoldersAfterEachDispatch(t *testing.T) {
+	var logs bytes.Buffer
+	fake := &fakeDispatcher{calls: make(chan struct{}, 8), err: context.DeadlineExceeded}
+	signal := newWorkflowIngressSignal()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runWorkflowDispatcher(ctx, fake, signal.C(), time.Hour, slog.New(slog.NewTextHandler(&logs, nil)))
+		close(done)
+	}()
+	<-fake.calls
+	signal.Signal()
+	<-fake.calls
+	deadline := time.Now().Add(time.Second)
+	for {
+		fake.mu.Lock()
+		order := strings.Join(fake.order, ",")
+		fake.mu.Unlock()
+		if order == "dispatch,holders,dispatch,holders" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("order = %s", order)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !strings.Contains(logs.String(), "workflow holders") {
+		t.Fatalf("holder check error was not logged: %s", logs.String())
+	}
 }
 
 func TestWorkflowDispatcherRunsAtStartupOnSignalAndPeriodicallyAndStops(t *testing.T) {
