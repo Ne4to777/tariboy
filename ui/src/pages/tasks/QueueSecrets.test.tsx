@@ -81,6 +81,32 @@ it("shows a refused remove inline", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("requires TOKEN")
 })
 
+it("disables Set and every Remove while a request runs", async () => {
+  let finish: () => void = () => {}
+  api.removeQueueSecret.mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+  renderIt()
+  await screen.findByText("TOKEN")
+  fill("OTHER", "v")
+  fireEvent.click(screen.getByRole("button", { name: "Remove TOKEN" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Remove secret" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove TOKEN" })).toBeDisabled())
+  expect(screen.getByRole("button", { name: "Set" })).toBeDisabled()
+  finish()
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove TOKEN" })).toBeEnabled())
+  expect(screen.getByRole("button", { name: "Set" })).toBeEnabled()
+})
+
+it("drops a needed name once that key is in the list", async () => {
+  api.setQueueSecret.mockResolvedValue({ queue: "REL", key: "API_KEY", updated_at: "2026-10-02T11:00:00Z" })
+  api.listQueueSecrets.mockResolvedValueOnce([]).mockResolvedValue([{ key: "API_KEY", updated_at: "2026-10-02T11:00:00Z" }])
+  render(<QueueSecrets queue="REL" target={remoteTarget} missing={["API_KEY", "OTHER"]} />)
+  expect(await screen.findByRole("alert", { name: "Secrets needed" })).toHaveTextContent("API_KEY, OTHER")
+  fill("API_KEY", "v")
+  fireEvent.click(screen.getByRole("button", { name: "Set" }))
+  await waitFor(() => expect(screen.getByRole("alert", { name: "Secrets needed" })).not.toHaveTextContent("API_KEY"))
+  expect(screen.getByRole("alert", { name: "Secrets needed" })).toHaveTextContent("OTHER")
+})
+
 it("renders the names a bind needs next to the control", async () => {
   render(<QueueSecrets queue="REL" target={remoteTarget} missing={["API_KEY"]} missingMessage="workflow secrets have no value: API_KEY" />)
   expect(await screen.findByRole("alert", { name: "Secrets needed" })).toHaveTextContent("API_KEY")

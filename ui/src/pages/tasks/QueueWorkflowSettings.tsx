@@ -32,7 +32,9 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
   pools: ReactNode
 }) {
   const [binding, setBinding] = useState<QueueWorkflow | null>(null)
+  // True only after a load succeeded: until then the binding is unknown.
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState("")
   const [images, setImages] = useState<WorkflowImage[]>([])
   const [ref, setRef] = useState("")
   const [error, setError] = useState("")
@@ -43,8 +45,14 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
   const { confirm, dialog } = useWorkflowConfirm()
 
   const loadBinding = useCallback(async () => {
-    try { setBinding(await getQueueWorkflow(queue, target)) } catch (err) { setError(errorText(err)) }
-    setLoaded(true)
+    try {
+      setBinding(await getQueueWorkflow(queue, target))
+      setLoaded(true)
+      setLoadError("")
+    } catch (err) {
+      setLoaded(false)
+      setLoadError(errorText(err))
+    }
   }, [queue, target])
   useEffect(() => { void Promise.resolve().then(loadBinding) }, [loadBinding])
   useEffect(() => {
@@ -82,7 +90,8 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
       action: "Clear binding",
       run: () => {
         reset()
-        clearQueueWorkflow(queue, binding.revision, target).then(() => setBinding(null), refused)
+        setBusy(true)
+        clearQueueWorkflow(queue, binding.revision, target).then(() => setBinding(null), refused).finally(() => setBusy(false))
       },
     })
   }
@@ -96,6 +105,12 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
           <span className={MONO} title={binding.digest}>{binding.digest.slice(0, 12)}</span>
         </p>
       ) : <span className={EMPTY}>No workflow</span>)}
+      {loadError && (
+        <div role="alert" className="flex items-center gap-2 text-[12px] text-destructive">
+          <span>{loadError}</span>
+          <Button type="button" size="sm" variant="secondary" className="h-[26px]" onClick={() => void loadBinding()}>Retry</Button>
+        </div>
+      )}
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
         <SelectShell aria-label="Workflow image" value={ref} className="h-[26px] w-auto text-[12px] md:text-[12px]"
           onChange={(event) => setRef(event.target.value)}>
@@ -103,7 +118,7 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
           {sorted.map((image) => <option key={`${image.name}:${image.tag}`} value={`${image.name}:${image.tag}`}>{image.name}:{image.tag}</option>)}
         </SelectShell>
         <Button type="button" size="sm" className="h-[26px]" disabled={busy || !ref || !loaded} onClick={() => void bind()}>Bind</Button>
-        <Button type="button" size="sm" variant="secondary" className="h-[26px]" disabled={busy || !binding} onClick={clear}>Clear</Button>
+        <Button type="button" size="sm" variant="secondary" className="h-[26px]" disabled={busy || !loaded || !binding} onClick={clear}>Clear</Button>
       </div>
       {notice && <p role="status" className="text-[12px] text-muted-foreground">{notice}</p>}
       {error && <p role="alert" className="text-[12px] text-destructive">{error}</p>}

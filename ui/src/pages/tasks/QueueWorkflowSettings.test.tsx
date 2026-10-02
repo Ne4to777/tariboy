@@ -108,3 +108,43 @@ it("asks before clearing and does nothing when declined", async () => {
   await waitFor(() => expect(api.clearQueueWorkflow).toHaveBeenCalledWith("REL", 3, remoteTarget))
   expect(await screen.findByText("No workflow")).toBeInTheDocument()
 })
+
+it("disables Bind and Clear while a clear is running and enables them afterwards", async () => {
+  api.getQueueWorkflow.mockResolvedValue(binding)
+  let finish: () => void = () => {}
+  api.clearQueueWorkflow.mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
+  renderIt()
+  await screen.findByText(digest.slice(0, 12))
+  await screen.findByRole("option", { name: "audit:2" })
+  fireEvent.change(screen.getByLabelText("Workflow image"), { target: { value: "audit:2" } })
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Clear binding" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Bind" })).toBeDisabled())
+  expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
+  finish()
+  await waitFor(() => expect(screen.getByRole("button", { name: "Bind" })).toBeEnabled())
+})
+
+it("reloads and shows the notice when a clear hits a revision conflict", async () => {
+  api.getQueueWorkflow.mockResolvedValueOnce(binding).mockResolvedValue({ ...binding, revision: 4 })
+  api.clearQueueWorkflow.mockRejectedValue(new ApiError(409, "revision_conflict", "changed", { current_revision: 4 }))
+  renderIt()
+  await screen.findByText(digest.slice(0, 12))
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Clear binding" }))
+  expect(await screen.findByText(/changed elsewhere/i)).toBeInTheDocument()
+  expect(api.getQueueWorkflow).toHaveBeenCalledTimes(2)
+  expect(screen.getByTestId("binding")).toBeInTheDocument()
+})
+
+it("does not claim No workflow when the binding failed to load, and retries", async () => {
+  api.getQueueWorkflow.mockRejectedValueOnce(new ApiError(500, "internal", "boom")).mockResolvedValue(binding)
+  renderIt()
+  expect(await screen.findByRole("alert")).toHaveTextContent("boom")
+  expect(screen.queryByText("No workflow")).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Bind" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled()
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText(digest.slice(0, 12))).toBeInTheDocument()
+  expect(screen.queryByText("boom")).not.toBeInTheDocument()
+})

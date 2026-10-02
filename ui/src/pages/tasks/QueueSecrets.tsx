@@ -62,17 +62,19 @@ export default function QueueSecrets({ queue, target, missing = [], missingMessa
     action: "Remove secret",
     run: () => {
       setError("")
-      removeQueueSecret(queue, name, target).then(load, (err) => setError(errorText(err)))
+      setBusy(true)
+      removeQueueSecret(queue, name, target).then(load, (err) => setError(errorText(err))).finally(() => setBusy(false))
     },
   })
+  const stillMissing = missing.filter((name) => !secrets.some((secret) => secret.key === name))
 
   return (
     <section className="flex min-w-0 flex-col gap-1.5" aria-label={`Secrets ${queue}`}>
       <div className="flex items-center gap-1.5"><span className={LABEL}>Secrets</span><span className={COUNT}>{secrets.length}</span></div>
-      {missing.length > 0 && (
+      {stillMissing.length > 0 && (
         <div role="alert" aria-label="Secrets needed" className="text-[12px] text-destructive">
           <p>{missingMessage || "These secrets have no value:"}</p>
-          <p className="font-mono">{missing.join(", ")}</p>
+          <p className="font-mono">{stillMissing.join(", ")}</p>
         </div>
       )}
       {secrets.length === 0 ? <span className={EMPTY}>No secrets.</span> : (
@@ -81,7 +83,7 @@ export default function QueueSecrets({ queue, target, missing = [], missingMessa
             <li key={secret.key} className="flex min-w-0 items-center gap-2 text-[12px]">
               <span className="min-w-0 flex-1 truncate font-mono">{secret.key}</span>
               <span className="text-muted-foreground">{formatTaskTime(secret.updated_at)}</span>
-              <button type="button" className={QUIET_ACTION} aria-label={`Remove ${secret.key}`} onClick={() => remove(secret.key)}>Remove</button>
+              <button type="button" className={QUIET_ACTION} aria-label={`Remove ${secret.key}`} disabled={busy} onClick={() => remove(secret.key)}>Remove</button>
             </li>
           ))}
         </ul>
