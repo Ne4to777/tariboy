@@ -222,10 +222,7 @@ func (s *Service) CancelWorkflowTask(ctx context.Context, actor Actor, key strin
 	if err := cancelPendingRequestTx(ctx, tx, task, "task cancelled by "+actor.Principal, now); err != nil {
 		return Task{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE task_waiting_for SET resolved_at = ?
-		WHERE task_id = ? AND requesting_principal = ? AND resolved_at = ''`,
-		now, task.ID, workflowActor); err != nil {
+	if err := resolveWorkflowWaitsTx(ctx, tx, task, true, true, now); err != nil {
 		return Task{}, err
 	}
 	// The workflow status stays as the record of where the task stopped.
@@ -327,7 +324,8 @@ func artifactNames(artifacts []Artifact) map[string]bool {
 }
 
 // guardRevisionTx confirms the task row still has the revision the caller
-// read, so a decision made on a stale read cannot apply.
+// read. Where the task was read in the same transaction it cannot fail; it is
+// defence for a caller that reads the task outside the transaction.
 func guardRevisionTx(ctx context.Context, tx *sql.Tx, task Task) error {
 	result, err := tx.ExecContext(ctx, `UPDATE tasks SET revision = revision WHERE id = ? AND revision = ?`,
 		task.ID, task.Revision)

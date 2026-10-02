@@ -111,7 +111,46 @@ func TestGetWorkflowAfterTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Owner != "" || view.Holder != "" || view.Category != StatusDone || view.Outcomes == nil || len(view.Outcomes) != 0 {
+	if view.Owner != "" || view.Holder != "" || view.Status != "done" || view.Category != StatusDone ||
+		view.Outcomes == nil || len(view.Outcomes) != 0 || len(view.Visits) != 5 || len(view.Artifacts) != 2 ||
+		view.LastRequest == nil || *view.LastRequest != request {
 		t.Fatalf("terminal view = %#v", view)
+	}
+}
+
+func TestGetWorkflowOfACancelledTaskOffersNoExit(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	ctx := context.Background()
+	if _, err := svc.SetArtifact(ctx, AgentActor("dev-1"), task.Key, "plan", "p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelWorkflowTask(ctx, actor, task.Key); err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.GetWorkflow(ctx, actor, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Owner != "" || view.Holder != "" || view.Status != "develop" || view.Category != StatusCancelled ||
+		view.Outcomes == nil || len(view.Outcomes) != 0 || len(view.Artifacts) != 1 ||
+		len(view.Visits) != 1 || view.Visits[0].Message != "cancelled" || view.LastRequest != nil {
+		t.Fatalf("cancelled view = %#v", view)
+	}
+	if f := jsonFields(t, view); f["outcomes"] == nil {
+		t.Fatalf("JSON outcomes = %v", f["outcomes"])
+	}
+}
+
+func TestGetWorkflowInAStatusTheManifestDoesNotDeclare(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	if _, err := svc.db.Exec(`UPDATE tasks SET workflow_status = 'gone' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.GetWorkflow(context.Background(), actor, task.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != "gone" || view.Owner != "" || view.Holder != "" || view.Outcomes == nil || len(view.Outcomes) != 0 {
+		t.Fatalf("view = %#v", view)
 	}
 }

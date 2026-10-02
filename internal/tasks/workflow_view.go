@@ -58,7 +58,10 @@ func (s *Service) GetWorkflow(ctx context.Context, actor Actor, key string) (Wor
 		return WorkflowView{}, err
 	}
 	present := artifactNames(view.Artifacts)
-	if status, ok := currentStatus(manifest, task.WorkflowStatus); ok {
+	// A closed task has no owner and no exit: every advance would be refused
+	// with workflow_closed.
+	closed := task.Status == StatusDone || task.Status == StatusCancelled
+	if status, ok := currentStatus(manifest, task.WorkflowStatus); ok && !closed {
 		switch {
 		case status.Terminal:
 		case status.Owner.Kind == workflowfile.OwnerPool:

@@ -59,12 +59,11 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 	}
 	now := s.now()
 	from := task.WorkflowStatus
-	if previous, ok := currentStatus(manifest, from); ok && from != "" && previous.Owner.Kind == workflowfile.OwnerCustomer {
-		// Leaving a customer status by any route answers its question.
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE task_waiting_for SET resolved_at = ?
-			WHERE task_id = ? AND requesting_principal = ? AND resolved_at = ''`,
-			now, task.ID, workflowActor); err != nil {
+	if previous, ok := currentStatus(manifest, from); ok && from != "" && !previous.Terminal {
+		// Leaving a customer status by any route answers its question; leaving a
+		// pool status makes the holder's questions to the customer moot.
+		if err := resolveWorkflowWaitsTx(ctx, tx, *task,
+			previous.Owner.Kind == workflowfile.OwnerCustomer, previous.Owner.Kind == workflowfile.OwnerPool, now); err != nil {
 			return err
 		}
 	}
@@ -146,6 +145,23 @@ func (s *Service) enterStatusTx(ctx context.Context, tx *sql.Tx, task *Task, man
 	task.WaitingOn = ""
 	finishWorkflowFields(task, next.Owner.Kind)
 	return nil
+}
+
+// resolveWorkflowWaitsTx resolves open waits of a workflow task without an
+// answering comment: with systemWait the workflow's own question, and with
+// holderQuestions every question an agent asked the task's customer. Waits
+// requested by anyone else, or expecting another principal, stay open.
+func resolveWorkflowWaitsTx(ctx context.Context, tx *sql.Tx, task Task, systemWait, holderQuestions bool, now string) error {
+	if !systemWait && !holderQuestions {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE task_waiting_for SET resolved_at = ?
+		WHERE task_id = ? AND resolved_at = '' AND (
+			(? AND requesting_principal = ?) OR
+			(? AND expected_principal = ? AND requesting_principal LIKE 'agent:%'))`,
+		now, task.ID, systemWait, workflowActor, holderQuestions, task.Customer)
+	return err
 }
 
 // openStatusWaitTx asks the customer for an outcome the way a comment with a

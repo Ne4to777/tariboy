@@ -426,3 +426,166 @@ func TestCancelWorkflowTask(t *testing.T) {
 		t.Fatalf("again: %v", err)
 	}
 }
+
+func TestAdvanceByAgentsThatDoNotOwnTheStatus(t *testing.T) {
+	svc, _, task := requestFixture(t)
+	ctx := context.Background()
+	unchanged := func(status string) {
+		t.Helper()
+		stored, err := taskByKey(svc.db, task.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.WorkflowStatus != status || stored.Revision != task.Revision {
+			t.Fatalf("task moved: %q revision %d -> %d", stored.WorkflowStatus, task.Revision, stored.Revision)
+		}
+	}
+	// Agents with no read access to the task do not learn it exists: another
+	// member of the holder's pool and an agent of an unrelated pool alike get
+	// not_found.
+	for _, name := range []string{"dev-2", "reviewer-1"} {
+		if _, err := svc.Advance(ctx, AgentActor(name), task.Key, AdvanceInput{Outcome: "ask"}); ErrorCode(err) != "not_found" || ErrorStatus(err) != 404 {
+			t.Fatalf("%s without access: %v", name, err)
+		}
+	}
+	unchanged("develop")
+	// A pool member that may read the task (here as a queue owner) is still not
+	// the holder.
+	if _, err := svc.db.Exec(`INSERT INTO task_queue_owners(queue_prefix, agent) VALUES ('DEV', 'dev-2')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Advance(ctx, AgentActor("dev-2"), task.Key, AdvanceInput{Outcome: "ask"}); ErrorCode(err) != "not_holder" || ErrorStatus(err) != 403 {
+		t.Fatalf("pool member with access: %v", err)
+	}
+	unchanged("develop")
+	// No agent advances a script status.
+	task = enter(t, svc, task.Key, "merge", "approved")
+	if _, err := svc.Advance(ctx, AgentActor("dev-2"), task.Key, AdvanceInput{Outcome: "merged"}); ErrorCode(err) != "not_holder" || ErrorStatus(err) != 403 {
+		t.Fatalf("agent in a script status: %v", err)
+	}
+	unchanged("merge")
+}
+
+func TestAdvanceInAStatusTheManifestDoesNotDeclare(t *testing.T) {
+	svc, actor, task := requestFixture(t)
+	if _, err := svc.db.Exec(`UPDATE tasks SET workflow_status = 'gone' WHERE id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Advance(context.Background(), actor, task.Key, AdvanceInput{Outcome: "ready"}); ErrorCode(err) != "status_unknown" || ErrorStatus(err) != 409 {
+		t.Fatalf("unknown status: %v", err)
+	}
+}
+
+func TestDispatchPendingSkipsACancelledWorkflowTask(t *testing.T) {
+	svc, actor, _ := requestFixture(t)
+	ctx := context.Background()
+	setAgent(t, svc, "dev-1", "enabled = 0")
+	setAgent(t, svc, "dev-2", "enabled = 0")
+	waiting := mustCreateDev(t, svc, actor, "nobody free")
+	if waiting.Status != StatusOpen || waiting.Assignee != "" {
+		t.Fatalf("waiting = %#v", waiting)
+	}
+	if _, err := svc.CancelWorkflowTask(ctx, actor, waiting.Key); err != nil {
+		t.Fatal(err)
+	}
+	setAgent(t, svc, "dev-1", "enabled = 1")
+	setAgent(t, svc, "dev-2", "enabled = 1")
+	if n, err := svc.DispatchPending(ctx); err != nil || n != 0 {
+		t.Fatalf("dispatched = %d, %v", n, err)
+	}
+	stored, _ := taskByKey(svc.db, waiting.Key)
+	if stored.Status != StatusCancelled || stored.Assignee != "" {
+		t.Fatalf("stored = %#v", stored)
+	}
+}
+
+// openWaitsBy counts the task's open waits that requester asked of expected.
+func openWaitsBy(t *testing.T, svc *Service, task Task, requester, expected string) int {
+	t.Helper()
+	return countRows(t, svc, `SELECT COUNT(*) FROM task_waiting_for
+		WHERE task_id = ? AND requesting_principal = ? AND expected_principal = ? AND resolved_at = ''`,
+		task.ID, requester, expected)
+}
+
+// holderAsks has the holder dev-1 ask the customer and dev-2 on the task.
+func holderAsks(t *testing.T, svc *Service, task Task) {
+	t.Helper()
+	for _, body := range []string{"@user:customer which API?", "@agent:dev-2 seen this before?"} {
+		if _, err := svc.AddComment(context.Background(), AgentActor("dev-1"), task.Key, AddCommentInput{Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if openWaitsBy(t, svc, task, "agent:dev-1", "user:customer") != 1 || openWaitsBy(t, svc, task, "agent:dev-1", "agent:dev-2") != 1 {
+		t.Fatal("the holder's questions are not open")
+	}
+	if got, _ := taskByKey(svc.db, task.Key); got.Status != StatusWaitCustomer || got.WaitingOn != WaitingOnCustomer {
+		t.Fatalf("after the question = %#v", got)
+	}
+}
+
+func TestLeavingAPoolStatusResolvesTheHoldersQuestionsToTheCustomer(t *testing.T) {
+	ctx := context.Background()
+	t.Run("advance", func(t *testing.T) {
+		svc, _, task := requestFixture(t)
+		holderAsks(t, svc, task)
+		setPlanAndSummary(t, svc, AgentActor("dev-1"), task.Key)
+		if _, err := svc.Advance(ctx, AgentActor("dev-1"), task.Key, AdvanceInput{Outcome: "ready"}); err != nil {
+			t.Fatal(err)
+		}
+		if openWaitsBy(t, svc, task, "agent:dev-1", "user:customer") != 0 || openWaitsBy(t, svc, task, "agent:dev-1", "agent:dev-2") != 1 {
+			t.Fatal("waits after the advance")
+		}
+		got, _ := taskByKey(svc.db, task.Key)
+		if got.WorkflowStatus != "review" || got.Category != StatusInProgress || got.WaitingOn != "" {
+			t.Fatalf("after the advance = %#v", got)
+		}
+	})
+	t.Run("move", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		holderAsks(t, svc, task)
+		if _, err := svc.MoveWorkflow(ctx, actor, task.Key, "approval", "decide now"); err != nil {
+			t.Fatal(err)
+		}
+		if openWaitsBy(t, svc, task, "agent:dev-1", "user:customer") != 0 || openWaitsBy(t, svc, task, "agent:dev-1", "agent:dev-2") != 1 ||
+			openWaitsBy(t, svc, task, workflowActor, "user:customer") != 1 {
+			t.Fatal("waits after the move")
+		}
+		got, _ := taskByKey(svc.db, task.Key)
+		if got.WorkflowStatus != "approval" || got.Category != StatusWaitCustomer || got.WaitingOn != WaitingOnCustomer {
+			t.Fatalf("after the move = %#v", got)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		svc, actor, task := requestFixture(t)
+		holderAsks(t, svc, task)
+		if _, err := svc.CancelWorkflowTask(ctx, actor, task.Key); err != nil {
+			t.Fatal(err)
+		}
+		if openWaitsBy(t, svc, task, "agent:dev-1", "user:customer") != 0 || openWaitsBy(t, svc, task, "agent:dev-1", "agent:dev-2") != 1 {
+			t.Fatal("waits after the cancel")
+		}
+		got, _ := taskByKey(svc.db, task.Key)
+		if got.Category != StatusCancelled || got.WaitingOn != "" {
+			t.Fatalf("after the cancel = %#v", got)
+		}
+	})
+	t.Run("flexible task", func(t *testing.T) {
+		svc, actor, _ := requestFixture(t)
+		flexible, err := svc.CreateTask(ctx, actor, CreateTaskInput{Queue: "TASK", Title: "flex", Assignee: "agent:dev-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AddComment(ctx, AgentActor("dev-1"), flexible.Key, AddCommentInput{Body: "@user:customer which API?"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.MoveWorkflow(ctx, actor, flexible.Key, "review", "x"); ErrorCode(err) != "workflow_not_bound" {
+			t.Fatalf("move: %v", err)
+		}
+		if _, err := svc.CancelWorkflowTask(ctx, actor, flexible.Key); ErrorCode(err) != "workflow_not_bound" {
+			t.Fatalf("cancel: %v", err)
+		}
+		if openWaitsBy(t, svc, flexible, "agent:dev-1", "user:customer") != 1 {
+			t.Fatal("the flexible task's question was resolved")
+		}
+	})
+}
