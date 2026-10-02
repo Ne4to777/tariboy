@@ -12,6 +12,7 @@ import {
   type TaskQueue,
   type UpdateQueueInput,
 } from "@/lib/tasks"
+import QueueWorkflowSettings from "./QueueWorkflowSettings"
 
 export default function QueueSettings({
   queues,
@@ -80,7 +81,20 @@ export default function QueueSettings({
               >
                 Pools
               </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="secondary"
+                aria-label={`Workflow ${queue.prefix}`}
+                aria-expanded={open === `workflow:${queue.prefix}`}
+                onClick={() => setOpen((current) => current === `workflow:${queue.prefix}` ? "" : `workflow:${queue.prefix}`)}
+              >
+                Workflow
+              </Button>
             </div>
+            {open === `workflow:${queue.prefix}` && (
+              <QueueWorkflowSettings queue={queue.prefix} target={target} pools={<QueuePoolEditor queue={queue} target={target} />} />
+            )}
             {open === `name:${queue.prefix}` && (
               <form onSubmit={(event) => {
                 event.preventDefault()
