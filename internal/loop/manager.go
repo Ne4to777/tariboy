@@ -105,7 +105,10 @@ type ManagerConfig struct {
 	// IterationCompleted requests the next goal wake after terminal persistence.
 	IterationCompleted func(agent, iterationID string)
 	CurrentGoal        func(string, time.Time) (tasks.Task, bool, error)
-	SetGoal            func(agent, key string, activate func() (func(), error)) error
+	// WorkflowGoals supplies the workflow data for the Goal block of a workflow
+	// task; nil renders the flexible text with a notice.
+	WorkflowGoals WorkflowGoalSource
+	SetGoal       func(agent, key string, activate func() (func(), error)) error
 	// ProvidedChannels returns provider-declared channels drawn from installed
 	// plugin manifests, so `tools sources` can list and annotate provider
 	// channels even before their channel row exists (spec §6.1). Wired by the
@@ -310,7 +313,7 @@ func (m *Manager) runnerFor(ag agent.Agent) IterationRunner {
 		AgentsDir: m.cfg.AgentsDir, RuntimeDir: m.cfg.RuntimeDir, ShimBin: m.cfg.ShimBin,
 		ImgStore: m.cfg.ImgStore, Store: m.cfg.Store, Spawner: m.cfg.Spawner, Clock: m.cfg.Clock,
 		DoneGrace: m.cfg.DoneGrace, Logger: m.cfg.Log, Bus: m.cfg.Bus, Proxy: m.cfg.Proxy, AuditFor: m.cfg.AuditFor,
-		CurrentGoal: m.cfg.CurrentGoal, Tasks: m.cfg.Tasks,
+		CurrentGoal: m.cfg.CurrentGoal, WorkflowGoals: m.cfg.WorkflowGoals, Tasks: m.cfg.Tasks,
 	})
 }
 

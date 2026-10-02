@@ -590,6 +590,7 @@ func Run(ctx context.Context, o Options) error {
 		GoalSignal:         goalSignal,
 		IterationCompleted: goalIterationCompleted,
 		CurrentGoal:        currentGoal,
+		WorkflowGoals:      loop.TaskWorkflowGoals{Tasks: taskService, Images: workflowImages.Store, Log: log},
 		SetGoal: func(agent, key string, activate func() (func(), error)) error {
 			_, err := goalStore.Set(agent, key, time.Now().UTC(), activate)
 			return err
@@ -667,11 +668,12 @@ func Run(ctx context.Context, o Options) error {
 	cctx := &registry.Ctx{
 		Store: st, Log: log, BaseDir: p.Base, Socket: p.Socket(), HTTPAddr: o.HTTPAddr,
 		Version: version.Version, StartedAt: time.Now(), Control: manager, Scripts: manager, Bus: channelBus, Plugins: pluginHost,
-		Groups:      groupProv,
-		Operator:    taskService.CustomerLogin(),
-		Retention:   &retention.RetentionAPI{Policies: retPolicies, Pruner: retPruner},
-		Maintenance: maint,
-		Tasks:       taskService,
+		Groups:         groupProv,
+		Operator:       taskService.CustomerLogin(),
+		Retention:      &retention.RetentionAPI{Policies: retPolicies, Pruner: retPruner},
+		Maintenance:    maint,
+		Tasks:          taskService,
+		WorkflowImages: workflowImages.Store,
 	}
 	reg := commands.BuildRegistry()
 	srv := api.NewServer(reg, cctx)

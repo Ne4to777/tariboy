@@ -20,6 +20,7 @@ import (
 	"github.com/alekzonder/tariboy/internal/shim"
 	"github.com/alekzonder/tariboy/internal/store"
 	"github.com/alekzonder/tariboy/internal/tasks"
+	"github.com/alekzonder/tariboy/internal/workflowimage"
 )
 
 type ArgType string
@@ -86,6 +87,9 @@ type Ctx struct {
 	Retention   *retention.RetentionAPI
 	Maintenance *maintenance.Service
 	Tasks       TaskControl
+	// WorkflowImages is the workflow image store; the prompt preview reads
+	// status instructions from it.
+	WorkflowImages *workflowimage.Store
 }
 
 // TaskControl is the daemon-owned native Tasks surface consumed by typed HTTP

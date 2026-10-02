@@ -118,7 +118,7 @@ func promptGet() registry.Command {
 				if task, ok, err := taskgoal.NewStore(c.Store).Current(a.Name, time.Now().UTC()); err != nil {
 					return nil, err
 				} else if ok {
-					goal = loop.FormatRuntimeGoal(task)
+					goal = loop.RuntimeGoal(registry.RequestContext(p), workflowGoals(c), task, a.Name, c.Log)
 				}
 			}
 			if a.ImageRef == image.BareRef.String() {
@@ -165,4 +165,13 @@ func readManifest(path string) (image.Manifest, error) {
 		return image.Manifest{}, err
 	}
 	return man, nil
+}
+
+// workflowGoals is the source of workflow data for the prompt preview; nil
+// when the daemon has no Tasks service, which renders the flexible text.
+func workflowGoals(c *registry.Ctx) loop.WorkflowGoalSource {
+	if c.Tasks == nil {
+		return nil
+	}
+	return loop.TaskWorkflowGoals{Tasks: c.Tasks, Images: c.WorkflowImages, Log: c.Log}
 }

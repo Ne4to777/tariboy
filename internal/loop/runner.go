@@ -379,7 +379,10 @@ type RunnerConfig struct {
 	Bus          *bus.Bus
 	Proxy        ProxyBinder
 	CurrentGoal  func(string, time.Time) (tasks.Task, bool, error)
-	Tasks        nativeTaskReader
+	// WorkflowGoals supplies the workflow data for the Goal block of a workflow
+	// task; nil renders the flexible text with a notice.
+	WorkflowGoals WorkflowGoalSource
+	Tasks         nativeTaskReader
 	// HasTmuxSession reports whether an interactive agent's tmux session is already
 	// alive. Injectable so tests avoid a real tmux. Defaults to tmuxHasSession.
 	HasTmuxSession func(session string) bool
@@ -783,7 +786,7 @@ func (r *ShimRunner) prepare(ctx context.Context, tr oteltrace.Tracer, ag agent.
 
 		goal := ""
 		if hasCurrentGoal {
-			goal = FormatRuntimeGoal(currentGoal)
+			goal = RuntimeGoal(ctx, r.cfg.WorkflowGoals, currentGoal, ag.Name, r.cfg.Logger)
 		}
 		if imageSchemaVersion == 2 {
 			template, err := ReadPromptTemplate(l.ImageDir(), iteration.PromptTemplateSHA256)
