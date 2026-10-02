@@ -223,6 +223,19 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	if exists == 0 {
 		return Task{}, domainError(http.StatusNotFound, "queue_not_found", "queue not found")
 	}
+	// A task created in a bound queue pins the queue's workflow and the workflow
+	// assigns it, so an explicit assignee is refused.
+	binding, bound, err := queueWorkflowTx(ctx, tx, queue)
+	if err != nil {
+		return Task{}, err
+	}
+	var workflowDigest any
+	if bound {
+		if strings.TrimSpace(in.Assignee) != "" {
+			return Task{}, workflowManagedError()
+		}
+		workflowDigest = binding.Digest
+	}
 	// An unassigned root task from an agent that does not run the queue is a filed report:
 	// it is ungrouped and (through the visibility rules) invisible to its author afterwards,
 	// so triage belongs to whoever runs the queue. An explicit assignee instead owns only
@@ -262,10 +275,10 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO tasks(
 			task_key, queue_prefix, parent_id, position, priority, title, description, status, pull_request,
-			author, customer, group_name, assignee, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			author, customer, group_name, assignee, created_at, updated_at, workflow_digest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		key, queue, parentID, position, priority, in.Title, strings.TrimSpace(in.Description),
-		status, pullRequest, actor.Principal, customer, group, assignee, now, now)
+		status, pullRequest, actor.Principal, customer, group, assignee, now, now, workflowDigest)
 	if err != nil {
 		return Task{}, err
 	}
@@ -283,6 +296,9 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	if filed {
 		task.Access, task.Filed = "", true
 	}
+	if bound {
+		task.WorkflowDigest, task.WorkflowName, task.WorkflowVersion = binding.Digest, binding.Name, binding.Version
+	}
 	payload := map[string]any{"key": key, "parent_key": parentKey, "priority": priority, "pull_request": task.PullRequest}
 	sequence, err := appendEventTx(ctx, tx, task, "task.created", actor, payload, now)
 	if err != nil {
@@ -294,7 +310,16 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 			return Task{}, err
 		}
 	}
-	if task.Assignee != "" && task.Assignee != actor.Principal {
+	if bound {
+		// The workflow owns the task from here: entering the initial status assigns it.
+		manifest, err := loadManifestTx(ctx, tx, binding.Digest)
+		if err != nil {
+			return Task{}, err
+		}
+		if err := s.enterStatusTx(ctx, tx, &task, manifest, manifest.Definition.InitialStatus, actor.Principal, "", ""); err != nil {
+			return Task{}, err
+		}
+	} else if task.Assignee != "" && task.Assignee != actor.Principal {
 		if err := enqueueNotificationTx(ctx, tx, sequence, task.Assignee, actor.Principal,
 			"task.assigned", task, "New task assigned: "+task.Key+" "+task.Title, now); err != nil {
 			return Task{}, err

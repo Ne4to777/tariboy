@@ -53,12 +53,14 @@ func (s *Service) AddComment(ctx context.Context, actor Actor, key string, in Ad
 	if err != nil {
 		return CommentResult{}, err
 	}
+	// A workflow's own question is answered by an outcome, never by a comment.
+	resolved = withoutWorkflowWaits(resolved)
 	if len(resolved) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE task_waiting_for
 			SET resolving_comment_id = ?, resolved_at = ?
-			WHERE task_id = ? AND expected_principal = ? AND resolved_at = ''`,
-			commentID, now, task.ID, actor.Principal); err != nil {
+			WHERE task_id = ? AND expected_principal = ? AND resolved_at = '' AND requesting_principal <> ?`,
+			commentID, now, task.ID, actor.Principal, workflowActor); err != nil {
 			return CommentResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -80,6 +82,16 @@ func (s *Service) AddComment(ctx context.Context, actor Actor, key string, in Ad
 	mentions := s.parseMentions(body)
 	created := make([]WaitingFor, 0, len(mentions))
 	for _, principal := range mentions {
+		if task.WorkflowDigest != "" {
+			// The workflow already waits on this principal; keep its question.
+			open, err := openWaitsForPrincipal(ctx, tx, task, principal)
+			if err != nil {
+				return CommentResult{}, err
+			}
+			if len(withoutWorkflowWaits(open)) < len(open) {
+				continue
+			}
+		}
 		wait, err := upsertWait(ctx, tx, task, principal, actor.Principal, commentID, now)
 		if err != nil {
 			return CommentResult{}, err
@@ -95,7 +107,11 @@ func (s *Service) AddComment(ctx context.Context, actor Actor, key string, in Ad
 		containsPrincipal(created, task.Customer) && task.Status != StatusDone && task.Status != StatusCancelled
 	lastCustomerWaitResolved := task.Status == StatusWaitCustomer &&
 		containsPrincipal(resolved, task.Customer) && len(customerWaits) == 0
+	// A workflow task waiting on its customer status, a script, or a pause keeps
+	// its category; only its holder's question in a pool status moves it.
+	workflowWaiting := task.WorkflowDigest != "" && task.WaitingOn != ""
 	switch {
+	case workflowWaiting:
 	case assignedAgentQuestion:
 		task.Status = StatusWaitCustomer
 	case lastCustomerWaitResolved:
@@ -280,6 +296,16 @@ func listComments(ctx context.Context, q queryer, task Task) ([]Comment, error) 
 		out = append(out, comment)
 	}
 	return out, rows.Err()
+}
+
+func withoutWorkflowWaits(waits []WaitingFor) []WaitingFor {
+	out := waits[:0:0]
+	for _, wait := range waits {
+		if wait.RequestingPrincipal != workflowActor {
+			out = append(out, wait)
+		}
+	}
+	return out
 }
 
 func waitPrincipals(waits []WaitingFor) []string {

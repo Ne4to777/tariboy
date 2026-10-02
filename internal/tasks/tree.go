@@ -246,6 +246,7 @@ func readyWith(ctx context.Context, q queryer, actor Actor, filter ReadyFilter) 
 	}
 	query, args := addVisibleClause(taskSelect+`
 		WHERE t.status = 'open' AND t.assignee = '' AND t.manual_block_reason = ''
+		  AND t.workflow_digest IS NULL
 		  AND NOT EXISTS (
 			SELECT 1 FROM task_relations r
 			JOIN tasks blocker ON blocker.id = r.source_id

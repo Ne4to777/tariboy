@@ -46,6 +46,10 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 	if err := requireWrite(ctx, tx, actor, task); err != nil {
 		return Task{}, err
 	}
+	// The workflow owns the status and the assignee of its task.
+	if task.WorkflowDigest != "" && (in.Status != nil || in.Assignee != nil) {
+		return Task{}, workflowManagedErrorFor(ctx, tx, task)
+	}
 	if in.Revision <= 0 || in.Revision != task.Revision {
 		return Task{}, &Error{Status: http.StatusConflict, Code: "revision_conflict",
 			Msg: "task was changed by another actor", Data: map[string]any{
@@ -100,10 +104,13 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, key string, in Up
 	now := s.now()
 	task.Revision++
 	task.UpdatedAt = now
-	if task.Status == StatusDone {
-		task.CompletedAt = now
-	} else {
-		task.CompletedAt = ""
+	// A workflow task's completion time belongs to the workflow and is kept.
+	if task.WorkflowDigest == "" {
+		if task.Status == StatusDone {
+			task.CompletedAt = now
+		} else {
+			task.CompletedAt = ""
+		}
 	}
 	// The tasks_started_at trigger stores the first start; mirror it in the reply.
 	if task.Status == StatusInProgress && previousStatus != StatusInProgress && task.StartedAt == "" {
@@ -156,6 +163,9 @@ func (s *Service) CompleteTask(ctx context.Context, actor Actor, key string, in 
 	}
 	if err := requireWrite(ctx, tx, actor, task); err != nil {
 		return Task{}, err
+	}
+	if task.WorkflowDigest != "" {
+		return Task{}, workflowManagedErrorFor(ctx, tx, task)
 	}
 	if in.Revision <= 0 || in.Revision != task.Revision {
 		return Task{}, &Error{Status: http.StatusConflict, Code: "revision_conflict",
@@ -391,6 +401,9 @@ func (s *Service) ClaimTask(ctx context.Context, actor Actor, key string, revisi
 	if err != nil {
 		return Task{}, err
 	}
+	if detail.Task.WorkflowDigest != "" {
+		return Task{}, workflowManagedErrorFor(ctx, s.db, detail.Task)
+	}
 	if detail.Task.Blocked {
 		return Task{}, domainError(http.StatusConflict, "task_blocked", "blocked task cannot be claimed")
 	}
@@ -405,8 +418,8 @@ func (s *Service) ClaimTask(ctx context.Context, actor Actor, key string, revisi
 	})
 }
 
-// workflowManagedError has no caller while no task has a workflow; the
-// workflow image engine refuses flexible-task writes on its tasks with it.
+// workflowManagedError refuses a flexible-task command on a task with a
+// workflow, or one that would bring a task into or out of a bound queue.
 func workflowManagedError() error {
 	return domainError(http.StatusConflict, "workflow_managed",
 		"task lifecycle is managed by its workflow")

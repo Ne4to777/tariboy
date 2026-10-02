@@ -141,6 +141,35 @@ func runWorkflowObservationReconciler(ctx context.Context, reconciler workflowOb
 	}
 }
 
+type workflowDispatcher interface {
+	DispatchPending(context.Context) (int, error)
+}
+
+const workflowDispatchInterval = time.Minute
+
+// runWorkflowDispatcher assigns pool work to workflow tasks at startup, on each
+// task change signal, and on the interval, until ctx ends.
+func runWorkflowDispatcher(ctx context.Context, dispatcher workflowDispatcher, signals <-chan struct{}, interval time.Duration, log *slog.Logger) {
+	dispatch := func() {
+		if _, err := dispatcher.DispatchPending(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("workflow dispatch", "err", err)
+		}
+	}
+	dispatch()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signals:
+			dispatch()
+		case <-ticker.C:
+			dispatch()
+		}
+	}
+}
+
 func Run(ctx context.Context, o Options) error {
 	lvl := slog.LevelInfo
 	switch o.LogLevel {
@@ -256,7 +285,12 @@ func Run(ctx context.Context, o Options) error {
 	})
 	goalStore := taskgoal.NewStore(st)
 	currentGoal := goalStore.Current
-	taskService.SetGoalSignal(goalReconciler.Signal)
+	// A task change wakes both the goal reconciler and the workflow dispatcher.
+	workflowDispatch := newWorkflowIngressSignal()
+	taskService.SetGoalSignal(func() {
+		goalReconciler.Signal()
+		workflowDispatch.Signal()
+	})
 	if err := taskService.EnsureDefaultQueue(context.Background()); err != nil {
 		log.Error("seed default task queue", "err", err)
 	}
@@ -683,7 +717,7 @@ func Run(ctx context.Context, o Options) error {
 	// their final flush/refresh before the store closes.
 	gctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Add(11)
+	wg.Add(12)
 	scheduler := schedule.NewScheduler(schedStore, channelBus, log, time.Now, time.After)
 	go func() {
 		defer wg.Done()
@@ -716,6 +750,10 @@ func Run(ctx context.Context, o Options) error {
 	go func() {
 		defer wg.Done()
 		runWorkflowObservationReconciler(gctx, taskService, workflowIngress.C(), workflowObservationReconcileInterval, log)
+	}()
+	go func() {
+		defer wg.Done()
+		runWorkflowDispatcher(gctx, taskService, workflowDispatch.C(), workflowDispatchInterval, log)
 	}()
 	go func() {
 		defer wg.Done()

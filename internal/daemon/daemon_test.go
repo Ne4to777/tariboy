@@ -143,6 +143,63 @@ func TestWorkflowIngressSignalProcessesPromptlyAndCoalescesWithoutBlockingPublis
 	}
 }
 
+type fakeDispatcher struct {
+	calls chan struct{}
+	err   error
+}
+
+func (f *fakeDispatcher) DispatchPending(context.Context) (int, error) {
+	select {
+	case f.calls <- struct{}{}:
+	default:
+	}
+	return 0, f.err
+}
+
+func TestWorkflowDispatcherRunsAtStartupOnSignalAndPeriodicallyAndStops(t *testing.T) {
+	var logs bytes.Buffer
+	fake := &fakeDispatcher{calls: make(chan struct{}, 8), err: context.DeadlineExceeded}
+	signal := newWorkflowIngressSignal()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runWorkflowDispatcher(ctx, fake, signal.C(), time.Hour, slog.New(slog.NewTextHandler(&logs, nil)))
+		close(done)
+	}()
+	wait := func(what string) {
+		t.Helper()
+		select {
+		case <-fake.calls:
+		case <-time.After(time.Second):
+			t.Fatalf("%s dispatch did not arrive", what)
+		}
+	}
+	wait("startup")
+	signal.Signal()
+	wait("signaled")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher did not stop")
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "workflow dispatch") {
+		t.Fatalf("dispatch error was not logged at warn: %s", logs.String())
+	}
+
+	periodic := &fakeDispatcher{calls: make(chan struct{}, 8)}
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	go runWorkflowDispatcher(ctx, periodic, make(chan struct{}), 5*time.Millisecond, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	for i := 0; i < 3; i++ {
+		select {
+		case <-periodic.calls:
+		case <-time.After(time.Second):
+			t.Fatalf("periodic dispatch %d did not arrive", i+1)
+		}
+	}
+}
+
 func TestOrdinaryPublishDoesNotSynchronouslyWriteWorkflowStateOrChangeLegacyDelivery(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "publish.db"))
 	if err != nil {

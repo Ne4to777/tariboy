@@ -90,6 +90,21 @@ func (s *Service) ExportTask(ctx context.Context, actor Actor, key string) (Tran
 	if err := requireWrite(ctx, s.db, actor, task); err != nil {
 		return TransferBundle{}, err
 	}
+	// A workflow task stays in the queue whose workflow it pinned.
+	var pinned bool
+	if err := s.db.QueryRowContext(ctx, `
+		WITH RECURSIVE subtree(id) AS (
+			SELECT id FROM tasks WHERE id = ?
+			UNION ALL
+			SELECT t.id FROM tasks t JOIN subtree s ON t.parent_id = s.id
+		)
+		SELECT EXISTS(SELECT 1 FROM tasks t JOIN subtree s ON s.id = t.id WHERE t.workflow_digest IS NOT NULL)`,
+		task.ID).Scan(&pinned); err != nil {
+		return TransferBundle{}, err
+	}
+	if pinned {
+		return TransferBundle{}, workflowManagedError()
+	}
 	rows, err := s.db.QueryContext(ctx, transferSubtree, task.ID)
 	if err != nil {
 		return TransferBundle{}, err
@@ -208,6 +223,12 @@ func (s *Service) ImportTask(ctx context.Context, actor Actor, bundle TransferBu
 	if exists == 0 {
 		return Task{}, domainError(http.StatusNotFound, "queue_not_found",
 			"this daemon has no queue "+queue)
+	}
+	// A task enters a bound queue only by being created there.
+	if _, bound, err := queueWorkflowTx(ctx, tx, queue); err != nil {
+		return Task{}, err
+	} else if bound {
+		return Task{}, workflowManagedError()
 	}
 	now := s.now()
 	ids := map[string]int64{}
