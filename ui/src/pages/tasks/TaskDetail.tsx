@@ -181,10 +181,13 @@ export default function TaskDetail({
   }
 
   // The workflow's own wait (a customer status or a pause) is answered in the
-  // workflow panel, never by a comment, so it does not ask for one here.
-  const openWaits = detail.waiting_for.filter((wait) => !wait.resolved_at
-    && !(workflow && wait.requesting_principal === "system:workflow"))
+  // workflow panel, never by a comment, so neither the banner nor a comment
+  // chip asks for one.
+  const commentWaits = detail.waiting_for.filter((wait) => !(workflow && wait.requesting_principal === "system:workflow"))
+  const openWaits = commentWaits.filter((wait) => !wait.resolved_at)
   const editable = task.access !== "context" && task.access !== "respond"
+  // The workflow panel refetches when a new event arrives.
+  const eventSequence = events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) close() }}>
@@ -224,7 +227,9 @@ export default function TaskDetail({
           {editable && <Button size="sm" className="h-7" disabled={pending || !title.trim()} onClick={() => void save()}>Save task</Button>}
           {/* Everything that is not Save or Close lives behind one menu, so the
               header keeps its two primary controls at any panel width. */}
-          {editable && <DropdownMenu>
+          {/* A workflow task cannot move to another server: the export is
+              refused with workflow_managed. */}
+          {editable && !workflow && <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label="Task actions" disabled={pending}
                 className="size-7 rounded-[8px] text-muted-foreground hover:bg-accent hover:text-foreground"><MoreHorizontal className="size-3.5" /></Button>
@@ -348,7 +353,7 @@ export default function TaskDetail({
             </div>
           </fieldset>
           {/* In place of the status select: the workflow changes the status. */}
-          {workflow && <WorkflowPanel task={task} target={target} onTaskChanged={onTaskChanged} />}
+          {workflow && <WorkflowPanel task={task} eventSequence={eventSequence} target={target} onTaskChanged={onTaskChanged} />}
           <section className="flex min-w-0 flex-col gap-1.5">
             <SectionHeading label="Dependencies" count={detail.relations.length} />
             {detail.relations.length === 0 && <span className={EMPTY}>Nothing blocks this task.</span>}
@@ -401,7 +406,7 @@ export default function TaskDetail({
             <div className="rounded-[8px] bg-muted px-3 py-[11px]"><MarkdownContent>{task.description}</MarkdownContent></div>
             <p className={EMPTY}>Response access — comments only.</p>
           </div>}
-          <TaskComments comments={comments} waits={detail.waiting_for} principals={principals} assignee={task.assignee}
+          <TaskComments comments={comments} waits={commentWaits}principals={principals} assignee={task.assignee}
             formFirst={commentOrder === "newest"} order={commentOrder} onOrderChange={setCommentOrder}
             onComment={onComment} onDirtyChange={setCommentDirty} target={target} onUploadingChange={setUploadingComment} />
           <section className="flex min-w-0 flex-col gap-1">

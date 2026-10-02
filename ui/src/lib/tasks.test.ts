@@ -75,14 +75,19 @@ describe("workflow task client", () => {
   beforeEach(() => apiOn.mockReset().mockResolvedValue({}))
 
   it("reads the workflow of a task", async () => {
-    await getTaskWorkflow("TARI 1", remote)
+    const view = { name: "flow", status: "review", statuses: [{ id: "review", owner: "customer", terminal: false }], declared_artifacts: [] }
+    apiOn.mockResolvedValue(view)
+    await expect(getTaskWorkflow("TARI 1", remote)).resolves.toEqual(view)
     expect(lastCall()).toEqual([remote, "GET", "/api/tasks/TARI%201/workflow", undefined])
   })
 
   it("advances with and without the status the caller saw", async () => {
-    await advanceTask("TARI-1", "approve", "ok", undefined, remote)
+    const pending = { id: 4, outcome: "approve", state: "pending", wait_seconds: 30 }
+    apiOn.mockResolvedValue(pending)
+    await expect(advanceTask("TARI-1", "approve", "ok", undefined, remote)).resolves.toEqual(pending)
     expect(lastCall()).toEqual([remote, "POST", "/api/tasks/TARI-1/advance", { outcome: "approve", message: "ok" }])
-    await advanceTask("TARI-1", "approve", "ok", "review", remote)
+    const request = await advanceTask("TARI-1", "approve", "ok", "review", remote)
+    expect(request.wait_seconds).toBe(30)
     expect(lastCall()).toEqual([remote, "POST", "/api/tasks/TARI-1/advance", { outcome: "approve", message: "ok", from: "review" }])
   })
 
@@ -164,6 +169,8 @@ describe("workflow task helpers", () => {
   it("tells workflow tasks from flexible ones", () => {
     expect(isWorkflowTask(task({}))).toBe(false)
     expect(isWorkflowTask(task({ workflow_name: "development" }))).toBe(true)
+    // The daemon marks a workflow task by its digest; the name is a fallback.
+    expect(isWorkflowTask(task({ workflow_digest: "abc" }))).toBe(true)
   })
 
   it("labels the status of either kind", () => {

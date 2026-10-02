@@ -1,12 +1,12 @@
 import { ArrowRight } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { ApiError, type ApiTarget } from "@/lib/api"
 import { advanceTask, getTransitionRequest, type TransitionRequest, type WorkflowView } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 import { DANGER_FILL, EMPTY, LABEL, MONO } from "./panelStyles"
-import { errorText } from "./WorkflowConfirm"
+import { errorText, useMounted } from "./workflowShared"
 
 /** How long to wait for a pending request when the daemon does not say. */
 const DEFAULT_WAIT_SECONDS = 90
@@ -40,11 +40,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
   const [held, setHeld] = useState<{ status: string; notice: Notice } | null>(null)
   const notice = held?.status === view.status ? held.notice : null
   const setNotice = (next: Notice | null, status = view.status) => setHeld(next && { status, notice: next })
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
+  const mountedRef = useMounted()
 
   const advance = async (outcome: string) => {
     setChecking(true)
@@ -55,20 +51,20 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       let polls = Math.ceil(request.wait_seconds ?? DEFAULT_WAIT_SECONDS)
       while (request.state === "pending") {
         if (polls-- <= 0) {
-          if (mounted.current) setNotice({ kind: "timeout" })
+          if (mountedRef.current) setNotice({ kind: "timeout" })
           return
         }
         await sleep(1000)
-        if (!mounted.current) return
+        if (!mountedRef.current) return
         try {
           request = await getTransitionRequest(taskKey, request.id, target)
         } catch (error) {
           // The request may still be applying; only reading it failed.
-          if (mounted.current) setNotice({ kind: "error", label: "Could not read the request", message: errorText(error) })
+          if (mountedRef.current) setNotice({ kind: "error", label: "Could not read the request", message: errorText(error) })
           return
         }
       }
-      if (!mounted.current) return
+      if (!mountedRef.current) return
       if (request.state === "applied") {
         setMessage("")
         onChanged()
@@ -77,7 +73,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
         onRefresh()
       }
     } catch (error) {
-      if (!mounted.current) return
+      if (!mountedRef.current) return
       const stale = error instanceof ApiError && STALE_CODES.has(error.code)
       // status_changed names the status the task is in now, where the
       // refetched view lands, so its message survives that refetch.
@@ -85,13 +81,17 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       setNotice({ kind: "error", label: "Refused", message: errorText(error) }, now)
       if (stale) onRefresh()
     } finally {
-      if (mounted.current) setChecking(false)
+      if (mountedRef.current) setChecking(false)
     }
   }
 
   const last = view.last_request
-  const shown: Notice | null = notice
-    ?? (last && (last.state === "rejected" || last.state === "failed") ? { kind: "result", request: last } : null)
+  // A timeout says the result is still to come; once the view has the
+  // request settled, it no longer applies.
+  const current = notice?.kind === "timeout" && last && last.state !== "pending" ? null : notice
+  const shown: Notice | null = current
+    ?? (last && (last.state === "rejected" || last.state === "failed") && inCurrentVisit(view, last)
+      ? { kind: "result", request: last } : null)
   const pendingElsewhere = !checking && last?.state === "pending"
   const disabled = checking || paused || pendingElsewhere
 
@@ -113,7 +113,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
                 : <span className={cn(MONO, "font-medium")}>{outcome.on}</span>}
               {customer && missing.size > 0 && <span className="text-[11.5px] text-status-failed">needs: {[...missing].join(", ")}</span>}
               <ArrowRight aria-hidden="true" className="size-3 text-muted-foreground" />
-              <span className={MONO}>{outcome.to}</span>
+              <span className={cn(MONO, "min-w-0 break-all")}>{outcome.to}</span>
               {(outcome.requires ?? []).length > 0 && <span className="text-[11.5px] text-muted-foreground">requires</span>}
               {(outcome.requires ?? []).map((name) => missing.has(name)
                 ? <span key={name} data-missing="true" title="No value yet"
@@ -126,7 +126,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
         })}
       </ul>
       {customer && view.outcomes.length > 0 && <Textarea aria-label="Outcome message" placeholder="Message (optional)"
-        value={message} disabled={checking} onChange={(event) => setMessage(event.target.value)}
+        value={message} disabled={checking} maxLength={4096} onChange={(event) => setMessage(event.target.value)}
         className="min-h-12 rounded-[8px] border-0 bg-muted text-[12.5px] md:text-[12.5px]" />}
       {(checking || pendingElsewhere) && <div className="flex items-center gap-2">
         <span role="status" className={EMPTY}>checking…</span>
@@ -135,6 +135,17 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       {shown && <OutcomeNotice notice={shown} onRefresh={onRefresh} />}
     </section>
   )
+}
+
+/**
+ * Whether a request was made in the open visit of an open task. A rejection
+ * from an earlier visit, or on a closed task, says nothing about what to do now.
+ */
+function inCurrentVisit(view: WorkflowView, request: TransitionRequest): boolean {
+  if (view.category === "done" || view.category === "cancelled") return false
+  const open = view.visits.find((visit) => !visit.left_at)
+  if (!open) return false
+  return Date.parse(request.created_at) >= Date.parse(open.entered_at)
 }
 
 function OutcomeNotice({ notice, onRefresh }: { notice: Notice; onRefresh: () => void }) {

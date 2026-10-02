@@ -5,7 +5,8 @@ import type { ApiTarget } from "@/lib/api"
 import { listQueueSecrets, removeQueueSecret, setQueueSecret, type QueueSecretInfo } from "@/lib/tasks"
 import { COUNT, EMPTY, FIELD, LABEL, QUIET_ACTION } from "./panelStyles"
 import { formatTaskTime } from "./taskTime"
-import { errorText, useWorkflowConfirm } from "./WorkflowConfirm"
+import { useWorkflowConfirm } from "./WorkflowConfirm"
+import { errorText } from "./workflowShared"
 
 // The daemon's rule (internal/tasks/workflow_secrets.go).
 const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -32,11 +33,16 @@ export default function QueueSecrets({ queue, target, missing = [], missingMessa
   const [key, setKey] = useState("")
   const [value, setValue] = useState("")
   const [error, setError] = useState("")
+  // Until a load succeeds the list is unknown, so "No secrets." would be a guess.
+  const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const { confirm, dialog } = useWorkflowConfirm()
 
   const load = useCallback(async () => {
-    try { setSecrets(await listQueueSecrets(queue, target)) } catch (err) { setError(errorText(err)) }
+    try {
+      setSecrets(await listQueueSecrets(queue, target))
+      setLoaded(true)
+    } catch (err) { setError(errorText(err)) }
   }, [queue, target])
   useEffect(() => { void Promise.resolve().then(load) }, [load])
 
@@ -77,7 +83,7 @@ export default function QueueSecrets({ queue, target, missing = [], missingMessa
           <p className="font-mono">{stillMissing.join(", ")}</p>
         </div>
       )}
-      {secrets.length === 0 ? <span className={EMPTY}>No secrets.</span> : (
+      {secrets.length === 0 ? loaded && <span className={EMPTY}>No secrets.</span> : (
         <ul className="flex min-w-0 flex-col gap-1">
           {secrets.map((secret) => (
             <li key={secret.key} className="flex min-w-0 items-center gap-2 text-[12px]">

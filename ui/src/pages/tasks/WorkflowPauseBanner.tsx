@@ -5,7 +5,8 @@ import type { ApiTarget } from "@/lib/api"
 import { cancelWorkflowTask, resumeTaskWorkflow } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 import { DANGER_FILL } from "./panelStyles"
-import { errorText, useWorkflowConfirm } from "./WorkflowConfirm"
+import { useWorkflowConfirm } from "./WorkflowConfirm"
+import { errorText } from "./workflowShared"
 
 /** The four reasons the daemon pauses a task, as a person reads them. */
 const REASONS: Record<string, string> = {
@@ -51,7 +52,10 @@ export default function WorkflowPauseBanner({ taskKey, reason, pool, target, onC
       <div className="flex flex-wrap gap-1.5">
         <Button type="button" variant="ghost" className={BUTTON} disabled={busy} onClick={() => confirm({
           title: "Continue this task?",
-          description: "The same holder continues and the counters are reset.",
+          // Only a pool status has a holder to keep.
+          description: pool
+            ? "The same holder continues and the counters are reset."
+            : "Resume the task in its current status. The counters are reset.",
           action: "Continue",
           run: () => decide(() => resumeTaskWorkflow(taskKey, "continue", target)),
         })}>Continue</Button>

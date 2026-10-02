@@ -5,11 +5,12 @@ import { getTaskScriptRunLog, type ScriptRun } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 import { COUNT, EMPTY, LABEL, MONO, QUIET_ACTION } from "./panelStyles"
 import { formatTaskTime } from "./taskTime"
-import { errorText } from "./WorkflowConfirm"
+import { errorText } from "./workflowShared"
 
 /**
- * The task's script runs, newest first. A log is read only when asked for, at
- * the daemon's default size, and shown as text: it is the script's own output.
+ * The task's script runs, newest first. The view carries only the latest 20.
+ * A log is read only when asked for, at the daemon's default size, and shown
+ * as text: it is the script's own output.
  */
 export default function WorkflowRuns({ taskKey, runs, target }: {
   taskKey: string
@@ -22,6 +23,7 @@ export default function WorkflowRuns({ taskKey, runs, target }: {
       <div className="flex items-center gap-1.5">
         <span className={LABEL}>Script runs</span>
         <span className={COUNT}>{runs.length}</span>
+        <span className="text-[11.5px] text-muted-foreground">latest 20</span>
       </div>
       {sorted.length === 0 && <span className={EMPTY}>No script has run yet.</span>}
       <ul className="flex min-w-0 flex-col gap-1">
@@ -35,8 +37,7 @@ function RunItem({ taskKey, run, target }: { taskKey: string; run: ScriptRun; ta
   const [log, setLog] = useState<{ text: string; truncated: boolean } | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const toggleLog = () => {
-    if (log) { setLog(null); return }
+  const readLog = () => {
     setLoading(true)
     setError("")
     getTaskScriptRunLog(taskKey, run.id, undefined, target)
@@ -44,6 +45,12 @@ function RunItem({ taskKey, run, target }: { taskKey: string; run: ScriptRun; ta
       .catch((failure) => setError(errorText(failure)))
       .finally(() => setLoading(false))
   }
+  const toggleLog = () => {
+    if (log) { setLog(null); return }
+    readLog()
+  }
+  // A run still going keeps writing its log.
+  const going = run.state === "pending" || run.state === "running"
   const started = run.started_at ?? run.created_at
   return (
     <li className="flex min-w-0 flex-col gap-1">
@@ -56,8 +63,12 @@ function RunItem({ taskKey, run, target }: { taskKey: string; run: ScriptRun; ta
         <time dateTime={started} className={cn(MONO, "text-muted-foreground")}>{formatTaskTime(started)}</time>
         {run.finished_at && <time dateTime={run.finished_at} className={cn(MONO, "text-muted-foreground")}>
           → {formatTaskTime(run.finished_at)}</time>}
-        <Button type="button" variant="ghost" className={cn(QUIET_ACTION, "ml-auto")} disabled={loading}
-          aria-expanded={log !== null} onClick={toggleLog}>{log ? "Hide log" : "Log"}</Button>
+        <span className="ml-auto flex gap-1">
+          {log && going && <Button type="button" variant="ghost" className={QUIET_ACTION} disabled={loading}
+            aria-label="Refresh log" onClick={readLog}>Refresh</Button>}
+          <Button type="button" variant="ghost" className={QUIET_ACTION} disabled={loading}
+            aria-expanded={log !== null} onClick={toggleLog}>{log ? "Hide log" : "Log"}</Button>
+        </span>
       </div>
       {run.message && <span className="min-w-0 text-[12px] break-words whitespace-pre-wrap text-muted-foreground">{run.message}</span>}
       {error && <p role="alert" className="text-[12px] text-status-failed">{error}</p>}

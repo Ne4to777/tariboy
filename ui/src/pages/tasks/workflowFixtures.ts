@@ -80,6 +80,18 @@ export const customerView: WorkflowView = {
     { id: 2, sequence: 2, status: "review", entered_at: "2026-10-01T10:04:30Z", entered_by: "agent:writer" },
   ],
   runs: [watchRun, checkRun],
+  declared_artifacts: [
+    { name: "notes", description: "The release notes." },
+    { name: "summary", description: "" },
+    { name: "changelog", description: "Optional changelog entry." },
+  ],
+  statuses: [
+    { id: "draft", owner: "pool:writers", terminal: false },
+    { id: "review", owner: "customer", terminal: false },
+    { id: "publish", owner: "script", terminal: false },
+    { id: "done", owner: "", terminal: true },
+    { id: "dropped", owner: "", terminal: true },
+  ],
 }
 
 /** The same task in the pool status `draft`, held by an agent. */

@@ -3,11 +3,12 @@ import { Button } from "@/components/ui/button"
 import { ApiError, type ApiTarget } from "@/lib/api"
 import {
   clearQueueWorkflow, getQueueWorkflow, listWorkflowImages, setQueueWorkflow,
-  type QueueWorkflow, type WorkflowImage,
+  type AgentPool, type QueueWorkflow, type WorkflowImage,
 } from "@/lib/tasks"
 import { EMPTY, LABEL, MONO, SelectShell } from "./panelStyles"
 import QueueSecrets from "./QueueSecrets"
-import { errorText, useWorkflowConfirm } from "./WorkflowConfirm"
+import { useWorkflowConfirm } from "./WorkflowConfirm"
+import { errorText } from "./workflowShared"
 
 function detailList(error: ApiError, name: string): string[] {
   const list = error.details?.[name]
@@ -22,14 +23,15 @@ function sortImages(images: WorkflowImage[]): WorkflowImage[] {
 
 /**
  * The Workflow section of a queue: the bound image, a select to bind another,
- * the pools control (the existing editor, passed as `pools`), and secrets. A
+ * the pools control (the existing editor, rendered by `pools`), and secrets. A
  * bind refused for empty pools or missing secrets lists them beside the
- * control that fixes them.
+ * control that fixes them, until that control has fixed them.
  */
 export default function QueueWorkflowSettings({ queue, target, pools }: {
   queue: string
   target?: ApiTarget
-  pools: ReactNode
+  /** Renders the pools editor, which reports every pool it saves. */
+  pools: (onPoolSaved: (pool: AgentPool) => void) => ReactNode
 }) {
   const [binding, setBinding] = useState<QueueWorkflow | null>(null)
   // True only after a load succeeded: until then the binding is unknown.
@@ -40,6 +42,8 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [emptyPools, setEmptyPools] = useState<{ names: string[]; message: string } | null>(null)
+  // Pools the editor saved with members since the refusal.
+  const [filledPools, setFilledPools] = useState<string[]>([])
   const [missingSecrets, setMissingSecrets] = useState<{ names: string[]; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const { confirm, dialog } = useWorkflowConfirm()
@@ -66,12 +70,17 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
       setNotice("The binding changed elsewhere. It was reloaded; review and retry.")
     } else if (err instanceof ApiError && err.code === "workflow_pool_empty") {
       setEmptyPools({ names: detailList(err, "pools"), message: err.message })
+      setFilledPools([])
     } else if (err instanceof ApiError && err.code === "workflow_secret_missing") {
       setMissingSecrets({ names: detailList(err, "secrets"), message: err.message })
     } else setError(errorText(err))
   }
 
   const reset = () => { setError(""); setNotice(""); setEmptyPools(null); setMissingSecrets(null) }
+  const poolSaved = useCallback((pool: AgentPool) => setFilledPools((current) => pool.agents.length > 0
+    ? [...current.filter((name) => name !== pool.name), pool.name]
+    : current.filter((name) => name !== pool.name)), [])
+  const stillEmpty = emptyPools?.names.filter((name) => !filledPools.includes(name)) ?? []
 
   const bind = async () => {
     reset()
@@ -122,13 +131,13 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
       </div>
       {notice && <p role="status" className="text-[12px] text-muted-foreground">{notice}</p>}
       {error && <p role="alert" className="text-[12px] text-destructive">{error}</p>}
-      {emptyPools && (
+      {emptyPools && stillEmpty.length > 0 && (
         <div role="alert" aria-label="Pools needed" className="text-[12px] text-destructive">
           <p>{emptyPools.message}</p>
-          <p className="font-mono">{emptyPools.names.join(", ")}</p>
+          <p className="font-mono">{stillEmpty.join(", ")}</p>
         </div>
       )}
-      {pools}
+      {pools(poolSaved)}
       <QueueSecrets queue={queue} target={target} missing={missingSecrets?.names} missingMessage={missingSecrets?.message} />
       {dialog}
     </section>

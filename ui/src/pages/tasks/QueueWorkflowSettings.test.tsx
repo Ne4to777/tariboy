@@ -17,7 +17,14 @@ const images = [
   { name: "release", tag: "latest", version: "1.2.0", digest, built_at: "" },
   { name: "audit", tag: "2", version: "2", digest: "ff", built_at: "" },
 ]
-const renderIt = () => render(<QueueWorkflowSettings queue="REL" target={remoteTarget} pools={<div>pools editor</div>} />)
+const pool = (name: string, agents: string[]) => ({ id: 1, queue: "REL", name, agents, revision: 1, created_at: "", updated_at: "" })
+/** A stand-in for the pools editor: each button reports one saved pool. */
+const renderIt = () => render(<QueueWorkflowSettings queue="REL" target={remoteTarget} pools={(onPoolSaved) => <div>
+  pools editor
+  <button type="button" onClick={() => onPoolSaved(pool("dev", ["dev-a"]))}>save dev</button>
+  <button type="button" onClick={() => onPoolSaved(pool("qa", []))}>empty qa</button>
+  <button type="button" onClick={() => onPoolSaved(pool("qa", ["qa-a"]))}>save qa</button>
+</div>} />)
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -82,6 +89,23 @@ it("lists empty pools next to the pools control", async () => {
   expect(alert).toHaveTextContent("qa")
   expect(alert).toHaveTextContent("workflow pools are missing or have no agents")
   expect(screen.getByText("pools editor")).toBeInTheDocument()
+})
+
+it("clears Pools needed once the editor saved members for every listed pool", async () => {
+  api.getQueueWorkflow.mockResolvedValue(null)
+  api.setQueueWorkflow.mockRejectedValue(new ApiError(409, "workflow_pool_empty", "workflow pools are missing or have no agents: dev, qa", { pools: ["dev", "qa"] }))
+  renderIt()
+  await screen.findByRole("option", { name: "audit:2" })
+  fireEvent.change(screen.getByLabelText("Workflow image"), { target: { value: "audit:2" } })
+  fireEvent.click(screen.getByRole("button", { name: "Bind" }))
+  await screen.findByRole("alert", { name: "Pools needed" })
+  fireEvent.click(screen.getByRole("button", { name: "save dev" }))
+  // The daemon's message stays; the list names only what is still empty.
+  expect(screen.getByRole("alert", { name: "Pools needed" }).querySelector(".font-mono")).toHaveTextContent(/^qa$/)
+  fireEvent.click(screen.getByRole("button", { name: "empty qa" }))
+  expect(screen.getByRole("alert", { name: "Pools needed" })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "save qa" }))
+  expect(screen.queryByRole("alert", { name: "Pools needed" })).not.toBeInTheDocument()
 })
 
 it("lists missing secrets next to the secrets control", async () => {

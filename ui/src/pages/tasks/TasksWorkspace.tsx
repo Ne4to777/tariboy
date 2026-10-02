@@ -618,7 +618,9 @@ function TasksWorkspaceContent({
             await loadDetail(detail.task.key)
           }}
           onTransfer={transferDetail}
-          onTaskChanged={() => { void loadDetail(detail.task.key) }}
+          // The row shows the status and category too: reload the tree so the
+          // list and the drawer agree before the socket reports the change.
+          onTaskChanged={() => { void loadDetail(detail.task.key); void loadTree() }}
           onDeleteRelation={async (relationID: number) => {
             await deleteTaskRelation(
               detail.task.key, relationID, detail.task.revision, target, idempotencyKey(),

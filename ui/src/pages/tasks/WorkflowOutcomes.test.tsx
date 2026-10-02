@@ -19,18 +19,13 @@ const request = (state: TransitionRequest["state"], extra: Partial<TransitionReq
 beforeEach(() => { vi.clearAllMocks() })
 afterEach(() => { vi.useRealTimers() })
 
-function renderOutcomesWithUnmount(view = customerView) {
-  const onChanged = vi.fn()
-  const onRefresh = vi.fn()
-  const { unmount } = render(<WorkflowOutcomes taskKey="REL-1" view={view} target={target} onChanged={onChanged} onRefresh={onRefresh} />)
-  return { onChanged, onRefresh, unmount }
-}
-
 function renderOutcomes(view = customerView) {
   const onChanged = vi.fn()
   const onRefresh = vi.fn()
-  render(<WorkflowOutcomes taskKey="REL-1" view={view} target={target} onChanged={onChanged} onRefresh={onRefresh} />)
-  return { onChanged, onRefresh }
+  const element = (next: typeof view) =>
+    <WorkflowOutcomes taskKey="REL-1" view={next} target={target} onChanged={onChanged} onRefresh={onRefresh} />
+  const { unmount, rerender } = render(element(view))
+  return { onChanged, onRefresh, unmount, rerender: (next: typeof view) => rerender(element(next)) }
 }
 
 it("lists a pool status's outcomes read-only, with missing artifacts highlighted and the checks named", () => {
@@ -130,7 +125,7 @@ it("shows the last request's failure from the view", () => {
 it("refetches the view when another request is still pending, and when the task is paused or lacks an artifact", async () => {
   for (const code of ["transition_pending", "workflow_paused", "artifact_missing"]) {
     api.advanceTask.mockRejectedValueOnce(new ApiError(409, code, `refused: ${code}`))
-    const { onRefresh, unmount } = renderOutcomesWithUnmount()
+    const { onRefresh, unmount } = renderOutcomes()
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
     expect(onRefresh).toHaveBeenCalledTimes(1)
     expect(screen.getByRole("alert")).toHaveTextContent(`refused: ${code}`)
@@ -143,7 +138,7 @@ it("stops polling and sets no state once unmounted", async () => {
   const errors = vi.spyOn(console, "error").mockImplementation(() => {})
   api.advanceTask.mockResolvedValue(request("pending", { wait_seconds: 30 }))
   api.getTransitionRequest.mockResolvedValue(request("pending"))
-  const { onChanged, onRefresh, unmount } = renderOutcomesWithUnmount()
+  const { onChanged, onRefresh, unmount } = renderOutcomes()
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
   unmount()
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
@@ -168,15 +163,62 @@ it("labels a failed poll as an unreadable request, not a refusal", async () => {
 })
 
 it("drops its notice when the view moves to another status", async () => {
-  api.advanceTask.mockRejectedValue(new ApiError(409, "status_changed", "the task is in status publish"))
-  const onChanged = vi.fn()
-  const onRefresh = vi.fn()
-  const { rerender } = render(<WorkflowOutcomes taskKey="REL-1" view={customerView} target={target} onChanged={onChanged} onRefresh={onRefresh} />)
+  api.advanceTask.mockRejectedValue(new ApiError(409, "transition_pending", "another request is pending"))
+  const { rerender } = renderOutcomes()
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
   expect(screen.getByRole("alert")).toBeInTheDocument()
-  rerender(<WorkflowOutcomes taskKey="REL-1" view={{ ...customerView, status: "publish", outcomes: [] }} target={target}
-    onChanged={onChanged} onRefresh={onRefresh} />)
+  rerender({ ...customerView, status: "publish", outcomes: [] })
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
+it("keeps a status_changed message once the view reaches the status it names", async () => {
+  api.advanceTask.mockRejectedValue(new ApiError(409, "status_changed", "the task is in status publish", { status: "publish" }))
+  const { rerender } = renderOutcomes()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  // Until the refetch lands the view still shows the old status.
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  rerender({ ...customerView, status: "publish", owner: "script", outcomes: [] })
+  expect(screen.getByRole("alert")).toHaveTextContent("the task is in status publish")
+})
+
+it("shows a rejected last request only when it belongs to the current visit", () => {
+  // Made at 10:03, before the open visit was entered at 10:04:30.
+  const earlier = request("rejected", { result_message: "old rejection", created_at: "2026-10-01T10:03:00Z" })
+  const { rerender } = renderOutcomes({ ...customerView, last_request: earlier })
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  rerender({ ...customerView, last_request: { ...earlier, created_at: "2026-10-01T10:04:30Z" } })
+  expect(screen.getByRole("alert")).toHaveTextContent("old rejection")
+})
+
+it("never shows a failed last request on a closed task", () => {
+  const failed = request("failed", { result_message: "check timed out" })
+  for (const category of ["done", "cancelled"] as const) {
+    const { unmount } = renderOutcomes({ ...customerView, category, owner: "", outcomes: [], last_request: failed })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    unmount()
+  }
+})
+
+it("drops the timeout notice once the last request is no longer pending", async () => {
+  vi.useFakeTimers()
+  api.advanceTask.mockResolvedValue(request("pending", { wait_seconds: 1 }))
+  api.getTransitionRequest.mockResolvedValue(request("pending"))
+  const { rerender } = renderOutcomes()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+  expect(screen.getByText(/still checking/i)).toBeInTheDocument()
+  rerender({ ...customerView, last_request: request("pending") })
+  expect(screen.getByText(/still checking/i)).toBeInTheDocument()
+  rerender({ ...customerView, last_request: request("rejected", { result_message: "no heading" }) })
+  expect(screen.queryByText(/still checking/i)).not.toBeInTheDocument()
+  expect(screen.getByRole("alert")).toHaveTextContent("no heading")
+})
+
+it("bounds the message and lets a long target status wrap", () => {
+  const to = "t".repeat(64)
+  renderOutcomes({ ...customerView, outcomes: [{ on: "approve", to }] })
+  expect(screen.getByLabelText("Outcome message")).toHaveAttribute("maxlength", "4096")
+  expect(screen.getByText(to)).toHaveClass("min-w-0", "break-all")
 })
 
 it("offers a refresh while a request from elsewhere is pending", () => {

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
-import type { Task, TaskDetail as Detail, TaskWait } from "@/lib/tasks"
+import type { Task, TaskComment, TaskDetail as Detail, TaskEvent, TaskWait } from "@/lib/tasks"
 import TaskDetail from "./TaskDetail"
 import { customerView, poolView, workflowTask } from "./workflowFixtures"
 
@@ -30,16 +30,57 @@ beforeEach(() => {
   api.getTaskWorkflow.mockResolvedValue(customerView)
 })
 
-function renderDetail(task: Task, waiting_for: TaskWait[] = []) {
-  const detail: Detail = { task, comments: [], waiting_for, relations: [] }
+function renderDetail(task: Task, waiting_for: TaskWait[] = [], comments: TaskComment[] = []) {
+  const detail: Detail = { task, comments, waiting_for, relations: [] }
   const onSave = vi.fn().mockResolvedValue(task)
   const onTaskChanged = vi.fn()
   const onClose = vi.fn()
-  render(<TaskDetail detail={detail} events={[]} principals={null} width={600} resizeHandle={null}
+  const element = (events: TaskEvent[]) => <TaskDetail detail={detail} events={events} principals={null} width={600} resizeHandle={null}
     onClose={onClose} onSave={onSave} onComment={vi.fn()} onAddRelation={vi.fn()} onDeleteRelation={vi.fn()}
-    onTransfer={vi.fn()} onTaskChanged={onTaskChanged} />)
-  return { onSave, onTaskChanged, onClose }
+    onTransfer={vi.fn()} onTaskChanged={onTaskChanged} />
+  const { rerender } = render(element([]))
+  return { onSave, onTaskChanged, onClose, rerenderEvents: (events: TaskEvent[]) => rerender(element(events)) }
 }
+
+const event = (sequence: number, kind: string): TaskEvent => ({
+  sequence, event_id: `e${sequence}`, task_key: "REL-1", queue: "REL", kind, actor: "system:workflow",
+  task_revision: 4, payload: {}, created_at: "2026-10-01T10:07:00Z",
+})
+
+it("refetches the workflow view when a workflow event arrives without a new revision", async () => {
+  const { rerenderEvents } = renderDetail(workflowTask)
+  await screen.findByText("release@1.2.0")
+  expect(api.getTaskWorkflow).toHaveBeenCalledTimes(1)
+  rerenderEvents([event(9, "workflow.transition_rejected")])
+  await waitFor(() => expect(api.getTaskWorkflow).toHaveBeenCalledTimes(2))
+})
+
+it("offers Move to another server for a flexible task only", async () => {
+  renderDetail(flexible)
+  await userEvent.click(screen.getByRole("button", { name: "Task actions" }))
+  expect(await screen.findByRole("menuitem", { name: "Move to another server…" })).toBeInTheDocument()
+  cleanup()
+  renderDetail(workflowTask)
+  await screen.findByText("release@1.2.0")
+  expect(screen.queryByRole("button", { name: "Task actions" })).not.toBeInTheDocument()
+  expect(screen.queryByText("Move to another server…")).not.toBeInTheDocument()
+})
+
+it("puts no waiting chip on the workflow's own question, but keeps it on an agent's", async () => {
+  const comment = (id: number, author: string, body: string): TaskComment => ({
+    id, task_key: "REL-1", author, body, revision: 1, created_at: "2026-10-01T10:05:00Z", updated_at: "2026-10-01T10:05:00Z",
+  })
+  const agentWait = { ...wait("agent:writer"), id: 2, requesting_comment_id: 4 }
+  renderDetail(workflowTask, [wait("system:workflow"), agentWait],
+    [comment(3, "system:workflow", "Approve the release?"), comment(4, "agent:writer", "Which date?")])
+  await screen.findByText("release@1.2.0")
+  const chipOn = (text: string) => within(screen.getByText(text).closest("article")!).queryByText("waiting for answer")
+  expect(chipOn("Approve the release?")).not.toBeInTheDocument()
+  expect(chipOn("Which date?")).toBeInTheDocument()
+  cleanup()
+  renderDetail(flexible, [wait("system:workflow")], [comment(3, "system:workflow", "Approve the release?")])
+  expect(chipOn("Approve the release?")).toBeInTheDocument()
+})
 
 it("keeps a flexible task's status select, fields and sections as they were", async () => {
   const { onSave } = renderDetail(flexible)

@@ -97,12 +97,17 @@ async function openMenuItem(name: string) {
   await userEvent.click(await screen.findByRole("menuitem", { name }))
 }
 
-it("moves to a known status with a required reason after confirmation", async () => {
+it("moves to a declared status with a required reason after confirmation", async () => {
   const { onTaskChanged } = renderPanel()
   await openMenuItem("Move to status…")
   const select = screen.getByLabelText("Target status")
+  // Every declared status but the current one; terminal ones last, grouped.
   expect(within(select).getAllByRole("option").map((option) => option.getAttribute("value")))
-    .toEqual(["", "draft", "review", "publish"])
+    .toEqual(["", "draft", "publish", "done", "dropped"])
+  const terminal = select.querySelector("optgroup")!
+  expect(terminal).toHaveAttribute("label", "Terminal")
+  expect([...terminal.querySelectorAll("option")].map((option) => option.value)).toEqual(["done", "dropped"])
+  expect(select).toHaveFocus()
   await userEvent.selectOptions(select, "draft")
   const move = screen.getByRole("button", { name: "Move" })
   expect(move).toBeDisabled()
@@ -113,6 +118,14 @@ it("moves to a known status with a required reason after confirmation", async ()
   await waitFor(() => expect(api.moveTaskWorkflow).toHaveBeenCalledWith("REL-1", "draft", "found a regression", target))
   await waitFor(() => expect(onTaskChanged).toHaveBeenCalledTimes(1))
   expect(api.getTaskWorkflow).toHaveBeenCalledTimes(2)
+})
+
+it("lists every declared artifact, so one with no value can be set", async () => {
+  renderPanel()
+  const artifacts = (await screen.findByText("Artifacts")).closest("section")!
+  const changelog = within(artifacts).getByText("changelog").closest("li")!
+  expect(within(changelog).getByText("no value")).toBeInTheDocument()
+  expect(within(changelog).getByRole("button", { name: "Set" })).toBeInTheDocument()
 })
 
 it("shows a refused move inline", async () => {
@@ -174,6 +187,73 @@ it("shows a failed cancel next to the menu, not as a view error with a retry", a
   expect(await screen.findByRole("alert")).toHaveTextContent("the task is already closed")
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   expect(onTaskChanged).not.toHaveBeenCalled()
+})
+
+it("refetches the view on a workflow event and shows a rejection that arrives while checking", async () => {
+  const pending = { id: 11, task_key: "REL-1", outcome: "approve", actor: "user:owner", state: "pending" as const,
+    created_at: "2026-10-01T10:06:00Z", wait_seconds: 60 }
+  api.getTaskWorkflow.mockResolvedValueOnce({ ...customerView, last_request: pending })
+  const { rerender, onTaskChanged } = renderPanel()
+  expect(await screen.findByText("checking…")).toBeInTheDocument()
+  api.getTaskWorkflow.mockResolvedValueOnce({ ...customerView,
+    last_request: { ...pending, state: "rejected", result_message: "no heading", wait_seconds: undefined } })
+  // The task's revision is unchanged: only the event sequence moved.
+  rerender(<WorkflowPanel task={workflowTask} eventSequence={12} target={target} onTaskChanged={onTaskChanged} />)
+  expect(await screen.findByRole("alert")).toHaveTextContent("no heading")
+  expect(screen.queryByText("checking…")).not.toBeInTheDocument()
+  expect(api.getTaskWorkflow).toHaveBeenCalledTimes(2)
+})
+
+it("drops a view response that arrives after a newer one", async () => {
+  let resolveOld!: (view: typeof customerView) => void
+  api.getTaskWorkflow
+    .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+    .mockResolvedValueOnce({ ...customerView, status: "draft", owner: "pool:writers" })
+  const { rerender, onTaskChanged } = renderPanel()
+  await waitFor(() => expect(api.getTaskWorkflow).toHaveBeenCalledTimes(1))
+  rerender(<WorkflowPanel task={{ ...workflowTask, revision: 5 }} target={target} onTaskChanged={onTaskChanged} />)
+  const header = (await screen.findByText("release@1.2.0")).parentElement!
+  await waitFor(() => expect(header).toHaveTextContent("pool:writers"))
+  await act(async () => { resolveOld(customerView) })
+  expect(screen.getByText("release@1.2.0").parentElement).toHaveTextContent("pool:writers")
+  expect(screen.getByText("release@1.2.0").parentElement).not.toHaveTextContent("owner customer")
+})
+
+it("guards Cancel while it runs and clears its error when another action starts", async () => {
+  let fail!: (error: Error) => void
+  api.cancelWorkflowTask.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
+  renderPanel()
+  await openMenuItem("Cancel task")
+  await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel task" }))
+  await waitFor(() => expect(api.cancelWorkflowTask).toHaveBeenCalledTimes(1))
+  await userEvent.click(screen.getByRole("button", { name: "Workflow actions" }))
+  expect(await screen.findByRole("menuitem", { name: "Cancel task" })).toHaveAttribute("aria-disabled", "true")
+  await userEvent.keyboard("{Escape}")
+  await act(async () => { fail(new ApiError(409, "workflow_closed", "the task is already closed")) })
+  expect(await screen.findByText("the task is already closed")).toBeInTheDocument()
+  await openMenuItem("Move to status…")
+  expect(screen.queryByText("the task is already closed")).not.toBeInTheDocument()
+})
+
+it("says a visit was left without inventing a move when it has no outcome", async () => {
+  api.getTaskWorkflow.mockResolvedValue({ ...customerView, visits: [
+    { id: 1, sequence: 1, status: "draft", entered_at: "2026-10-01T10:00:00Z", entered_by: "user:owner", left_at: "2026-10-01T10:04:30Z" },
+    { id: 2, sequence: 2, status: "review", entered_at: "2026-10-01T10:04:30Z", entered_by: "agent:writer" },
+  ] })
+  renderPanel()
+  const first = within(await screen.findByText("Visits").then((label) => label.closest("section")!)).getAllByRole("listitem")[0]
+  expect(first).toHaveTextContent(/left/)
+  expect(first).not.toHaveTextContent(/move/)
+})
+
+it("lets a long status ID wrap in the header and the visits", async () => {
+  const id = "s".repeat(64)
+  api.getTaskWorkflow.mockResolvedValue({ ...customerView, status: id,
+    visits: [{ id: 2, sequence: 1, status: id, entered_at: "2026-10-01T10:04:30Z", entered_by: "agent:writer" }] })
+  renderPanel()
+  const spans = await screen.findAllByText(id)
+  expect(spans).toHaveLength(2)
+  for (const span of spans) expect(span).toHaveClass("min-w-0", "break-all")
 })
 
 it("offers no cancel for a closed task", async () => {

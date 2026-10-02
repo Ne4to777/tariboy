@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ApiError } from "@/lib/api"
 import WorkflowRuns from "./WorkflowRuns"
@@ -47,6 +47,27 @@ it("loads a log on demand and notes a truncated one", async () => {
   expect(within(row).getByText(/truncated/i)).toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Hide log" }))
   expect(row.querySelector("pre")).toBeNull()
+})
+
+it("says the list holds the latest 20 runs", () => {
+  render(<WorkflowRuns taskKey="REL-1" runs={[checkRun]} target={target} />)
+  expect(screen.getByText(/latest 20/)).toBeInTheDocument()
+})
+
+it("refreshes an open log while its run is still going, and not once it finished", async () => {
+  api.getTaskScriptRunLog.mockResolvedValueOnce({ text: "line 1", truncated: false })
+    .mockResolvedValueOnce({ text: "line 1\nline 2", truncated: false })
+  render(<WorkflowRuns taskKey="REL-1" runs={[watchRun]} target={target} />)
+  expect(screen.queryByRole("button", { name: "Refresh log" })).not.toBeInTheDocument()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Log" })) })
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh log" })) })
+  expect(api.getTaskScriptRunLog).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("listitem").querySelector("pre")!.textContent).toBe("line 1\nline 2")
+  cleanup()
+  api.getTaskScriptRunLog.mockResolvedValue({ text: "done", truncated: false })
+  render(<WorkflowRuns taskKey="REL-1" runs={[checkRun]} target={target} />)
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Log" })) })
+  expect(screen.queryByRole("button", { name: "Refresh log" })).not.toBeInTheDocument()
 })
 
 it("shows a forbidden log inline", async () => {

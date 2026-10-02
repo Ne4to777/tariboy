@@ -169,6 +169,7 @@ describe("task row status", () => {
     renderTask({ ...workflowTask, waiting_on: "pause", workflow_paused_reason: "stalled" })
     const paused = screen.getByText("paused")
     expect(paused.closest("[data-slot='status-pill']")).toHaveAttribute("data-tone", "danger")
+    expect(paused.closest("[title]")).toHaveAttribute("title", "stalled")
   })
 
   it("shows no wait indicator when nothing is waited on", () => {

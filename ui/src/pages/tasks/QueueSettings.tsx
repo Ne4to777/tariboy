@@ -93,7 +93,8 @@ export default function QueueSettings({
               </Button>
             </div>
             {open === `workflow:${queue.prefix}` && (
-              <QueueWorkflowSettings queue={queue.prefix} target={target} pools={<QueuePoolEditor queue={queue} target={target} />} />
+              <QueueWorkflowSettings queue={queue.prefix} target={target}
+                pools={(onPoolSaved) => <QueuePoolEditor queue={queue} target={target} onPoolSaved={onPoolSaved} />} />
             )}
             {open === `name:${queue.prefix}` && (
               <form onSubmit={(event) => {
@@ -138,7 +139,12 @@ function actionKey(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random()}`
 }
 
-function QueuePoolEditor({ queue, target }: { queue: TaskQueue; target?: ApiTarget }) {
+function QueuePoolEditor({ queue, target, onPoolSaved }: {
+  queue: TaskQueue
+  target?: ApiTarget
+  /** Told of every pool saved here. */
+  onPoolSaved?: (pool: AgentPool) => void
+}) {
   const [pools, setPools] = useState<AgentPool[]>([])
   const [poolName, setPoolName] = useState("")
   const [poolAgents, setPoolAgents] = useState("")
@@ -184,6 +190,7 @@ function QueuePoolEditor({ queue, target }: { queue: TaskQueue; target?: ApiTarg
       const previous = pools.find((pool) => pool.name === poolName.trim())
       const updated = await rebindAgentPool(queue.prefix, poolName.trim(), poolAgents.split(",").map((agent) => agent.trim()).filter(Boolean), previous?.revision ?? 0, actionKey("pool"), target)
       setPools((current) => [...current.filter((pool) => pool.name !== updated.name), updated])
+      onPoolSaved?.(updated)
       toast.success("Agent pool updated")
     }) }}>
       <label>Pool name<Input aria-label={`Pool name ${queue.prefix}`} value={poolName} onChange={(event) => setPoolName(event.target.value)} /></label>

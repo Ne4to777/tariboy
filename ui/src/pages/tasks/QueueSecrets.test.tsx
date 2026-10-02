@@ -25,6 +25,13 @@ it("lists keys only and uses a password input for the value", async () => {
   expect(api.listQueueSecrets).toHaveBeenCalledWith("REL", remoteTarget)
 })
 
+it("shows a failed load instead of claiming there are no secrets", async () => {
+  api.listQueueSecrets.mockRejectedValue(new ApiError(403, "forbidden", "you may not read the secrets"))
+  renderIt()
+  expect(await screen.findByRole("alert")).toHaveTextContent("you may not read the secrets")
+  expect(screen.queryByText("No secrets.")).not.toBeInTheDocument()
+})
+
 it("sets a secret, clears the value input, and never renders the value", async () => {
   api.setQueueSecret.mockResolvedValue({ queue: "REL", key: "NEW_KEY", updated_at: "2026-10-02T11:00:00Z" })
   api.listQueueSecrets.mockResolvedValueOnce([]).mockResolvedValue([{ key: "NEW_KEY", updated_at: "2026-10-02T11:00:00Z" }])

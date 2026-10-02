@@ -444,13 +444,23 @@ export interface WorkflowView {
   visits: WorkflowVisit[]
   last_request?: TransitionRequest
   runs?: ScriptRun[]
+  /** Every artifact the manifest declares, in manifest order. */
+  declared_artifacts: WorkflowDeclaredArtifact[]
+  /** Every status the manifest declares, in manifest order. */
+  statuses: WorkflowStatusInfo[]
 }
+export interface WorkflowDeclaredArtifact { name: string; description: string }
+/** `owner` is `pool:NAME`, `customer`, `script`, or "" for a terminal status. */
+export interface WorkflowStatusInfo { id: string; owner: string; terminal: boolean }
 export interface QueueWorkflow { queue: string; name: string; version: string; digest: string; revision: number; updated_at: string }
 export interface QueueSecretInfo { key: string; updated_at: string }
 export interface WorkflowImage { name: string; tag: string; version: string; digest: string; built_at: string }
 
-/** A workflow task reports a workflow status ID in `status`, a flexible task its own status. */
-export const isWorkflowTask = (task: Task): boolean => !!task.workflow_name
+/**
+ * A workflow task reports a workflow status ID in `status`, a flexible task its
+ * own status. The daemon marks one by its digest; the name is a fallback.
+ */
+export const isWorkflowTask = (task: Task): boolean => !!(task.workflow_digest || task.workflow_name)
 
 /** The status as a person reads it, for either kind of task. */
 export function taskStatusLabel(task: Task): string {

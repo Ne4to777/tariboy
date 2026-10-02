@@ -1,5 +1,5 @@
 import { MoreHorizontal } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
@@ -9,10 +9,14 @@ import { cn } from "@/lib/utils"
 import { EMPTY, FIELD, LABEL, MONO, QUIET_ACTION, ROW, SelectShell } from "./panelStyles"
 import { formatTaskTime } from "./taskTime"
 import WorkflowArtifacts from "./WorkflowArtifacts"
-import { errorText, useWorkflowConfirm } from "./WorkflowConfirm"
+import { useWorkflowConfirm } from "./WorkflowConfirm"
 import WorkflowOutcomes from "./WorkflowOutcomes"
 import WorkflowPauseBanner from "./WorkflowPauseBanner"
 import WorkflowRuns from "./WorkflowRuns"
+import { errorText, useMounted } from "./workflowShared"
+
+/** A mono value that may be a 64-character ID: it wraps rather than overflows. */
+const MONO_ID = cn(MONO, "min-w-0 break-all")
 
 /**
  * The workflow of a task, in the task detail: where it is, what it may do
@@ -20,36 +24,49 @@ import WorkflowRuns from "./WorkflowRuns"
  * flexible task; the status changes only through an outcome, a move, a cancel,
  * or a pause decision. The Desktop acts as the customer (operator routes).
  */
-export function WorkflowPanel({ task, target, onTaskChanged }: {
+export function WorkflowPanel({ task, eventSequence = 0, target, onTaskChanged }: {
   task: Task
+  /**
+   * The latest task event the detail holds. A workflow event (a rejected
+   * request, a script run) need not change the task's revision, so a new
+   * sequence refetches the view too.
+   */
+  eventSequence?: number
   target?: ApiTarget
   onTaskChanged: () => void
 }) {
   const [view, setView] = useState<WorkflowView | null>(null)
   const [error, setError] = useState("")
   const [moving, setMoving] = useState(false)
+  const [canceling, setCanceling] = useState(false)
   const [cancelError, setCancelError] = useState("")
   const { confirm, dialog } = useWorkflowConfirm()
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
+  const mountedRef = useMounted()
+  // Only the newest request may set the view: an older response that
+  // arrives late is dropped.
+  const latest = useRef(0)
+  // Set while the menu closes to open the move form; the menu then hands the
+  // focus to the form's status select instead of back to its trigger.
+  const openingMove = useRef(false)
+  const moveSelect = useRef<HTMLSelectElement>(null)
 
   const load = useCallback(async () => {
+    const request = ++latest.current
     try {
       const next = await getTaskWorkflow(task.key, target)
-      if (!mounted.current) return
+      if (!mountedRef.current || request !== latest.current) return
       setView(next)
       setError("")
     } catch (failure) {
-      if (mounted.current) setError(errorText(failure))
+      if (mountedRef.current && request === latest.current) setError(errorText(failure))
     }
-  }, [task.key, target])
-  // The realtime path refetches the task; a new revision refetches the view.
-  useEffect(() => { void Promise.resolve().then(load) }, [load, task.revision])
-  const changed = () => { void load(); onTaskChanged() }
-  const refresh = () => { void load() }
+  }, [mountedRef, task.key, target])
+  // The realtime path refetches the task and its events; a new revision or a
+  // new event refetches the view.
+  useEffect(() => { void Promise.resolve().then(load) }, [load, task.revision, eventSequence])
+  // Another action starting makes an earlier cancel failure stale.
+  const changed = () => { setCancelError(""); void load(); onTaskChanged() }
+  const refresh = () => { setCancelError(""); void load() }
 
   const failure = error && <div role="alert" className="flex items-center gap-2 text-[12px] text-status-failed">
     <span className="min-w-0 flex-1">{error}</span>
@@ -64,16 +81,17 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
 
   const closed = view.category === "done" || view.category === "cancelled"
   const editable = task.access !== "context" && task.access !== "respond"
-  const missing = view.outcomes.flatMap((outcome) => outcome.missing ?? [])
   const cancel = () => confirm({
     title: "Cancel this task?",
     description: "The task closes as cancelled and its scripts stop. The workflow status stays where it stopped.",
     action: "Cancel task",
     run: () => {
       setCancelError("")
+      setCanceling(true)
       cancelWorkflowTask(task.key, target).then(
-        () => { if (mounted.current) changed() },
-        (failed) => { if (mounted.current) setCancelError(errorText(failed)) })
+        () => { if (mountedRef.current) changed() },
+        (failed) => { if (mountedRef.current) setCancelError(errorText(failed)) })
+        .finally(() => { if (mountedRef.current) setCanceling(false) })
     },
   })
   // Resolves true once moved, false when the confirmation is declined.
@@ -93,37 +111,45 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12px] text-muted-foreground">
           <span className={cn(MONO, "font-medium text-foreground")} title={view.digest}>{view.name}@{view.version}</span>
-          <span>status <span className={cn(MONO, "text-foreground")}>{view.status}</span></span>
-          {view.owner && <span>owner <span className={cn(MONO, "text-foreground")}>{view.owner}</span></span>}
-          {view.holder && <span>holder <span className={cn(MONO, "text-foreground")}>{view.holder}</span></span>}
+          <span className="min-w-0">status <span className={cn(MONO_ID, "text-foreground")}>{view.status}</span></span>
+          {view.owner && <span className="min-w-0">owner <span className={cn(MONO_ID, "text-foreground")}>{view.owner}</span></span>}
+          {view.holder && <span className="min-w-0">holder <span className={cn(MONO_ID, "text-foreground")}>{view.holder}</span></span>}
         </div>
         {editable && <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="Workflow actions"
               className="size-7 rounded-[8px] text-muted-foreground hover:bg-accent hover:text-foreground"><MoreHorizontal className="size-3.5" /></Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setMoving(true)}>Move to status…</DropdownMenuItem>
-            {!closed && <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={cancel}>Cancel task</DropdownMenuItem>}
+          {/* The move form takes the focus; the menu must not hand it back. */}
+          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+            if (!openingMove.current) return
+            openingMove.current = false
+            event.preventDefault()
+            moveSelect.current?.focus()
+          }}>
+            <DropdownMenuItem onSelect={() => { openingMove.current = true; setCancelError(""); setMoving(true) }}>Move to status…</DropdownMenuItem>
+            {!closed && <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={canceling}
+              onSelect={cancel}>Cancel task</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>}
       </div>
       {failure}
       {cancelError && <p role="alert" className="text-[12px] text-status-failed">{cancelError}</p>}
-      {moving && <MoveForm view={view} onDone={() => setMoving(false)} onMove={move} />}
+      {moving && <MoveForm view={view} selectRef={moveSelect} onDone={() => setMoving(false)} onMove={move} />}
       <WorkflowOutcomes taskKey={task.key} view={view} target={target} onChanged={changed} onRefresh={refresh} />
-      <WorkflowArtifacts taskKey={task.key} artifacts={view.artifacts} missing={missing} editable={editable && !closed}
-        target={target} onChanged={changed} />
+      <WorkflowArtifacts taskKey={task.key} artifacts={view.artifacts} declared={view.declared_artifacts ?? []}
+        editable={editable && !closed} target={target} onChanged={changed} />
       <WorkflowRuns taskKey={task.key} runs={view.runs ?? []} target={target} />
       <section className="flex min-w-0 flex-col gap-1">
         <span className={LABEL}>Visits</span>
         <ol className="flex min-w-0 flex-col">
           {[...view.visits].sort((a, b) => a.sequence - b.sequence).map((visit) => (
             <li key={visit.id} className={cn(ROW, "flex-wrap py-1")}>
-              <span className={cn(MONO, "font-medium")}>{visit.status}</span>
+              <span className={cn(MONO_ID, "font-medium")}>{visit.status}</span>
               <span className={cn(MONO, "text-muted-foreground")}>{formatTaskTime(visit.entered_at)} · {visit.entered_by}</span>
               {visit.left_at
-                ? <span className="text-[12px] text-muted-foreground">left by <span className={MONO}>{visit.outcome || "move"}</span></span>
+                ? <span className="text-[12px] text-muted-foreground">
+                  {visit.outcome ? <>left by <span className={MONO}>{visit.outcome}</span></> : "left"}</span>
                 : <span className="text-[12px] text-muted-foreground">current</span>}
               {visit.message && <span className="w-full min-w-0 text-[12px] break-words whitespace-pre-wrap">{visit.message}</span>}
             </li>
@@ -136,18 +162,18 @@ export function WorkflowPanel({ task, target, onTaskChanged }: {
 }
 
 /**
- * The statuses a move may target. The view does not list the image's
- * statuses, so the choice is every status the task visited, every outcome
- * target, and the current status; a move error lists the rest.
+ * The statuses a move may target: every declared status but the current one,
+ * the terminal ones last. A move to a terminal status is the operator's
+ * decision, so they stay on offer.
  */
-function knownStatuses(view: WorkflowView): string[] {
-  const all = [...view.visits].sort((a, b) => a.sequence - b.sequence).map((visit) => visit.status)
-    .concat(view.status, view.outcomes.map((outcome) => outcome.to))
-  return all.filter((status, index) => status && all.indexOf(status) === index)
+function moveTargets(view: WorkflowView) {
+  const others = (view.statuses ?? []).filter((status) => status.id !== view.status)
+  return { open: others.filter((status) => !status.terminal), terminal: others.filter((status) => status.terminal) }
 }
 
-function MoveForm({ view, onMove, onDone }: {
+function MoveForm({ view, selectRef, onMove, onDone }: {
   view: WorkflowView
+  selectRef: RefObject<HTMLSelectElement | null>
   onMove: (to: string, reason: string) => Promise<boolean>
   onDone: () => void
 }) {
@@ -155,28 +181,27 @@ function MoveForm({ view, onMove, onDone }: {
   const [reason, setReason] = useState("")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
+  const mountedRef = useMounted()
+  const { open, terminal } = moveTargets(view)
   const submit = () => {
     setError("")
     setBusy(true)
     onMove(to, reason.trim())
-      .then((moved) => { if (moved && mounted.current) onDone() }, (failure) => { if (mounted.current) setError(errorText(failure)) })
-      .finally(() => { if (mounted.current) setBusy(false) })
+      .then((moved) => { if (moved && mountedRef.current) onDone() }, (failure) => { if (mountedRef.current) setError(errorText(failure)) })
+      .finally(() => { if (mountedRef.current) setBusy(false) })
   }
   return (
     <form className="flex min-w-0 flex-col gap-1.5 rounded-[8px] bg-muted/50 p-2.5"
       onSubmit={(event) => { event.preventDefault(); submit() }}>
       <span className={LABEL}>Move to status</span>
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <SelectShell aria-label="Target status" value={to} className="h-[26px] w-auto text-[12px] md:text-[12px]"
+        <SelectShell ref={selectRef} aria-label="Target status" value={to} className="h-[26px] w-auto max-w-full text-[12px] md:text-[12px]"
           onChange={(event) => setTo(event.target.value)}>
           <option value="">Choose a status</option>
-          {knownStatuses(view).map((status) => <option key={status} value={status}>
-            {status === view.status ? `${status} (current)` : status}</option>)}
+          {open.map((status) => <option key={status.id} value={status.id}>{status.id}</option>)}
+          {terminal.length > 0 && <optgroup label="Terminal">
+            {terminal.map((status) => <option key={status.id} value={status.id}>{status.id}</option>)}
+          </optgroup>}
         </SelectShell>
         <Input aria-label="Reason" placeholder="Reason (required)" value={reason}
           className={cn(FIELD, "h-[26px] min-w-[160px] flex-1")} onChange={(event) => setReason(event.target.value)} />

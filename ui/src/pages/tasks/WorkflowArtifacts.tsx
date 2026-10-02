@@ -2,11 +2,11 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import type { ApiTarget } from "@/lib/api"
-import { getTaskArtifactHistory, setTaskArtifact, type WorkflowArtifact } from "@/lib/tasks"
+import { getTaskArtifactHistory, setTaskArtifact, type WorkflowArtifact, type WorkflowDeclaredArtifact } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 import { COUNT, EMPTY, LABEL, MONO, QUIET_ACTION } from "./panelStyles"
 import { formatTaskTime } from "./taskTime"
-import { errorText } from "./WorkflowConfirm"
+import { errorText } from "./workflowShared"
 
 /** A value longer than this many lines, or characters, starts collapsed. */
 const COLLAPSED_LINES = 6
@@ -17,16 +17,16 @@ const COLLAPSED_CHARS = 600
  * history on demand, and for the customer an edit action. Values are text the
  * daemon never parses, so they render as preformatted text, never as Markdown.
  */
-export default function WorkflowArtifacts({ taskKey, artifacts, missing, editable, target, onChanged }: {
+export default function WorkflowArtifacts({ taskKey, artifacts, declared, editable, target, onChanged }: {
   taskKey: string
   artifacts: WorkflowArtifact[]
-  /** Required names with no value yet, so the customer can set them. */
-  missing: string[]
+  /** Every artifact the manifest declares, so one with no value can be set. */
+  declared: WorkflowDeclaredArtifact[]
   editable: boolean
   target?: ApiTarget
   onChanged: () => void
 }) {
-  const unset = missing.filter((name, index) => missing.indexOf(name) === index && !artifacts.some((item) => item.name === name))
+  const unset = declared.filter((item) => !artifacts.some((artifact) => artifact.name === item.name))
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
@@ -37,17 +37,19 @@ export default function WorkflowArtifacts({ taskKey, artifacts, missing, editabl
       <ul className="flex min-w-0 flex-col gap-2.5">
         {artifacts.map((artifact) => <ArtifactItem key={artifact.name} taskKey={taskKey} name={artifact.name}
           artifact={artifact} editable={editable} target={target} onChanged={onChanged} />)}
-        {unset.map((name) => <ArtifactItem key={name} taskKey={taskKey} name={name}
-          editable={editable} target={target} onChanged={onChanged} />)}
+        {unset.map((item) => <ArtifactItem key={item.name} taskKey={taskKey} name={item.name}
+          description={item.description} editable={editable} target={target} onChanged={onChanged} />)}
       </ul>
     </section>
   )
 }
 
-function ArtifactItem({ taskKey, name, artifact, editable, target, onChanged }: {
+function ArtifactItem({ taskKey, name, artifact, description, editable, target, onChanged }: {
   taskKey: string
   name: string
   artifact?: WorkflowArtifact
+  /** The manifest's description, shown while the artifact has no value. */
+  description?: string
   editable: boolean
   target?: ApiTarget
   onChanged: () => void
@@ -78,7 +80,7 @@ function ArtifactItem({ taskKey, name, artifact, editable, target, onChanged }: 
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn(MONO, "font-medium")}>{name}</span>
         {artifact ? <>
-          <span className={cn(MONO, "text-muted-foreground")}>{artifact.author}</span>
+          <span className={cn(MONO, "min-w-0 break-all text-muted-foreground")}>{artifact.author}</span>
           <time dateTime={artifact.created_at} className={cn(MONO, "text-muted-foreground")}>{formatTaskTime(artifact.created_at)}</time>
         </> : <span className={EMPTY}>no value</span>}
         <span className="ml-auto flex gap-1">
@@ -88,6 +90,7 @@ function ArtifactItem({ taskKey, name, artifact, editable, target, onChanged }: 
             onClick={() => setDraft(artifact?.value ?? "")}>{artifact ? "Edit" : "Set"}</Button>}
         </span>
       </div>
+      {!artifact && description && <span className="min-w-0 text-[12px] break-words text-muted-foreground">{description}</span>}
       {draft !== null ? <div className="flex min-w-0 flex-col gap-1.5">
         <Textarea aria-label={`Value of ${name}`} value={draft} disabled={saving} onChange={(event) => setDraft(event.target.value)}
           className="min-h-20 rounded-[8px] border-0 bg-muted font-mono text-[11.5px] md:text-[11.5px]" />

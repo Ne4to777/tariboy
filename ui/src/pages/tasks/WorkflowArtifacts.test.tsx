@@ -20,10 +20,26 @@ beforeEach(() => { vi.clearAllMocks() })
 
 function renderArtifacts(props: Partial<Parameters<typeof WorkflowArtifacts>[0]> = {}) {
   const onChanged = vi.fn()
-  render(<WorkflowArtifacts taskKey="REL-1" artifacts={[notes]} missing={["summary"]} editable target={target}
-    onChanged={onChanged} {...props} />)
+  render(<WorkflowArtifacts taskKey="REL-1" artifacts={[notes]}
+    declared={[{ name: "notes", description: "The notes." }, { name: "summary", description: "One paragraph." }]}
+    editable target={target} onChanged={onChanged} {...props} />)
   return { onChanged }
 }
+
+it("lists every declared artifact with no value yet, with its description and a Set action", () => {
+  renderArtifacts()
+  const item = screen.getByText("summary").closest("li")!
+  expect(within(item).getByText("no value")).toBeInTheDocument()
+  expect(within(item).getByText("One paragraph.")).toBeInTheDocument()
+  expect(within(item).getByRole("button", { name: "Set" })).toBeInTheDocument()
+  expect(screen.getAllByRole("listitem")).toHaveLength(2)
+})
+
+it("lets a long author wrap", () => {
+  const author = "agent:" + "a".repeat(64)
+  renderArtifacts({ artifacts: [{ ...notes, author }] })
+  expect(screen.getByText(author)).toHaveClass("min-w-0", "break-all")
+})
 
 it("shows each artifact with its author and a long value collapsed to six lines, as text", () => {
   renderArtifacts()
@@ -37,12 +53,6 @@ it("shows each artifact with its author and a long value collapsed to six lines,
   fireEvent.click(expand)
   expect(item.querySelector("pre")!.textContent).toBe(notes.value)
   expect(within(item).getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true")
-})
-
-it("lists a required artifact that has no value yet", () => {
-  renderArtifacts()
-  const item = screen.getByText("summary").closest("li")!
-  expect(within(item).getByText("no value")).toBeInTheDocument()
 })
 
 it("loads the history only when asked", async () => {

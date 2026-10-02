@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { ApiError } from "@/lib/api"
 import type { Task, TaskDetail, TaskNotification, TaskQueue } from "@/lib/tasks"
 import TasksWorkspace from "./TasksWorkspace"
+import { customerView } from "./workflowFixtures"
 
 const api = vi.hoisted(() => ({
   addTaskComment: vi.fn(),
@@ -11,7 +12,9 @@ const api = vi.hoisted(() => ({
   createTask: vi.fn(),
   createTaskQueue: vi.fn(),
   deleteTaskRelation: vi.fn(),
+  advanceTask: vi.fn(),
   getTask: vi.fn(),
+  getTaskWorkflow: vi.fn(),
   listAgentPools: vi.fn(),
   rebindAgentPool: vi.fn(),
   listTaskNotifications: vi.fn(),
@@ -178,6 +181,28 @@ beforeEach(() => {
 })
 
 describe("TasksWorkspace", () => {
+  it("refreshes the list row after a drawer action, without waiting for the socket", async () => {
+    const workflowRoot: Task = { ...root, status: "approval", category: "wait_customer", waiting_on: "customer",
+      workflow_digest: "abc", workflow_name: "release", workflow_version: "1.0.0" }
+    const approved: Task = { ...workflowRoot, status: "done", category: "done", waiting_on: undefined, revision: 3 }
+    api.listTasks.mockResolvedValue({ tasks: [workflowRoot, child], sequence: 10 })
+    api.getTask.mockResolvedValue({ ...detail, task: workflowRoot })
+    api.getTaskWorkflow.mockResolvedValue({ ...customerView, status: "approval",
+      outcomes: [{ on: "approved", to: "done" }], visits: [], last_request: undefined })
+    api.advanceTask.mockResolvedValue({ id: 1, task_key: root.key, outcome: "approved", actor: "user:owner", state: "applied", created_at: "" })
+    render(<TasksWorkspace />)
+    await userEvent.click(await screen.findByRole("button", { name: /Ship native tasks/ }))
+    const approve = await screen.findByRole("button", { name: "approved" })
+    const listed = api.listTasks.mock.calls.length
+    api.listTasks.mockResolvedValue({ tasks: [approved, child], sequence: 10 })
+    api.getTask.mockResolvedValue({ ...detail, task: approved })
+    await userEvent.click(approve)
+    await waitFor(() => expect(api.listTasks.mock.calls.length).toBeGreaterThan(listed))
+    // No socket hint was delivered: the drawer action alone refreshed the row.
+    const row = screen.getByTestId(`task-row-${root.key}`)
+    await waitFor(() => expect(row).toHaveTextContent("Done"))
+  })
+
   it("uploads files without an agent to the task host and appends only to the selected draft", async () => {
     const target = { id: "remote", label: "Remote", baseURL: "https://remote.example", token: "test" }
     api.getTask.mockResolvedValue({ ...detail, task: { ...root, assignee: "" } })

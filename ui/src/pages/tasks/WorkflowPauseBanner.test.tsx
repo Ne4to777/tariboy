@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ApiError } from "@/lib/api"
 import WorkflowPauseBanner from "./WorkflowPauseBanner"
@@ -44,6 +44,19 @@ it("offers Release holder only for a pool status", () => {
   expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Cancel task" })).toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Release holder" })).not.toBeInTheDocument()
+})
+
+it("describes Continue by the owner of the status", async () => {
+  renderBanner("script_failures", true)
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+  expect(await screen.findByRole("alertdialog")).toHaveTextContent("The same holder continues")
+  await confirm("Go back")
+  cleanup()
+  renderBanner("script_failures", false)
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+  const dialog = await screen.findByRole("alertdialog")
+  expect(dialog).toHaveTextContent("Resume the task in its current status")
+  expect(dialog).not.toHaveTextContent("holder")
 })
 
 it("continues after confirmation and reports the change", async () => {
