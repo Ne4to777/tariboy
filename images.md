@@ -77,6 +77,9 @@ tariboy image build --path ./reviewer-image --name reviewer --tag v4 \
 tariboy image ls
 ```
 
+`tariboy image validate` prints its result in full and exits 1 when the source
+or the target ref is invalid, so a script can stop before `image build`.
+
 Provide `--repository-id` and `--git-commit` together when the source is an
 exact Git revision. Tariboy records those explicit values in the frozen
 source snapshot; it never infers a commit from the current working directory.
@@ -145,6 +148,16 @@ running as `agent` with defaults, `team` lives at
 A local source such as `/srv/company-images` is used in place, without a copy.
 Stores are the source of canonical agent images and skills; the daemon no
 longer installs a separate built-in Store tree.
+
+A Store may also hold workflow sources at
+`workflows/<workflow_name>/Workflowfile.yaml`. Store detail lists them beside
+images, and `tariboy workflow build STORE/NAME` builds one. The official Store
+provides two: `development`, the pull request flow (`plan`, `approval`,
+`implement`, `review`, `complete`, `done`; it needs the `GH_TOKEN` queue secret
+and a `developers` pool), and `research`, one pool status for a `researchers`
+pool that produces a `report` artifact. See
+[Workflow images](/docs/workflow-images#official-workflow-images) for the
+operator sequence.
 
 ### Automatic refresh and build
 

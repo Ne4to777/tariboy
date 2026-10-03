@@ -63,14 +63,6 @@ batch and outstanding request state. The database and bus remain authoritative
 for delivery state. The older `awaiting-replies` marker remains accepted for
 compatibility with existing built images.
 
-## Managed workflow restrictions
-
-During a workflow-managed assignment, direct send, reply, request, and group
-coordination are denied unless the work packet grants the corresponding tool.
-Raw channel subscription management is always denied; use `tasks observe` so
-subscriptions remain assignment-scoped and match the workflow's channel
-policy.
-
 ## Failure and recovery
 
 Unprocessed messages are redelivered. After the delivery attempt limit they
@@ -82,4 +74,3 @@ failure does not silently acknowledge work.
 
 - [Messaging architecture](/docs/architecture/messaging)
 - [Channels reference](/docs/reference/channels)
-- [Configurable task workflows](/docs/task-workflows#agent-capability-security-boundary)

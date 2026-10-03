@@ -98,11 +98,67 @@ support-bundle allowlist.
 Database backups written by nightly maintenance live in the owner-only
 `<base-dir>/backups/db/` directory, and each backup file is mode `0600`. A
 backup is a complete, unmasked copy of `tariboyd.db`: task text, messages,
-Usage rows, and **agent secret values in plaintext**. Unlike `tariboy backup`,
-nothing is masked, and a deleted or rotated secret remains in each kept backup
-until rotation removes it. Treat backups like the database itself and never
-copy them off the host casually. Backups are outside the support-bundle
-allowlist.
+Usage rows, and **agent and queue secret values in plaintext**. Unlike
+`tariboy backup`, nothing is masked, and a deleted or rotated secret remains in
+each kept backup until rotation removes it. Treat backups like the database
+itself and never copy them off the host casually. Backups are outside the
+support-bundle allowlist.
+
+## Workflow scripts and queue secrets
+
+The workflow block of an agent's Goal prompt treats its sources by trust. The
+task title and description, artifact values, transition messages, and script
+messages are rendered as fenced, bounded data (the fence is longer than any run
+of backticks in the value, and each value is cut at a fixed length), never as
+instructions; the status instructions are trusted image content, like an image
+prompt. Queue secret values appear in no prompt. See
+[Task workflows](/docs/task-workflows#the-goal-block).
+
+The daemon runs the check and watch scripts of a queue's
+[workflow image](/docs/task-workflows#script-protocol) as the daemon account,
+the same OS user as the agents. A workflow gate protects against a skipped
+step, not against an agent that deliberately works around the process: an
+agent can read the task directory, the unpacked image, and the run files, and
+can reach the daemon socket at its default path. Run workflows only with agents
+you trust that far.
+
+- A script receives no agent tools socket and no daemon API variables:
+  `TARIBOY_TOOLS_SOCKET`, `TARIBOY_DAEMON_SOCKET`, `TARIBOY_PLUGIN_SOCKET`, and
+  `TARIBOY_PLUGIN_TOKEN` are removed from its environment, and the protocol
+  variables cannot be overridden by the daemon environment, an agent, the
+  image's `env`, or a secret.
+- A `run_as: queue` script runs in the task's owner-only state directory with
+  the daemon's environment, the image's `env`, and the queue secrets; when none
+  of these sets `PATH`, it gets `PATH=/usr/bin:/bin`. A `run_as: agent` check
+  also receives the holder's environment and agent secrets and runs in the
+  holder's working directory.
+- The files of a task under `<base-dir>/tasks/<KEY>/` are owner-only:
+  directories `0700`, files `0600`. The run log on disk is not redacted. The
+  nightly database cleanup removes the directory of every task it deletes.
+
+Queue secrets are stored per queue in `tariboyd.db` in plaintext, like agent
+secrets. They are set only by the operator (`ttasks queue secret set`, value
+from stdin preferred; the route accepts a body of at most 512 KiB). Removing a
+secret is refused while the workflow bound to the queue requires its key; older
+workflow versions still pinned by unfinished tasks are not checked, and a
+script of such a task that misses its secret fails. No read route, event, task
+snapshot, artifact, or result file carries a value, and Compose never handles
+one. Queue secret values of at least 6 bytes are replaced with `[redacted]` in
+a script's message and returned artifact values before they are stored, and in
+run log text served by the log route; every match is found before any is
+replaced, so overlapping or adjacent values leave no part of either. When the
+read window does not start at the beginning of the file, the daemon reads 64 KiB
+more ahead of it so a secret the window start would cut is still matched, and
+returns nothing from that 64 KiB lead, even where a redaction shortened the
+window. A file shorter than the window plus 64 KiB is read whole, so text before
+the requested window, fully redacted, may appear in it. This filter uses the queue's current values only: a
+rotated or removed secret is no longer redacted in an old log, and encoded
+forms are never redacted. Script authors must not print secrets. A run log is
+readable only by the customer and a holder of the task, and the log of a
+`run_as: agent` check only by the customer and the holder it ran as, because it
+may hold that agent's own secrets, which are not redacted; an agent check
+recorded while no agent held the task is the customer's alone. Neither the
+database nor `<base-dir>/tasks/` is in the support-bundle allowlist.
 
 ## Pricing catalog boundary
 
@@ -129,7 +185,7 @@ runtime lifecycle.
 
 ## Alpha signing and Gatekeeper
 
-`0.71.2` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.72.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &

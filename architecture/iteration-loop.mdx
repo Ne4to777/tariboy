@@ -26,11 +26,6 @@ The loop is driven two ways, both requiring the loop to be **enabled**:
 - **Message** — a publish that matches one of the agent's subscriptions nudges
   the loop to start an iteration now (only if pending deliveries exist).
 
-For a workflow assignment, the wake is only scheduling. The running iteration
-must atomically claim work with `tasks work next`; the returned lease-bound work
-packet is the execution authority. Assignment completion or an allowed
-observation reaction advances durable workflow state, not receipt of the wake.
-
 Loop policy is per-agent: `interval`, `timeout` (soft), `hard-timeout`,
 `on_timeout` and `on_error` (e.g. `restart`). An iteration ends when it signals
 completion, exits, or reaches an enforced deadline.
@@ -59,13 +54,39 @@ disabled Autopilot loops neither select nor receive a goal wake, but preserve a
 valid sticky key; only disabling Goal clears it.
 
 Every non-bare agent receives daemon-owned Goal guidance inside **Task Processing
-Order**, regardless of image plugins or runtime entries. The block tells the agent to work through the
-Native Task workflow, wait for a recorded customer answer while in
-`wait_customer`, and set `wait_customer` after recording a PR while monitoring
-it rather than merging. When selected, it also contains the task key, title,
-priority, status, and description. The inbox message is only a durable wake
-hint. Task title and description are untrusted task input, not daemon
-instructions or lifecycle authority.
+Order**, regardless of image plugins or runtime entries. The guidance has two
+forms, chosen by the selected task.
+
+- **Flexible task** (a queue with no workflow): the block tells the agent to work
+  through the Native Task workflow, wait for a recorded customer answer while in
+  `wait_customer`, and set `wait_customer` after recording a PR while monitoring
+  it rather than merging. When selected, it also contains the task key, title,
+  priority, status, and description. With no selected task it carries only the
+  general guidance.
+- **Workflow task** (a task that follows a workflow image): the block states
+  that the task follows a workflow and that the agent leaves the status only with
+  `ttasks advance`, then lists the task fields, the status instructions from the
+  pinned image, the outcomes with their requirements, the artifacts, the last
+  rejected or failed transition request of the visit, and the exact `ttasks
+  artifacts set` and `ttasks advance --from STATUS` commands. If the workflow
+  data cannot be loaded the agent gets the flexible text and a note to run
+  `ttasks workflow get KEY`. See [The Goal block](/docs/task-workflows#the-goal-block).
+
+The inbox message is only a durable wake hint. Task title, description, artifact
+values, and script messages are untrusted task input, not daemon instructions or
+lifecycle authority; the workflow form renders them as fenced, bounded data.
+Status instructions are trusted image content.
+
+**Idle counting.** The workflow form feeds the `idle_iterations` limit. The loop
+manager is the single place that reports an iteration end: every terminal path of
+an iteration (normal finish, runner error, a manual failure with the tmux session
+alive, and the adoption and stale-kill recovery paths) calls
+`Manager.iterationCompleted`, which first hands the daemon the agent, the
+iteration, the Goal task key the iteration was prepared with, and its start and
+end times, and only then wakes the Goal reconciler. The daemon counts the
+iteration as idle when the agent held the task's pool status when the iteration
+began and made no transition request during it, and pauses the task at the
+limit; see [Pauses](/docs/task-workflows#pauses).
 
 The block starts with `# Task Processing Order` and a fixed instruction to
 process one-shot, then messages, then Goal. Its `## One-shot`, `## Messages`,
@@ -189,11 +210,6 @@ are:
 - **whoami** — identity: which agent, cwd, current iteration, and client/daemon versions.
 - **loop** — iteration control: signal done, start/stop the loop.
 - **messages** — publish to and receive from channels.
-
-During a managed workflow iteration, the active work packet narrows this core:
-direct send/reply/group coordination and raw channel management are denied by
-default. Workflow-defined tools may be allowed explicitly; dynamic observation
-subscriptions use `tasks observe` and must match the packet's channel policy.
 
 On top of the core, an image opts into **optional capabilities**:
 

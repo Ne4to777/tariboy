@@ -40,6 +40,19 @@ daemon socket as the customer actor. Images that enable `plugins: [{name:
 tasks}]` also get the bare `tasks` legacy compatibility shim. See [Native
 Tasks](/docs/tasks) for the command flow.
 
+On a task that follows a queue's [workflow](/docs/task-workflows) the daemon
+assigns the work, and `ttasks done`, `ttasks update --status`, and
+`ttasks ready --claim` do not apply. The agent reads `ttasks workflow get KEY`,
+sets declared artifacts with `ttasks artifacts set|ls|show`, and leaves its
+status with `ttasks advance KEY --outcome NAME --from STATUS`, where `--from`
+makes a retried advance fail with `status_changed` instead of applying twice.
+`advance` waits for the transition's check scripts and exits non-zero on a
+rejection or failure, naming the next command; `--no-wait` returns the pending
+request at once. `ttasks workflow runs KEY` and `ttasks workflow log KEY RUN`
+show what the scripts did. `ttasks workflow move`, `ttasks cancel`, and the
+`ttasks queue` commands are operator-only. Workflow scripts themselves never
+receive the tools socket.
+
 `tariboyd` normally selects and persists one sticky assigned task per enabled
 agent, then stamps its key and top-level root onto the AI-proxy lease before the
 harness starts. If an iteration starts without a task, the agent may create or
@@ -47,13 +60,6 @@ claim one through `ttasks` and run `scripts/goal.sh set <TASK-KEY>`. The task
 must be active and assigned to that agent. Subsequent requests use the new
 task/root attribution; earlier requests remain unattributed. A second call with
 a different key is rejected.
-
-In a workflow-managed queue, `ttasks work next` returns a leased work packet;
-`ttasks artifacts`, workflow-form `ttasks ask`/`answer`, `ttasks observe`, and
-`ttasks work complete` are the only execution path. The active packet also makes
-ordinary direct messaging/group/channel tools deny-by-default, except for tools
-explicitly declared by the pinned workflow. See
-[Configurable task workflows](/docs/task-workflows#agent-capability-security-boundary).
 
 Task priority is one of `P0` (Critical), `P1` (High), `P2` (Normal), or `P3`
 (Low). New tasks default to `P2`; set or change it explicitly with:
@@ -89,7 +95,7 @@ iteration. Queue one run, or create a fixed-delay recurring definition:
 
 ```bash
 scripts/scripts.sh run health --description "Check service health" -- curl -fsS http://localhost:8080/health
-scripts/scripts.sh schedule poll --every 60 --quiet-exit 2 -- ./bin/poll-queue
+scripts/scripts.sh schedule poll --every 60 -- ./bin/poll-queue
 scripts/scripts.sh ls
 scripts/scripts.sh runs scr-agent-...
 scripts/scripts.sh logs srun-agent-...
@@ -100,12 +106,15 @@ scripts/scripts.sh rm scr-agent-...
 ```
 
 Each run's combined stdout and stderr is kept in its own agent scripts log. Exit
-`0` records success; every nonzero exit, including `2`, records failure. Both
-deliver `script.result` by default so the next iteration can act. The message
-carries script/run IDs, name, mode, status, optional exit code, and the absolute
+`0` records success; every other exit, including `2`, records failure. Both
+deliver `script.result` so the next iteration can act. The message carries
+script/run IDs, name, mode, status, optional exit code, and the absolute
 `log_path`, without embedding stdout or stderr. Read that file when the result
 details are needed.
 
-Only an explicit recurring `--quiet-exit CODE` suppresses a matching result.
-The run and log remain visible. Recurring runs start once immediately, wait the
-configured delay after completion, and never overlap.
+The one exception is the quiet exit code `111`, available to the script as
+`TARIBOY_QUIET_EXIT`: a recurring run that exits with it publishes nothing and
+keeps its schedule. The run and log remain visible. Recurring runs start once
+immediately, wait the configured delay after completion, and never overlap. The
+`--quiet-exit CODE` flag is deprecated; see
+[scripts](/docs/plugins/built-in/scripts#results-and-exit-codes).

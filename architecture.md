@@ -14,8 +14,8 @@ sidebar:
 - the **agent lifecycle** — create, start/stop the loop, run iterations, reap;
 - the **message bus** — channels, subscriptions, deliveries;
 - **native Tasks** — queues, recursive task trees, comments, dependencies,
-  per-agent sticky goal selection, immutable queue workflow versions, assignment
-  leases, events, and durable notification/workflow outboxes;
+  per-agent sticky goal selection, agent pools, queue triggers, events, and a
+  durable notification outbox;
 - the **SQLite store** — `tariboyd.db`, all durable state;
 - the **plugin supervisor** — spawns, health-checks, and restarts plugins;
 - the **AI proxy** — every LLM call flows through it;
@@ -69,12 +69,13 @@ controls](/docs/security-controls) for the full transport and credential rules.
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| Store and migrations | `tariboyd.db`, configuration, agent/task/message records, workflow history, and durable outboxes | UI state or a second in-memory source of truth |
+| Store and migrations | `tariboyd.db`, configuration, agent/task/message records, and durable outboxes | UI state or a second in-memory source of truth |
 | Agent store and loop manager | Agent configuration, per-agent engines, iteration adoption, shim refresh, and orphan-session reaping | Harness business logic |
-| Loop engine and shim runner | At most one iteration per agent, prompt preparation, timeouts, completion, and process supervision | Task/workflow transition rules |
+| Loop engine and shim runner | At most one iteration per agent, prompt preparation, timeouts, completion, and process supervision | Task state rules |
 | Image store and builder | Built plugin/prompt artifacts addressed by ref id, source provenance, runnable import/export, and Store path resolution | Harness/model/runtime policy or editable source snapshots |
 | Bus | Channels, subscriptions, deliveries, acknowledgement, and redelivery | Direct process-to-process delivery guarantees |
-| Native Tasks service | Queues, task trees, workflow versions, pools, assignments, artifacts, questions, and observations | Agent authentication |
+| Native Tasks service | Queues, task trees, comments, relations, pools, triggers, notifications, workflow bindings, queue secrets, transition requests, and script run records | Agent authentication or running script processes |
+| Workflow script worker | Executing pending check and watch runs: environment, working directory, process group, timeout, run log, and result parsing | What a verdict means for the task |
 | Plugin host | Plugin process lifecycle, plugin tokens, and provider-channel watches | Provider credentials in plugin environments |
 | AI proxy and pricing catalog | Provider routing, scoped tokens, budgets, immutable request costs, daily model-price refresh, usage, and transcripts | Durable provider keys or proxy leases in SQLite |
 | API and event hub | Command registry, REST responses, and resumable event hints | State changes outside their owning services |
@@ -111,7 +112,7 @@ and removes its partial file and unique directory after any failed upload.
 
 The data directory also holds each agent's working/configuration files and
 iteration evidence. SQLite owns agents, iterations, channels/deliveries, tasks,
-workflow execution history, idempotency keys, and durable outboxes. The
+idempotency keys, and durable outboxes. The
 global agent shell script is the deliberate filesystem-backed exception:
 `<base-dir>/global-agent-shell.sh`; an agent may additionally have
 `<base-dir>/agents/<name>/agent-shell.sh`. Both are owner-only files, written
@@ -157,12 +158,25 @@ safe socket, detects an already-live Unix daemon, cannot parse the requested
 listener, or receives a non-loopback HTTP address. A shim refresh failure is
 logged for its agent without preventing unrelated agents from starting.
 
-In steady state it runs the schedule publisher, task-workflow outbox publisher,
-the per-agent goal reconciler, workflow question and observation reconcilers, AI ingestion, the daily pricing
+In steady state it runs the schedule publisher, the task notification outbox
+publisher, the per-agent goal reconciler, the queue-trigger ingress reconciler,
+the workflow script worker, AI ingestion, the daily pricing
 catalog worker, budget cache refresh, retention pruner, nightly database
 maintenance (backup, cleanup, compaction; see
 [State model](/docs/architecture/state-model#nightly-backup-and-data-retention)),
 loop engines, and plugin supervisors.
+
+The workflow script worker (`internal/workflowrun`) executes the check and
+watch scripts of workflow tasks. Before it starts, the daemon records every run
+that was still `running` as `interrupted`. The worker wakes on task changes,
+when a run finishes, and every two seconds; it schedules due watches, kills runs
+whose cancellation was requested, and starts pending runs, at most four at once
+and never two of one task. Each run is its own process group under the daemon
+account, with no agent tools socket. The tasks service decides what a finished
+run means in one transaction. On shutdown the worker kills its scripts and
+leaves their records `running` for the next start to mark `interrupted`. See
+[Task workflows](/docs/task-workflows#script-protocol).
+
 Shutdown stops the proxy first, then cancels and awaits the pricing worker and
 the other workers before loops/plugins and SQLite stop. That ordering prevents
 a catalog publication, final outbox, or usage write from racing a closed
@@ -191,7 +205,7 @@ for source precedence, request accounting, and diagnostics.
 
 An agent's **enabled**, **loop enabled**, and **interactive** controls are
 independent. Its loop engine serializes work: a timer, explicit trigger,
-message delivery, or workflow wake may request work, but only one iteration
+or message delivery may request work, but only one iteration
 runs at a time.
 
 ```mermaid
@@ -208,7 +222,7 @@ sequenceDiagram
   E->>R: start one iteration
   R->>DB: persist a running iteration
   R->>H: launch tariboy-shim and harness
-  H->>T: identity-bound messages, packets, and completion
+  H->>T: identity-bound messages, tasks, and completion
   T->>DB: durable mutation plus audit/event state
   H-->>R: done, error, timeout, or killed
   R->>DB: persist terminal outcome
@@ -223,12 +237,6 @@ redelivery. See [Agents and the iteration
 loop](/docs/architecture/iteration-loop) and [The shim](/docs/architecture/shim)
 for the detailed scheduler and watchdog behavior.
 
-For workflow-managed work, `ttasks work next` atomically leases a persisted
-packet. That packet narrows tools, artifacts, outcomes, and observation
-patterns. A wake is only a scheduling hint: the task reducer uses durable
-status and assignment records, never a prompt or raw channel message, to
-advance work.
-
 ```mermaid
 flowchart LR
   mutation[API or skill-script mutation] --> transaction[One SQLite transaction]
@@ -237,7 +245,7 @@ flowchart LR
   outbox --> publisher[Background publisher]
   publisher --> bus[Bus delivery]
   bus --> wake[Coalesced loop wake]
-  wake --> packet[Agent reads current state or work packet]
+  wake --> read[Agent reads current state]
   state -. reconnect and replay .-> client[Desktop or operator]
 ```
 
@@ -249,10 +257,10 @@ flowchart LR
 | Harness timeout or error | The shim records a terminal outcome; loop policy may restart or stop future work. Unacknowledged messages can redeliver. | Review result, shim logs, audit, and agent loop policy. |
 | Plugin failure | The host health-checks and restarts enabled plugins; provider watches can be pulled again. | Inspect plugin status/logs; never place upstream AI credentials in plugin configuration. |
 | Model-price refresh failure | The proxy keeps the last valid runtime generation, or built-in fallbacks when none has loaded. The next daily check retries. | Inspect `pricing_catalog_error` daemon logs/events; fields are bounded to source, generation time, model count, and a stable error class. |
-| Missed workflow wake or daemon crash | Durable outbox and workflow reconcilers replay pending intent; assignment and lease state remain in SQLite. | Inspect task execution/event history, then let lease expiry or an explicit release drive retry. |
+| Missed notification or daemon crash | The durable outbox and the ingress reconciler replay pending intent; task state remains in SQLite. | Inspect task event history; the publisher retries on its own. |
 | Budget denial | Proxy rejects/reports before provider access and records usage/audit evidence. | Inspect usage, budgets, and the sensitive per-iteration transcript. |
 
-Structured daemon logs, per-agent audit JSONL, iteration results, task/workflow
+Structured daemon logs, per-agent audit JSONL, iteration results, task
 events, usage records, and optional OpenTelemetry signals make the system
 observable. OTLP stays off until an endpoint is explicitly configured. Proxy
 transcripts are sensitive data and support bundles intentionally exclude them.
@@ -323,9 +331,9 @@ than launching the binary directly. See
   <Card title="Native Tasks" href="/docs/tasks" icon="list-tree">
     Queue keys, recursive access, comments, answer tracking, and delegation.
   </Card>
-  <Card title="Configurable task workflows" href="/docs/task-workflows" icon="git-branch">
-    Queue-selected state machines, explicit pools, work packets, artifacts,
-    questions, and observations.
+  <Card title="Task workflows" href="/docs/task-workflows" icon="git-branch">
+    Queues bound to workflow images, agent pools, dispatch, artifacts,
+    outcomes, check and watch scripts, queue secrets, and queue triggers.
   </Card>
   <Card title="AI proxy & audit log" href="/docs/architecture/ai-proxy" icon="activity">
     Routing, budgets, usage, and the per-iteration transcript.

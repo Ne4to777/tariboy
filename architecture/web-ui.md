@@ -316,10 +316,9 @@ protects unsaved task, comment, and relation drafts with the confirmation
 Task Detail also offers `Wait customer` status and an editable `Pull request`
 field; both use the existing optimistic revision and explicit-host request path.
 The sheet is one `--card` island with its own scroll and a sticky identity
-header carrying the task key, title, status, workflow version and assignee. A
-single banner under that header reports what needs a person — a frozen workflow
-with its error code, or an unanswered customer question — and other statuses
-speak through the status pill alone. The sheet opens as soon as a task is
+header carrying the task key, title, status and assignee. A single banner under
+that header reports what needs a person — an unanswered customer question — and
+other statuses speak through the status pill alone. The sheet opens as soon as a task is
 chosen, in Tasks or from a chat, showing the task key and a loading line until
 the task and its history arrive; refreshing the task already open keeps the
 loaded panel in place. History rows read as time, kind, a
@@ -334,6 +333,42 @@ removed still reads, its rail width ignored. A task opened from a chat uses
 the same sheet, separator, and stored width, clamped to the window instead of
 the workspace, so a resize in either place carries over to the other.
 
+A task with a workflow (`workflow_digest` set, or `workflow_name` as a
+fallback, tested by `isWorkflowTask`) is presented by category; the daemon's
+`status_view` (Active, Closed, All) selects by category too, and a flexible
+task's category equals its status. `TaskRow` takes its tone from `task.category` and its
+label from `taskStatusLabel(task)`: the workflow status ID, humanised, in a
+clipped pill whose title is the ID, plus a `waiting_on` marker (`customer`,
+`script`, or a danger `paused` whose title is the pause reason). `TaskDetail`
+compares `status` only with `category` for its dirty check and tone, and sends
+no `status` or `assignee` on Save for a workflow task; it hides **Move to
+another server…** for one, and neither its banner nor a comment chip asks for
+a comment on the workflow's own (`system:workflow`) wait. In place of the status
+select it renders `WorkflowPanel`, which loads the view with `getTaskWorkflow`
+(on mount, on a new task revision, on a new event sequence passed down by
+`TaskDetail` as `eventSequence`, which in the chat `TaskDrawer` also follows
+the last socket hint about the task through `liveSequence`, and after each change; a request counter drops
+a response older than the newest) and composes
+`WorkflowPauseBanner` (`resumeTaskWorkflow`, `cancelWorkflowTask`),
+`WorkflowOutcomes` (`advanceTask`, then `getTransitionRequest` once a second
+until the request settles or `wait_seconds` passes), `WorkflowArtifacts`
+(`setTaskArtifact`, `getTaskArtifactHistory`; every entry of the view's
+`declared_artifacts`), `WorkflowRuns` (`getTaskScriptRunLog`), the visit list,
+and the actions menu with `moveTaskWorkflow` (targets from the view's
+`statuses`) and `cancelWorkflowTask`. Destructive actions confirm through
+the controlled alert dialog of `useWorkflowConfirm`; `workflowShared.ts` holds
+`errorText` and `useMounted`. Messages, values, and logs
+render as React text. Every call passes the `ApiTarget` of the surrounding
+component. After a drawer action `TasksWorkspace` reloads the tree as well as
+the detail, so the row agrees with the drawer before the socket reports the
+change. In queue settings, `QueueWorkflowSettings` (`getQueueWorkflow`,
+`setQueueWorkflow`, `clearQueueWorkflow`, `listWorkflowImages`) shows the
+binding and renders the pools editor, which reports each saved pool so a
+**Pools needed** list shrinks as pools gain members, and `QueueSecrets` (`listQueueSecrets`,
+`setQueueSecret`, `removeQueueSecret`) lists keys only: the value lives in a
+password input until it is sent and is never read back. A flexible task renders
+exactly as before. The browser suite covers the path against an isolated daemon.
+
 One toolbar sits above the table in both places. It carries the search field,
 the `Active | Closed | All` segment, the queue control, the `My tasks` and
 `Waiting for me` chips — off by default, and still the daemon's `assignee` and
@@ -342,7 +377,7 @@ the `Active | Closed | All` segment, the queue control, the `My tasks` and
 with the number of tasks it contributes to the current list, and
 `Manage queues…` under a separator opens queue settings as a 340px right sheet:
 one card per queue with its agents, a `Rename` section over the existing
-`PATCH`, a `Workflow` section, and a footer that creates a queue. The queue
+`PATCH`, a `Pools` section, and a footer that creates a queue. The queue
 filter is applied in the client so that menu can count from the load the tree
 already performs; `scope_agent`, `status_view`, the text search, `assignee` and
 `waiting_for` stay daemon-side. A new task is created in the selected queue,
@@ -545,15 +580,11 @@ its own task. Remote targets map HTTP(S) to WS(S) and put the existing bearer
 token in the WebSocket query because browser sockets cannot set an
 Authorization header.
 
-Queue settings expose the active immutable workflow version and explicit pool
-membership. Task detail does not render the workflow execution lists
-(assignments, holds, artifacts, questions, observations); a managed task is
-distinguished there by its lifecycle fields being read-only, and by the freeze
-banner the execution projection still drives. The projections remain available
-over typed HTTP for the operator surfaces that read them, and the UI does not
-infer phases from title prefixes or assignee. Operator history remains
-available after completion. See
-[Configurable task workflows](/docs/task-workflows).
+Queue settings expose explicit pool membership, edited with the revisioned
+pool route. The UI has no workflow controls yet: binding a workflow image,
+queue secrets, outcomes, and script runs are driven through `ttasks` and the
+REST API, and the UI does not infer phases from title prefixes or assignee. Operator history remains available after completion. See
+[Task workflows](/docs/task-workflows).
 
 The navigation hierarchy is **Server → Agent**.
 A selected server owns Tasks, Images, Stores, and Settings, and its
@@ -632,8 +663,7 @@ on the source, then moves the tree with the export and import of
 The root is imported unassigned, so an agent of the same name on the target
 cannot take it first, and is then assigned by an ordinary update, which sends
 the agent its assignment notification; subtasks keep their assignees. The
-import's refusals — no queue with that prefix, a taken key, or a
-workflow-managed queue — leave the task on its server and are shown as an
+import's refusals — no queue with that prefix or a taken key — leave the task on its server and are shown as an
 error. Once the import succeeds the task lives on the target: if cancelling the
 source copy or assigning the agent then fails, the error names the step and
 the sheet still follows the task to its new server. A choice whose server

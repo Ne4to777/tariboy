@@ -75,11 +75,10 @@ parameters against the channel's `params_schema`, fingerprints them into a
 `GET /api/plugin/watches` pull. The plugin therefore produces only work that
 has an active consumer.
 
-Configurable task workflows can consume provider events without giving the
-plugin authority over the task state machine. A committed bus message becomes
-an idempotent task observation; only a reaction declared by the pinned workflow
-may wake, hold, or create work. See [Configurable task
-workflows](/docs/task-workflows#channels-triggers-subscriptions-and-observations).
+An operator queue trigger can turn a provider event into a new task without
+giving the plugin authority over any existing task. The committed bus message is
+matched once and creates an ordinary Native Task. See [Task
+workflows](/docs/task-workflows#queue-triggers).
 
 ### Installation and versioning
 

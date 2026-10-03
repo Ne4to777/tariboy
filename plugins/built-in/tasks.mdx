@@ -1,6 +1,6 @@
 ---
 title: tasks
-description: Use Native Tasks and leased workflow assignments through the globally installed ttasks client.
+description: Use Native Tasks through the globally installed ttasks client.
 sidebar:
   label: Tasks
   icon: list-tree
@@ -47,36 +47,39 @@ relations, symmetric related links, and explicit completion despite active
 descendants. Access follows task assignment, authorship rules, queue ownership,
 group membership, ancestry, and scoped answer requests.
 
-## Workflow-managed Tasks
+## Workflow tasks
 
-When a queue has a published workflow, agents do not use the flexible
-ready/claim path. They claim leased assignments and operate on least-context
-work packets:
+A task in a queue bound to a [workflow image](/docs/task-workflows) follows the
+image's statuses. The daemon assigns it, so `ttasks done`, `ttasks update
+--status`, `ttasks assign`, and `ttasks ready --claim` are refused with
+`workflow_managed`. An agent drives such a task with:
 
 ```bash
-ttasks work next --queue OPS --idempotency-key claim-ops
-ttasks work show <assignment-id>
-ttasks artifacts add <assignment-id> --name report --type markdown --content "..."
-ttasks ask <assignment-id> \
-  --question "Which region?" \
-  --context "Required to continue" \
-  --blocking-scope assignment
-ttasks observe subscribe <assignment-id> 'deploy:*' --reaction wake_current
-ttasks work complete <assignment-id> --outcome approved
+ttasks workflow get OPS-12
+ttasks artifacts set OPS-12 plan --file plan.md
+ttasks artifacts ls OPS-12
+ttasks artifacts show OPS-12 plan
+ttasks advance OPS-12 --outcome planned --from plan --message "Plan ready"
+ttasks workflow runs OPS-12
+ttasks workflow log OPS-12 4
 ```
 
-The packet declares allowed actions, tools, outcomes, artifacts, and channel
-patterns. Mutations require the current revisions and stable idempotency keys.
-Direct channel subscriptions are replaced by `ttasks observe`, and undeclared
-message or group tools are denied.
+`workflow get` lists the outcomes, the artifacts each still needs, the checks
+it declares, and the last transition request. An agent may set artifacts and
+advance only while it holds the task in a pool status. When the outcome
+declares checks, `advance` waits for the daemon to run them: a rejection prints
+`rejected:` with the check's message, which says what to fix before repeating
+the advance; a failure prints `failed:` with the run to read with
+`workflow log`. A holder of the task may read run logs. `ttasks workflow move`,
+`ttasks cancel`, `ttasks queue workflow`, and `ttasks queue secret` are
+operator-only and unavailable to an agent.
 
 ## Durable state and notifications
 
-Queues, nested tasks, comments, priorities, dependencies, answer waits,
-workflow versions, executions, assignments, leases, artifacts, questions,
-holds, observations, and subscriptions are durable daemon state. Assignment,
-question, answer, and triage events use a transactional outbox and the normal
-messages bus, so notifications survive restarts and can wake enabled agents.
+Queues, nested tasks, comments, priorities, dependencies, and answer waits are
+durable daemon state. Assignment, question, answer, and triage events use a
+transactional outbox and the normal messages bus, so notifications survive
+restarts and can wake enabled agents.
 
 ## Prompt integration
 
@@ -87,22 +90,19 @@ skills:
   - dir: ../../skills/tasks
 ```
 
-The packaged image skill teaches both flexible and workflow-managed operation. There is
-no general Tasks runtime marker: ordinary work is queried through `ttasks`, and
-a managed assignment supplies its work packet through the workflow launch
-path.
+The packaged image skill teaches flexible Native Task operation. There is no
+general Tasks runtime marker: work is queried through `ttasks`.
 
 ## Failure behavior
 
 The capability gate returns `plugin_disabled` when inactive. Domain validation
 then distinguishes inaccessible tasks, revision conflicts, invalid transitions,
-dependency cycles, active descendants, expired leases, undeclared outcomes,
-and workflow policy violations. Unknown client flags fail locally with exit `2`
+dependency cycles, and active descendants. Unknown client flags fail locally with exit `2`
 before any request reaches the daemon.
 
 ## Related reference
 
 - [Native Tasks](/docs/tasks)
-- [Configurable task workflows](/docs/task-workflows)
+- [Task workflows](/docs/task-workflows)
 - [Command reference: Native Tasks](/docs/reference/commands#native-tasks-ttasks-)
 - [Agent tools](/docs/binaries/agent-tools)

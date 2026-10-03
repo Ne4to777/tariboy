@@ -247,14 +247,24 @@ their checksums, publishes a versioned release under
 `$HOME/.local/bin` links. `ttasks` is an additional alias for
 `tariboy-tasks`. It does not start or restart the daemon.
 
-Configurable Native Tasks workflow changes normally need focused tests under
-`internal/tasks`, the operator route/OpenAPI registry tests under
-`internal/commands`, and the agent command contracts in the separate
-`tariboy-store` repository's `make check`.
-Changes to queue-trigger or observation delivery also exercise bus/daemon
-recovery; Compose changes exercise `internal/compose`. The isolated product
-path is `scripts/workflow-e2e.sh` and is included by `make full-check`. Keep the
-current behavior documented in [Configurable task workflows](/docs/task-workflows).
+Native Tasks changes normally need focused tests under `internal/tasks`, the
+operator route/OpenAPI registry tests under `internal/commands`, and the agent
+command contracts in the separate `tariboy-store` repository's `make check`.
+Changes to queue-trigger delivery also exercise bus/daemon recovery; Compose
+changes exercise `internal/compose`. The isolated Tasks mode path is
+`scripts/tariboy-tasks-e2e.sh`, which runs inside `backend-check`.
+
+Workflow changes span `internal/workflowfile` and `internal/workflowimage`
+(the image), `internal/tasks` (the engine, run records, queue secrets, and the
+run log route), `internal/workflowrun` (the script protocol, process execution,
+and the daemon worker), `internal/taskcli` (`ttasks advance` and the workflow
+commands), and `internal/compose` (binding from Compose). Their focused tests
+live in those packages. The isolated product path is
+`scripts/workflow-e2e.sh` with its fixture under
+`scripts/testdata/workflow-e2e/`; it is included by `make full-check` and runs
+alone with `make workflow-e2e`. Keep the current behavior documented in
+[Task workflows](/docs/task-workflows) and
+[Workflow images](/docs/workflow-images).
 
 ### Image skill bridge development
 

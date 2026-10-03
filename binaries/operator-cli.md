@@ -48,10 +48,11 @@ that daemon is unavailable, while contributed commands require it. Secret
 arguments are accepted only through an owner-only file or stdin, never as a
 token value in argv. See the [Telegram setup workflow](/docs/plugins#bundled-telegram-plugin).
 
-Workflow definition, queue binding, pool, trigger, and execution inspection are
-operator REST routes rather than hand-written CLI verbs. Compose is the normal
-declarative client and the generated OpenAPI describes the raw API. See
-[Configurable task workflows](/docs/task-workflows#rest-api).
+Queue pools and triggers are managed with the operator form of `ttasks queue
+pool` and `ttasks queue trigger`, or through the matching REST routes; Compose
+is the declarative client for pools and the generated OpenAPI describes the raw
+API. Workflow images are managed with `tariboy workflow`. See
+[Task workflows](/docs/task-workflows) and [Workflow images](/docs/workflow-images).
 
 Agent create and update accept `--goal-enabled` and
 `--goal-wait-customer-timeout-s`; their defaults are enabled and 300 seconds.

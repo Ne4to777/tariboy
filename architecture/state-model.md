@@ -145,9 +145,9 @@ transaction:
 
 - **Native Tasks** — only whole trees whose every task is `done` or
   `cancelled` with `completed_at` before the cutoff, with their comments,
-  waits, events, notifications and read state, relations, and workflow
-  executions, assignments, artifacts, questions, holds, subscriptions,
-  observations, and outbox rows. A tree related to a task that stays is kept.
+  waits, events, notifications and read state, relations, and outbox rows. A tree related to a task that stays is kept.
+  After the deletion commits, each deleted task's `<base-dir>/tasks/<KEY>/`
+  directory is removed; a key that is not a single path element is skipped.
 - **AI proxy Usage** — `ai_requests` rows. Retention is `0` (keep everything)
   or at least 31 days, so the calendar-month budget window never loses rows,
   and rows inside the longest rolling `budgets` period are kept even when it
@@ -155,7 +155,7 @@ transaction:
   rows from retained transcripts; the next run deletes them again.
 - **Messages** — messages whose every delivery is acknowledged or
   dead-lettered, with those deliveries. Unacknowledged work, and messages that
-  workflow ingress has not consumed yet, are never deleted.
+  queue-trigger ingress has not consumed yet, are never deleted.
   This is the only path that removes `messages` rows; old chat history
   therefore ends at the retention period.
 - **Daemon events** (`events`) and task mutation idempotency records.
@@ -233,10 +233,10 @@ so reparenting preserves priority without disturbing other buckets.
 `started_at` records the first time a task's status became `in_progress` and
 never moves afterward: a task paused in `wait_customer`, reopened, or started
 again keeps it. The `tasks_started_at` trigger stamps it on every status write
-path — update, claim, a resolved customer wait and a workflow transition — with
+path — update, claim, and a resolved customer wait — with
 that write's `updated_at`. Migration `0049` backfilled existing tasks from the
-earliest `task.updated` event with status `in_progress`, `task.claimed` or
-`workflow.transitioned` still in `task_events`; a task with no such event keeps
+earliest `task.updated` event with status `in_progress`, or `task.claimed`
+still in `task_events`; a task with no such event keeps
 an empty value until its next real move into `in_progress`, rather than taking
 the time of an unrelated edit. Export and import carry the field.
 
@@ -246,13 +246,78 @@ outbox with a stable message idempotency key. The WebSocket is only a delivery
 optimization: `task_events.sequence` is the resume authority and HTTP queries
 remain authoritative. See [Native Tasks](/docs/tasks).
 
-Managed queues add normalized workflow definitions/bindings/pools, immutable
-status and requirement executions, assignment attempts and leases, artifacts,
-questions/holds, subscriptions/observations, idempotency rows, and a workflow
-outbox. A task snapshots the active published version at creation; later queue
-activation or pool rebinding cannot rewrite its history. Startup reconciles
-expired leases, question deadlines, pending workflow outbox rows, and the
-persisted bus-ingress cursor. See [Configurable task workflows](/docs/task-workflows).
+Queues also own agent pools and queue triggers, and the daemon keeps a
+persisted bus-ingress cursor that startup reconciles so a trigger never creates
+a task twice. The earlier task workflow engine tables were dropped by migration
+`0054`; tasks that had been managed became ordinary tasks and keep a
+`workflow.removed` event that records what they ran on. The unused
+`tasks.workflow_version_id` and `workflow_revision` columns and the empty
+`task_workflow_versions` table stay in place, always `NULL` or empty, because
+SQLite cannot drop a column with a foreign key without rebuilding `tasks`.
+
+Migration `0055` adds the workflow image engine. `tasks.workflow_digest` pins
+the image a task follows, set in the transaction that creates the task from the
+queue's binding; the task is never migrated to another version, and the image
+row (`task_workflow_images`) cannot be removed while a queue binds it or an
+unfinished task pins it. `tasks.workflow_status` holds the workflow status
+(and `tasks.workflow_paused_reason`, the pause reason, empty unless the task
+is paused), while `tasks.status` keeps holding the category for every task.
+Task JSON shows the
+workflow status as `status` and the stored value as `category`; for a task
+without a workflow both are the stored status. New tables: `task_queue_workflows`
+(one binding per queue, with a revision and an `ON DELETE RESTRICT` reference to
+the image), `task_workflow_holders` (the last holder per task and pool),
+`task_status_visits`, `task_transition_requests` (at most one `pending` per
+task), and `task_artifacts`. Workflow mutations append `workflow.transitioned`,
+`workflow.transition_requested`, `workflow.moved`, `workflow.cancelled`, and
+`artifact.set` task events, and queue bindings append `queue.workflow_bound` and
+`queue.workflow_cleared`, in the same transaction as the change. See
+[Task workflows](/docs/task-workflows).
+
+Migration `0056` adds `task_queue_secrets`: per-queue secret values for
+workflow scripts, in plaintext like agent secrets, deleted with their queue. No
+read route returns a value; setting and removing a key append
+`queue.secret_set` and `queue.secret_removed` with the key only. Migration
+`0057` adds `task_script_runs`, the durable record of every check and watch run
+(kind, script, mode, state, verdict, exit code, message, process id, times, and
+log path), with a unique partial index that allows one `pending` or `running`
+run per task, and `task_status_visits.next_watch_at`, when the open visit of a
+script status runs its watch next. Migration `0058` adds
+`task_script_runs.holder`, the agent a `run_as: agent` check ran as, which
+decides who may read its log. Migration `0059` adds only indexes: runs by task,
+visit, and request, the `pending` and `running` runs, and the open visits with a
+scheduled watch. A check moves its transition request to `applied`,
+`rejected`, or `failed` in the transaction that records the run; rejections and
+failures increment the visit's `rejected_requests` and `script_failures`
+counters. Script runs append `workflow.script_run`,
+`workflow.transition_rejected`, `workflow.transition_failed`, and
+`workflow.script_failed` events; a quiet watch run appends none, and only the
+newest 20 quiet runs of a visit are kept. Closing a visit by any route cancels
+its pending transition request. When the worker starts, before it starts any
+run, it terminates a script a crashed daemon left running when `/proc` proves
+the recorded PID is that run's script, then records every run still `running`
+as `interrupted`. Run files live under `<base-dir>/tasks/<KEY>/` (`state/` and
+`runs/<run-id>/`), owner-only; only the newest 20 quiet watch runs of a task
+keep their run directories, counted by the running worker, and nightly
+retention removes the directory of every task it deletes.
+
+Migration `0060` adds `task_workflow_holders.released` (default `0`): the
+customer's `release` decision sets it on the holder's row, which makes that
+agent neither sticky nor eligible for the task in that pool until another agent
+replaces the row or an operator move deletes it. Migration `0061` adds
+`task_workflow_holders.unavailable_since` (default empty): when the holder was
+first seen unable to work, cleared by every dispatch, which the daemon compares
+with the `unavailable_grace` limit. `tasks.workflow_paused_reason` is now set: a
+pause writes one of `idle_iterations`, `rejected_requests`, `script_failures`,
+or `holder_unavailable`, together with category `wait_customer`, an open
+customer wait authored by `system:workflow`, and a `workflow.paused` event; a
+resume decision, an operator move, or a cancel clears it, and a decision or move
+appends `workflow.resumed`. Both are written in the transaction that changes the
+task. Migration `0062` adds an index on `task_transition_requests(visit_id,
+created_at)`, which the idle-iteration count reads, and
+`task_status_visits.resumed_at` (default empty): a resume decision writes the
+time on the open visit, and an iteration that started before it does not count
+as idle. See [Task workflows](/docs/task-workflows#pauses).
 
 ## Image assignment state
 
@@ -263,6 +328,15 @@ versions, and diagnostics are read from `images/` on disk for every view, never
 stored as a second inventory. Store refresh and build preparation are
 serialized so a pull cannot race source freezing. Store builds then use the
 ordinary image snapshot and publication path below.
+
+Workflow images live on disk under `<base-dir>/workflows/<name>/`. Content is
+addressed by SHA-256 digest in `refs/<digest>/`, and tags are pointer files in
+`tags/` that hold a digest. The `task_workflow_images` table records the
+manifest of each published digest, so a manifest can be read from SQLite
+without touching the filesystem; a unique index on name and version keeps one
+digest per published version. The daemon reconciles the table with the stored
+content at startup: it inserts missing rows and deletes rows whose content is
+gone. See [Workflow images](/docs/workflow-images).
 
 Directories left under `<base-dir>/store/versions/` by an older release are
 untouched legacy data. Current daemons neither read nor refresh them.
@@ -355,5 +429,5 @@ terminally classifies the stale row as `harness_error`.
 Two daemons pointed at the same base dir share the same DB and loop managers and
 will double-run each other's agents — double-executed iterations and reaped
 sessions. Always isolate a test daemon with its own base dir, runtime dir, and
-the web UI disabled. See [Development → Isolation](/docs/development#isolation).
+the web UI disabled. See [Development → Test isolation](/docs/development#test-isolation).
 :::

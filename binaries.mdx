@@ -45,10 +45,11 @@ The authoritative operator command list is generated from the binary
 (`tariboy --help-json`) and documented in the
 [command reference](/docs/reference/commands).
 
-Versioned Native Tasks workflows are configured through
-[`tariboy compose`](/docs/binaries/compose) or operator REST; agents execute
-them with the identity-bound `ttasks` client. See
-[Configurable task workflows](/docs/task-workflows).
+Queue agent pools and triggers are configured with the operator `ttasks` client
+or operator REST, and pools also through [`tariboy compose`](/docs/binaries/compose).
+Workflow images are built and stored with `tariboy workflow`; see
+[Workflow images](/docs/workflow-images) and
+[Task workflows](/docs/task-workflows).
 
 ## The three command surfaces
 

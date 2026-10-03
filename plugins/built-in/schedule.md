@@ -58,20 +58,7 @@ skills:
 There is no schedule runtime marker. The packaged skill teaches the commands;
 `scripts/schedule.sh ls` reads current state when needed.
 
-## Workflow restrictions
-
-A workflow-managed assignment may create a wake-up for its own inbox. A
-schedule that names an explicit channel additionally requires the
-`schedule.publish` tool permission in the active work packet. Without it, the
-API returns `workflow_tool_not_allowed` and creates nothing.
-
-At firing time, the scheduler also checks for a still-active workflow lease
-owned by the agent. It postpones the publish while that lease is active, then
-retries the due schedule after the lease ends. Scheduled traffic therefore
-cannot escape an assignment's live communication boundary.
-
 ## Related reference
 
 - [Channels: schedules and scripts](/docs/reference/channels#schedules-and-scripts)
 - [Messaging architecture](/docs/architecture/messaging)
-- [Configurable task workflows](/docs/task-workflows#agent-capability-security-boundary)

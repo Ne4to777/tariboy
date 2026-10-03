@@ -42,69 +42,85 @@ agents:
 
 `wait_customer_timeout` must be a positive whole-second duration.
 
-## Task workflows and queues
+## Task queues and pools
 
-Compose can publish a versioned Native Tasks workflow and bind it to a queue.
-Workflow files are portable YAML definitions; a relative `source` is resolved
-from the directory containing `tariboy-compose.yaml`, just like image
-contexts.
+Compose can declare task queues and the explicit agent pools of each queue.
 
 ```yaml
 version: 1
 
-workflows:
-  development:
-    source: ./workflow.yaml
-
 task_queues:
   DEV:
     name: Development
-    workflow: development
     pools:
-      managers: [dev-ng-manager]
       developers: [dev-ng-developer]
       reviewers: [dev-ng-reviewer]
-      qa: [dev-ng-qa]
 ```
 
-In this example `workflow.yaml` owns `name: development` and `version: 2`.
-The complete runnable `development@2` source and its lifecycle are documented
-in [Configurable task workflows](/docs/task-workflows#one-complete-development2-example).
+The file is parsed strictly: a misspelled or unknown field fails instead of
+being ignored. Queue prefixes and pool names use URL-safe ASCII identifiers
+(`A-Z`, `a-z`, digits, `.`, `_`, and `-`; the first character must be
+alphanumeric). A pool is an explicit list of compose agents, normalized by agent
+name, and independent of `groups`: putting an agent in a group does not put it in
+a pool, and a pool does not alter group membership.
 
-The workflow map key is a compose-local reference. The workflow file itself
-owns its durable `name` and integer `version`. Changing a published definition
-therefore requires incrementing that version; published versions are immutable.
-The queue refers to the local workflow key and inherits that workflow when a
-task is created in the queue.
+The top-level `workflows:` map belonged to the removed task workflow engine. A
+non-empty value is rejected with an error that names the key. An empty
+`workflows: {}`, as written by older team exports, is accepted and ignored.
 
-Compose and workflow sources are parsed strictly: misspelled or unknown fields
-fail with the source path instead of being ignored. Workflow names, compose
-workflow keys, and pool names use URL-safe ASCII identifiers (`A-Z`, `a-z`,
-digits, `.`, `_`, and `-`; the first character must be alphanumeric).
+`compose up` first converges images, agents, and groups. It then reconciles the
+queue and its pools through the daemon's Native Tasks API, and last binds queue
+workflows. Repeating `compose up` is idempotent; it also restores changed queue
+names and pool membership. `compose status` remains read-only and reports queue,
+pool membership, and workflow drift alongside agent, group, and budget drift.
+Existing compose files without `task_queues` keep their previous behavior.
 
-Every pool used by a workflow requirement (including the pool that receives
-questions) must be declared with at least one compose agent. Pool membership is
-an explicit list (normalized by agent name) and is independent of `groups`:
-putting an agent in a group does not put it in a workflow pool, and a pool does
-not alter group membership.
+## Queue workflows
 
-`compose up` first converges images, agents, and groups. It then validates,
-publishes, and reconciles workflow state through the daemon's Native Tasks API:
-queue, pools, and finally the active workflow binding. Pools are installed
-before activation because the daemon rejects a workflow whose required pool is
-empty. Repeating `compose up` is idempotent; it also restores changed queue
-names and pool membership. If the source content differs semantically from an
-already-published workflow with the same name and version, reconciliation stops
-and asks for a version bump. Whitespace normalized by the workflow model does
-not count as a semantic change.
+A queue may name the [workflow image](/docs/workflow-images) it follows:
 
-`compose status` remains read-only and reports active workflow-version and pool
-membership drift alongside agent, group, and budget drift. Existing compose
-files without `workflows` or `task_queues` keep their previous behavior.
-Commands that do not use desired workflow state (`build`, `down`, `start`,
-`stop`, `restart`, `kill`, `rm`, `exec`, `logs`, and `ps`) do not open workflow
-source files. They therefore remain usable to build images, inspect, stop, or
-remove agents even when a referenced workflow file has moved or disappeared.
+```yaml
+task_queues:
+  DEV:
+    name: Development
+    workflow: team/development:0.1.0
+    pools:
+      developers: [dev-a, dev-b]
+```
 
-Task creation never accepts the compose workflow key or durable workflow name:
-it names only `DEV`, and the daemon pins that queue's active published version.
+`workflow` takes one of four forms:
+
+| Value | `compose up` |
+| --- | --- |
+| `NAME` | Binds the already built `NAME:latest`. |
+| `NAME:TAG` | Binds the already built `NAME:TAG`. |
+| `STORE/NAME` | Builds the workflow source `NAME` from the registered Store `STORE`, then binds the version that build produced. |
+| `STORE/NAME:TAG` | Builds `STORE/NAME`, then binds `NAME:TAG`. |
+
+A tag of `.` or `..` is a validation error.
+
+Each Store workflow is built once per run, before any queue is bound, and a
+bind runs after the queue's pools exist, since a bind needs the pools the
+workflow names. A queue already bound to the resolved digest is left alone. A
+form without a Store prefix fails when the image is not built. Rebinding a
+queue to a newer version leaves its existing tasks on the version they pinned.
+
+Compose never clears a binding: removing `workflow` from the file leaves the
+queue bound; unbind with `ttasks queue workflow clear`. Compose never handles a
+secret value. When the workflow lists `requires_secrets` that the queue does
+not have, the bind fails with `workflow_secret_missing`, and the error names the
+secrets and the command to set one:
+
+```bash
+printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
+```
+
+`compose status` never builds. A `STORE/NAME` workflow is compared with the
+`workflow_version` of its Store source, as the daemon reads it from the Store,
+and reported as `(Store source)`; when the Store or the source cannot be read,
+and for every other form, status resolves the declared workflow through
+`NAME:TAG`, `latest` when no tag is given. It reports a queue whose binding is
+missing, differs, or names an image that is not built yet. A bound queue whose
+file declares no workflow is listed as not declared. When the daemon fails to
+return a queue's binding, that queue shows `workflow UNKNOWN (<error code>)` and
+status goes on with the next one. See [Task workflows](/docs/task-workflows).

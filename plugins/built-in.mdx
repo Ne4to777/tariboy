@@ -25,7 +25,7 @@ runtime prompt entries explicitly. Neither kind starts a supervised subprocess.
 | [`schedule`](/docs/plugins/built-in/schedule) | Optional | No | `scripts/schedule.sh …` | Schedules and resulting bus messages |
 | [`scripts`](/docs/plugins/built-in/scripts) | Optional | Yes | `scripts/scripts.sh …` | Script records and logs |
 | [`image-creator`](/docs/plugins/built-in/image-creator) | Optional | No | `scripts/image_creator.sh build` | Built image in the host image store |
-| [`tasks`](/docs/plugins/built-in/tasks) | Optional | Yes | Bare `tasks` command | Native Tasks and workflow state in SQLite |
+| [`tasks`](/docs/plugins/built-in/tasks) | Optional | Yes | Bare `tasks` command | Native Tasks in SQLite |
 
 “Historical core” describes schema-v1 resolution, where `whoami`, `loop`, and
 `messages` were added automatically. It does **not** mean schema-v2 images
@@ -89,11 +89,6 @@ request. A missing capability returns `404 plugin_disabled`; it does not invoke
 the underlying operation. Image activation rewrites image-owned shims before
 promoting the new plugin set, so the bare `tasks` and `i-am-done` commands match
 the active image.
-
-Managed task workflows add a second authorization layer. They may deny direct
-message and group tools, always replace raw channel subscriptions with
-assignment-scoped `tasks observe`, and allow scheduled channel publishing only
-when the work packet grants it.
 
 ## Prompt and state ownership
 

@@ -208,21 +208,11 @@ generation; a positive per-agent cooldown still suppresses rapid repeats (60
 seconds by default). That message is a durable wake hint, not a task mutation or a direct
 iteration start.
 
-### Workflow-owned channel use
+### Queue triggers
 
-A managed assignment is deliberately different from an agent's standing bus
-subscriptions. Direct message publishing, group coordination, and raw channel
-management are denied by default for its active iteration. The workflow packet
-may expose explicit direct tools, while task-related observation subscriptions
-are created with `tasks observe subscribe` and must match a workflow-declared
-channel pattern.
-
-A matching message is appended as an observation. It never supplies a free-form
-state transition: only `record_only`, `wake_current`, `hold_assignment`, or
-`create_requirement` may run, and only when declared by the pinned workflow.
-Late messages are retained as record-only evidence. Operator queue triggers are
-separate: an external plugin event may create a new task, after which ordinary
-queue workflow pinning applies. See [Configurable task workflows](/docs/task-workflows).
+An operator queue trigger lets an external plugin event create a new task. The
+message never changes the state of an existing task. See
+[Task workflows](/docs/task-workflows#queue-triggers).
 
 ## Pending delivery and prompt injection
 
@@ -359,7 +349,8 @@ The log starts with the resolved execution CWD; combined stdout and stderr
 follow in that file and are not copied into the message. Publishing that result
 also stops the recurring definition, so one failing command cannot flood the
 chat; `scripts/scripts.sh rerun scr-...` resumes it once the agent has handled
-the message. A quiet run publishes nothing and keeps the schedule running. An
+the message. A quiet run — one that exits `111` — publishes nothing and keeps
+the schedule running. An
 idle recurring definition can also be run immediately; the active-run constraint
 still prevents overlap.
 
@@ -478,7 +469,7 @@ state such as `acked_at`, `attempts`, or DLQ.
 In an agent's Desktop **Messages → Queue** view, **Clear queue** physically
 removes every pending delivery for that agent after explicit destructive
 confirmation. Archive, DLQ, shared messages, and other agents' deliveries are
-unchanged; messages awaiting workflow ingestion are also retained. The
+unchanged; messages awaiting queue-trigger ingestion are also retained. The
 idempotent response reports `deleted_deliveries` and
 `deleted_messages`; an empty Queue returns zeroes.
 

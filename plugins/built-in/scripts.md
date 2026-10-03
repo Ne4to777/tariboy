@@ -31,8 +31,8 @@ previous run's actual finish time.
 A recurring script keeps running only while it stays quiet. As soon as a run
 publishes a `script.result` message, the definition stops: its state becomes
 `completed`, no next run is scheduled, and the agent is notified once instead of
-repeatedly. Resume it deliberately with `rerun` after handling that message, or
-keep it silent with `--quiet-exit` (see
+repeatedly. Resume it deliberately with `rerun` after handling that message. A
+run stays quiet by exiting with the quiet exit code `111` (see
 [Results and exit codes](#results-and-exit-codes)).
 
 Inspect and control definitions and runs separately:
@@ -60,8 +60,7 @@ scripts.
 
 1. Choose **Run once** for one queued command, or **Schedule** for a recurring
    command. Enter a name, description, and command. A scheduled script also
-   needs a positive interval in seconds; **Quiet exit** is optional and accepts
-   an exit code from `0` through `255`.
+   needs a positive interval in seconds.
 2. Submit **Run once** or **Schedule**. A scheduled script starts immediately,
    then waits for its interval after each run finishes. Runs for one definition
    do not overlap.
@@ -93,24 +92,48 @@ file. Combined stdout and stderr remain in that file. The concise
 status, optional exit code, and absolute log path; it never embeds command
 output.
 
-By default:
+Exit codes:
 
 - exit `0` records `succeeded` and publishes a result;
-- every nonzero exit, including `2`, records `failed` and publishes a result;
+- exit `111` from a recurring script is the quiet exit code: the run is stored
+  with its exit code and log, but creates no message, does not wake the agent,
+  and leaves the schedule running;
+- every other nonzero exit, including `2`, records `failed` and publishes a
+  result;
 - timeout, cancellation, and daemon-restart interruption have distinct
   statuses without invented exit codes.
 
-A recurring script can suppress one expected numeric result explicitly:
+Every published result stops a recurring definition until it is resumed. A
+one-shot run that exits `111` is an ordinary failure and publishes its result.
+
+The quiet exit code is fixed. Each run receives it as `TARIBOY_QUIET_EXIT`, so a
+script reports "nothing changed" without a magic number:
 
 ```bash
-scripts/scripts.sh schedule poll --every 60 --quiet-exit 2 -- ./bin/poll-queue
+scripts/scripts.sh schedule poll --every 60 -- ./bin/poll-queue
 ```
 
-The matching run is still stored with its exit code and log, but creates no
-message, does not wake the agent, and leaves the schedule running. Every other
-outcome publishes a result and therefore stops the definition until it is
-resumed. `--quiet-exit` is unavailable for one-shot runs, and no exit code is
-quiet by default.
+where `bin/poll-queue` is:
+
+```sh
+#!/bin/sh
+new_items=$(queue-client count) || exit 1
+[ "$new_items" -eq 0 ] && exit "$TARIBOY_QUIET_EXIT"
+echo "$new_items new items"
+```
+
+`111` was chosen because nothing else uses it. Code `2`, the earlier
+convention, is also what a shell reports for a usage error and what `grep`,
+`diff`, and Go's `flag` package report for their own failures, so a broken
+command would have stayed quiet forever. Exit `112` is reserved by the same
+protocol and is an ordinary failure for agent scripts.
+
+The former `--quiet-exit CODE` flag, and the `quiet_exit` request parameter
+behind it, are deprecated. The official Store skills no longer send it; the
+daemon still accepts it for one more release, and a later release removes it. A code other than `111` wraps the stored command in a nested `sh -c`
+that reports that code as `111`; the definition then shows the wrapped command.
+Schedules created before this change were rewritten the same way when the
+daemon was upgraded.
 
 ## Restart and lifecycle
 

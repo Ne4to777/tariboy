@@ -15,10 +15,12 @@ absent and records a `task.queue_created` event by `system:tariboyd`; an
 existing `TASK` queue, whether created by hand or by compose, is left
 unchanged.
 
-Queues may optionally activate a [configurable task workflow](/docs/task-workflows).
-New tasks in such a queue automatically pin that published version; callers do
-not pass a workflow when creating the task. Existing tasks and unmanaged queues
-retain the flexible model described below.
+A queue with no workflow holds flexible tasks, the model described below. A
+queue can instead be bound to a [workflow image](/docs/workflow-images): a task
+created there pins that version and follows its statuses, each owned by an agent
+pool, the customer, or a script. See [Task workflows](/docs/task-workflows).
+Every task has a `category` field, which is one of the five statuses below and
+equals `status` for a flexible task.
 
 ## Work model
 
@@ -64,17 +66,30 @@ conflict unless the caller explicitly chooses **complete anyway**. Reading one
 task also returns `descendants` and `active_descendants` for its whole subtree,
 so a tree that keeps growing instead of closing is visible without walking it.
 
-Workflow-managed tasks are excluded from this legacy ready/claim path. Their
-`assignee` is not a phase owner: the workflow materializes pool-scoped
-assignments, leases one to a running agent iteration, and advances only through
-declared outcomes. See [Configurable task workflows](/docs/task-workflows) for
-work packets, artifacts, questions, and observations.
-
 Flexible tasks use `open`, `in_progress`, `wait_customer`, `done`, or
 `cancelled` status. When the assigned agent asks the task customer a question,
 the same comment transaction moves a non-terminal task to `wait_customer`.
 The last customer answer returns it to `in_progress`, unless an operator made an
 intervening status change. Questions for another principal do not change status.
+
+A task that follows a workflow reports the workflow status (`plan`, `review`, ...)
+as `status` and one of those five values as `category`, which the daemon derives
+from the status owner; `waiting_on` says whether a `wait_customer` task waits on
+the `customer`, on a `script`, or on a `pause`. A `pause` is a task the daemon
+stopped because it stalled (too many idle iterations, rejected requests, or
+script failures, or a holder that cannot work): it keeps its status and
+assignee, shows for the customer as a task in `wait_customer` with an open wait
+and a comment that names the reason and the three commands to decide, and
+resumes only with `ttasks workflow resume KEY --decision continue|release` or
+ends with `ttasks cancel`; a plain reply does not resume it. See
+[Pauses](/docs/task-workflows#pauses). The daemon assigns the task, so `ttasks done`,
+`ttasks update --status`, `ttasks assign`, and `ttasks ready --claim` are
+refused with `workflow_managed`. The agent or customer that owns the status
+leaves it with `ttasks advance`; a transition that declares checks applies only
+after the workflow's check scripts pass, and a status owned by a script is left
+when its watch script reports an outcome. Status filters, blocking relations,
+and the active-descendants check use the category for every task. See
+[Task workflows](/docs/task-workflows).
 
 ## Filing a task into a queue
 
@@ -160,6 +175,17 @@ component with `scope_agent` fixed to that agent. The layout is Tree-first:
   `ttasks notifications` remains the operator command for the inbox state. The
   agent list carries no question dot — only the count of unread chat messages.
 
+A task in a queue bound to a [workflow](/docs/task-workflows) shows its
+workflow status, for example **Approval**, instead of one of the five fixed
+labels; a long status ID is clipped and its full text is the tooltip. The
+colour of the label follows the task's category (`open`, `in_progress`,
+`wait_customer`, `done`, `cancelled`), not the status ID, so a closed workflow
+task reads as closed whatever its last status was. Beside the label a small
+**customer** or **script** marker says who the task waits on, and a red
+**paused** marker replaces it when the daemon paused the task (its tooltip
+gives the reason). Active, Closed, and All use the category too. There is no
+filter by workflow status. Flexible tasks keep the labels described above.
+
 Clicking a task opens a right-side sheet over the tree with its description,
 priority, assignment, status, block reason, pull request URL, comments, and open
 answer requests. It starts at half the viewport width; drag its left separator
@@ -167,6 +193,14 @@ or use its keyboard controls to resize it, and the chosen width survives reloads
 **Back**, **Close**, Escape, or a backdrop click returns to the still-mounted
 tree with its expansion and scroll position preserved. Unsaved task, comment,
 or relation drafts require confirmation before being discarded.
+
+For a workflow task the sheet has no status select, no Done action, no
+assignee control, and no **Move to another server…** (the daemon refuses to
+export a workflow task); it shows the **Workflow** panel instead, where the customer
+chooses outcomes, edits artifacts, reads script runs and logs, decides a pause,
+and moves or cancels the task. See [Desktop](/docs/task-workflows#desktop) in
+the workflow guide. Binding a queue to a workflow, its pools, and its secrets
+are in `Manage queues…`, section **Workflow**.
 
 Descriptions and comments render as Markdown. Their visual editor supports
 headings, bold, italic, strikethrough, links, lists, checklists, code, and tables.
@@ -211,18 +245,20 @@ when the server requests a reset. Revision conflicts (`409`) also refetch the
 authoritative tree/detail before another edit.
 
 The Tasks toolbar starts in **Active** view. Its `GET /api/tasks` request sends
-`status_view=active`, and the daemon applies that predicate before it builds the
-response: Active returns only `open` and `in_progress`; **Closed**
-(`status_view=closed`) returns only the canonical completed status, `done`; and
-**All** (`status_view=all`) returns every status, including `cancelled`. An
-omitted `status_view` is Active when no explicit `status` filter is present;
+`status_view=active`, and the daemon applies that predicate to the task's
+category before it builds the response. A flexible task's category equals its
+status; a workflow task's category is the one its workflow status maps to.
+Active returns only the categories `open` and `in_progress`; **Closed**
+(`status_view=closed`) returns only the completed category, `done`; and **All**
+(`status_view=all`) returns every category, including `cancelled`. An omitted
+`status_view` is Active when no explicit `status` filter is present;
 an explicit `status` without a view keeps its legacy authoritative semantics.
 When both are supplied, their predicates intersect. Other task filters and
 access rules are applied alongside the selected view, so excluded rows are
 never shipped to the client.
 An invalid view is rejected with `400 invalid_status_view`.
 
-Status filtering may exclude an otherwise visible parent while retaining an
+Filtering by category may exclude an otherwise visible parent while retaining an
 eligible child. In that response the child keeps its `parent_key`, but the
 client renders it as a root-level filtered orphan; the excluded parent is never
 included merely to reconstruct the tree. Switching views always refetches the
@@ -245,19 +281,13 @@ host — so a failure part-way leaves the task readable on both sides.
 What moves: the task, its whole descendant subtree, their comments with the
 original authors and times, and the relations whose two ends are both inside
 that subtree. What does not move: the event log, notifications, reminders,
-relations pointing outside the subtree, and workflow execution state.
+relations pointing outside the subtree.
 
 The target daemon refuses the import, changing nothing, when:
 
 - it has no queue with the same prefix (`queue_not_found`);
 - a task or a retired key alias already uses one of the keys
-  (`task_key_taken`);
-- its queue runs a [task workflow](/docs/task-workflows)
-  (`transfer_managed_queue`).
-
-A task in a managed queue cannot be exported either
-(`transfer_managed_task`): its assignments, leases and requirement history are
-daemon-local runtime that a transfer would silently drop.
+  (`task_key_taken`).
 
 The two endpoints behind the menu are `GET /api/tasks/{key}/export` and
 `POST /api/tasks/import`. Both are customer-authenticated; agents do not
@@ -297,7 +327,7 @@ required fields, and examples:
 ttasks --help
 ttasks create --help
 ttasks ask -h
-ttasks work complete --help
+ttasks queue trigger --help
 ttasks queue pool --help
 tariboy-tasks notifications read --help
 ttasks --help-json
@@ -305,10 +335,7 @@ ttasks --help-json
 
 Help never executes the command, resolves a daemon socket, or requires a
 running daemon. It lists both modes and labels operator-only administration
-and agent-only workflow operations; showing help does not grant execution
-access. `ask --help` describes both the flexible `KEY PRINCIPAL TEXT` form and
-the workflow `ASSIGNMENT --question ...` form, including its required context,
-blocking scope, revisions, and retry key.
+and agent-only operations; showing help does not grant execution access.
 
 Root `--help-json` returns the complete command tree with descriptions and
 examples. Shared commands retain their `flags` name array and add `flag_help`
@@ -343,9 +370,21 @@ ttasks relate TEST-fkt3 TEST-hb4k
 ttasks done TEST-fkt3
 ```
 
-For workflow-managed work, agents instead use `ttasks work next`, `ttasks work
-show`, `ttasks artifacts add`, `ttasks ask`, and `ttasks work complete`. Direct
-status/claim operations cannot bypass the pinned state machine.
+On a task in a queue bound to a workflow, use the workflow commands instead of
+`done`, `update --status`, and `ready --claim`:
+
+```bash
+ttasks workflow get TEST-fkt3
+ttasks artifacts set TEST-fkt3 plan --file plan.md
+ttasks advance TEST-fkt3 --outcome planned --message "Plan ready"
+ttasks workflow runs TEST-fkt3
+ttasks workflow log TEST-fkt3 4
+```
+
+`advance` waits for the transition's checks and prints `rejected:` with the
+script's message or `failed:` with the run log to read. `workflow move`,
+`cancel`, `queue workflow`, and `queue secret` are operator-only. See
+[Task workflows](/docs/task-workflows) for the full flow.
 
 Create, comment, and relation actions accept stable idempotency keys internally
 so transport retries return the original result without duplicating a task,

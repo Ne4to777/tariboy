@@ -62,7 +62,7 @@ tariboy has three command surfaces:
 | `tariboy group rm` | Remove a group (detach members, delete channels; --volumes drops the shared dir) |
 | `tariboy image build --path DIR --name NAME [--tag TAG] [--repository-id ID --git-commit SHA]` | Build one ref and move every requested tag onto it, plus a frozen source snapshot; repeat explicit tags, or omit them to publish image_version plus latest (only latest when unversioned); an existing tag is moved, not refused; Git provenance must be paired |
 | `tariboy image build STORE/IMAGE [--name NAME] [--tag TAG]` | Restore available skill locks and build from the selected daemon's Store; default name is IMAGE and an omitted tag publishes image_version plus latest, or only latest when unversioned |
-| `tariboy image validate --path DIR --name NAME [--tag TAG]` | Validate the source and target ref without publishing; tag defaults to `latest` |
+| `tariboy image validate --path DIR --name NAME [--tag TAG]` | Validate the source and target ref without publishing; tag defaults to `latest`; prints the result and exits 1 when it is invalid |
 | `tariboy image version get [--path FILE_OR_DIR]` | Print the local image_version; defaults to ./Tariboyfile.yaml; no daemon required |
 | `tariboy image version update <major\|minor\|patch> [--path FILE_OR_DIR]` | Increment the local SemVer, reset lower components and remove suffixes; preserve YAML fields/comments |
 | `tariboy image inspect` | Show an image manifest |
@@ -108,6 +108,13 @@ tariboy has three command surfaces:
 | `tariboy store refresh NAME` | Reset a managed Git clone to its upstream, discarding local changes; fast-forward pull a local Git checkout; or reread a non-Git local directory |
 | `tariboy store auto NAME [--interval MINUTES] [--image IMAGE]` | Set the automatic refresh-and-build policy; the daemon refreshes every interval and rebuilds the selected images that need an update, and `--interval 0` disables it |
 | `tariboy store remove NAME` | Unregister a Store and remove only its managed clone; preserve local sources and built images |
+| `tariboy workflow validate [STORE/NAME] [--path DIR]` | Validate a workflow source directory without building it; reports every error with a stable code and path, and exits 1 when the source is invalid |
+| `tariboy workflow build [STORE/NAME] [--path DIR]` | Validate and publish a workflow image under its `workflow_version` and `latest`; an identical rebuild is a no-op, different content for a published version fails with `workflow_version_published` |
+| `tariboy workflow ls` | List built workflow images, one row per tag |
+| `tariboy workflow inspect NAME [TAG]` | Show a workflow image manifest; TAG is a tag or full digest and defaults to `latest` |
+| `tariboy workflow rm NAME TAG` | Remove one tag, and the stored content when no tag remains |
+| `tariboy workflow version get [--path FILE_OR_DIR]` | Print the local workflow_version; defaults to the current directory; no daemon required |
+| `tariboy workflow version update <major\|minor\|patch> [--path FILE_OR_DIR]` | Increment the local SemVer, reset lower components and remove suffixes; no daemon required |
 | `ttasks queue create` | Create a task queue |
 | `tariboy usage` | Aggregate AI usage and cost from ai_requests |
 | `tariboy user-prompt get` | Read the agent's standing user-prompt |
@@ -180,7 +187,7 @@ Run inside an agent; the socket comes from `$TARIBOY_TOOLS_SOCKET`.
 | `scripts/schedule.sh cancel ID` | Cancel a schedule |
 | `scripts/scripts.sh ls` | List your scripts |
 | `scripts/scripts.sh run NAME [--description TEXT] -- COMMAND` | Queue exactly one local run |
-| `scripts/scripts.sh schedule NAME --every SECONDS [--quiet-exit CODE] -- COMMAND` | Run now and repeat after each completion |
+| `scripts/scripts.sh schedule NAME --every SECONDS -- COMMAND` | Run now and repeat after each completion; a run that exits `111` (`TARIBOY_QUIET_EXIT`) stays quiet |
 | `scripts/scripts.sh runs SCRIPT_ID` / `logs RUN_ID` | Inspect run history and bounded logs |
 | `scripts/scripts.sh rerun SCRIPT_ID` | Run a completed one-shot or idle recurring definition immediately |
 | `scripts/scripts.sh cancel SCRIPT_OR_RUN_ID` / `rm SCRIPT_ID` | Cancel work or remove inactive history |
@@ -213,43 +220,53 @@ derives identity from the socket.
 | `ttasks relate KEY OTHER` | Add a symmetric related link |
 | `ttasks done KEY [--complete-anyway]` | Complete, optionally overriding active descendants |
 
-Workflow-managed queues add an assignment-scoped surface that requires agent mode:
+These verbs drive a task that follows a queue's workflow image. Agent mode
+sends `advance`, `request_get`, `artifact_set`, `artifact_ls`, `artifact_show`,
+`workflow_get`, `workflow_runs`, and `workflow_run_log` over the identity-bound
+socket; operator mode calls the REST routes as the customer.
 
-| Command | Purpose |
-| --- | --- |
-| `ttasks work next [--queue Q] --idempotency-key K` | Atomically claim eligible work and return its least-context packet |
-| `ttasks work show ASSIGNMENT` | Refresh the current packet and revisions |
-| `ttasks work complete ASSIGNMENT --outcome O ...` | Submit one declared outcome |
-| `ttasks work release ASSIGNMENT ...` | Release a leased attempt |
-| `ttasks artifacts add ASSIGNMENT --name N --type T ...` | Attach a required typed output |
-| `ttasks artifacts show ASSIGNMENT ARTIFACT --task KEY` | Read one packet-visible artifact |
-| `ttasks ask ASSIGNMENT --question Q --context C --blocking-scope S ...` | Ask a universal workflow question and optionally hold work |
-| `ttasks questions ASSIGNMENT` | List questions visible in the packet |
-| `ttasks answer QUESTION --assignment ASSIGNMENT --answer TEXT ...` | Answer a routed question assignment |
-| `ttasks observe subscribe ASSIGNMENT PATTERN ...` | Create a policy-bounded observation subscription |
-| `ttasks observe list ASSIGNMENT` | List its workflow subscriptions |
-| `ttasks observe cancel ASSIGNMENT SUBSCRIPTION ...` | Cancel one subscription |
+| Command | Modes | REST route |
+| --- | --- | --- |
+| `ttasks advance KEY --outcome NAME [--from STATUS] [--message TEXT] [--no-wait]` (`--from` refuses with `status_changed` when the task has moved on; waits for the transition's checks, polling `GET /api/tasks/{key}/workflow/requests/{id}`, unless `--no-wait`) | agent, operator | `POST /api/tasks/{key}/advance` |
+| `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` (stdin when absent; stored as given, up to 64 KiB) | agent, operator | `PUT /api/tasks/{key}/artifacts/{name}` |
+| `ttasks artifacts ls KEY` | agent, operator | `GET /api/tasks/{key}/artifacts` |
+| `ttasks artifacts show KEY NAME` | agent, operator | `GET /api/tasks/{key}/artifacts/{name}` |
+| `ttasks workflow get KEY` | agent, operator | `GET /api/tasks/{key}/workflow` |
+| `ttasks workflow runs KEY` (newest first) | agent, operator | `GET /api/tasks/{key}/workflow/runs` |
+| `ttasks workflow log KEY RUN [--max-bytes N]` (last 64 KiB by default, at most 1 MiB; queue secrets redacted; customer and the task's holders only) | agent, operator | `GET /api/tasks/{key}/workflow/runs/{id}/log` |
+| `ttasks workflow move KEY --to STATUS --reason TEXT` | operator only | `POST /api/tasks/{key}/workflow/move` |
+| `ttasks workflow resume KEY --decision continue\|release` (resolves the pause of a task the daemon paused: `continue` keeps the holder and zeroes the counters; `release` takes a pool task from its holder and dispatches it to another member, or leaves it `open` and unassigned; errors `invalid_decision`, `workflow_not_paused`, `forbidden`) | operator only | `POST /api/tasks/{key}/workflow/resume` |
+| `ttasks cancel KEY` | operator only | `POST /api/tasks/{key}/cancel` |
+| `ttasks queue workflow set QUEUE REF [--revision N]` | operator only | `PUT /api/task-queues/{queue}/workflow` |
+| `ttasks queue workflow get QUEUE` | operator only | `GET /api/task-queues/{queue}/workflow` |
+| `ttasks queue workflow clear QUEUE --revision N` | operator only | `DELETE /api/task-queues/{queue}/workflow` |
+| `ttasks queue secret set QUEUE KEY [--value V]` (stdin when absent, one trailing newline stripped; up to 64 KiB) | operator only | `PUT /api/task-queues/{queue}/secrets/{key}` |
+| `ttasks queue secret ls QUEUE` (keys only, never values) | operator only | `GET /api/task-queues/{queue}/secrets` |
+| `ttasks queue secret rm QUEUE KEY` | operator only | `DELETE /api/task-queues/{queue}/secrets/{key}` |
 
-Mutations represented by `...` require current task/assignment revisions and a
-stable idempotency key. Exact semantics and operator REST routes are in
-[Configurable task workflows](/docs/task-workflows).
+On a workflow task `ttasks done`, `ttasks update --status`, and
+`ttasks ready --claim` are refused with `workflow_managed`; the error lists the
+status's outcomes and the `ttasks advance` form to use, with `--from` set to the current status. For an outcome that
+declares checks, `ttasks advance` exits `0` when the transition applied and `1`
+when a check rejected it, a check failed, the request was cancelled, or the wait
+ran out; the output names the next command. `ttasks show` prints
+`status` (the workflow status), `category`, and `waiting_on`. See
+[Task workflows](/docs/task-workflows#script-protocol) for the scripts behind
+checks and watch statuses.
 
 The following administration roots are operator-only and are documented by
-`ttasks --help-json`: `queue` (including pools, workflow bindings, and
-triggers), `workflows`, `workflow` task history and artifacts, `events`,
-`principals`, and `notifications`. They are unavailable to agent mode.
+`ttasks --help-json`: `queue` (including pools and triggers; see
+[Task workflows](/docs/task-workflows)), `events`, `principals`, and
+`notifications`. They are unavailable to agent mode.
 
 Resource identifiers are positional (or named flags), for example:
 
 ```bash
 ttasks queue get OPS
 ttasks queue update OPS --name Operations --revision 2
-ttasks workflows get review 1
-ttasks workflow get OPS-1
+ttasks queue pool list OPS
 ttasks notifications read 1
 ttasks events OPS-1 --after 7 --limit 10
 ```
 
-`ttasks workflows create --definition JSON` accepts a workflow definition as a
-JSON object; malformed JSON and non-object values fail before contacting the
-daemon. Use each administration command's `--help` for its required fields.
+Use each administration command's `--help` for its required fields.

@@ -8,7 +8,8 @@
 - [Ten-minute quickstart](https://alekzonder.github.io/tariboy/quickstart): Install Tariboy, connect a host, build an image, and run one agent interactively and on Autopilot.
 - [Remote hosts](https://alekzonder.github.io/tariboy/remote-hosts): Connect, provision, update, and remove Linux hosts through system OpenSSH.
 - [Autopilot](https://alekzonder.github.io/tariboy/autopilot): Run bounded, observable iterations on timers and durable message triggers.
-- [Configurable task workflows](https://alekzonder.github.io/tariboy/task-workflows): Versioned queue workflows, explicit agent pools, assignment-scoped work packets, questions, artifacts, and external observations.
+- [Task workflows](https://alekzonder.github.io/tariboy/task-workflows): Bind a workflow image to a queue so its tasks move through statuses with one owner each, gated by check scripts and driven by watch scripts; queue secrets, run modes, commands, routes, and troubleshooting.
+- [Workflow images](https://alekzonder.github.io/tariboy/workflow-images): Build, validate, store, and inspect versioned, immutable workflow images from a Workflowfile.yaml source directory.
 - [Security and controls](https://alekzonder.github.io/tariboy/security-controls): Trust boundaries, credential handling, budgets, audit, and operator stop controls.
 - [Support](https://alekzonder.github.io/tariboy/support): Diagnose alpha issues, export safe diagnostics, roll back, and uninstall.
 - [Building, testing & development](https://alekzonder.github.io/tariboy/development): Canonical contributor guide for the Go control plane, React UI, Rust desktop host, documentation, and isolated end-to-end tests.
@@ -54,7 +55,7 @@
 - [scripts](https://alekzonder.github.io/tariboy/plugins/built-in/scripts): Run asynchronous one-shot or fixed-interval local commands with durable per-run logs.
 - [image-creator](https://alekzonder.github.io/tariboy/plugins/built-in/image-creator): Build a runnable Tariboy image from any source directory readable by the daemon.
 - [goal](https://alekzonder.github.io/tariboy/plugins/built-in/goal): Receive or set the selected Native Task and AI usage attribution.
-- [tasks](https://alekzonder.github.io/tariboy/plugins/built-in/tasks): Use Native Tasks and leased workflow assignments through the globally installed ttasks client.
+- [tasks](https://alekzonder.github.io/tariboy/plugins/built-in/tasks): Use Native Tasks through the globally installed ttasks client.
 
 ## Images & groups
 
