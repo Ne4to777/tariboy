@@ -1,3 +1,56 @@
+## [0.72.0] - 2026-10-03
+
+### Added
+
+- Workflow images: versioned, immutable images built from a
+  `Workflowfile.yaml` source with status instructions and scripts, managed
+  with `tariboy workflow validate`, `build`, `ls`, `inspect`, `rm` and
+  `tariboy workflow version get|update`. A Store can hold workflow sources
+  under `workflows/`, and the official Store provides `development` (pull
+  request flow) and `research`.
+- A queue can follow a workflow image, bound with
+  `ttasks queue workflow set|get|clear`, Compose `task_queues.<QUEUE>.workflow`,
+  or the **Workflow** section of Desktop queue settings. Its tasks pin the
+  image version and move through statuses owned by an agent pool, the
+  customer, or a script: owners leave a status with `ttasks advance`,
+  transitions can require artifacts (`ttasks artifacts set|ls|show`) and pass
+  check scripts, and script statuses are driven by watch scripts
+  (`ttasks workflow get|runs|log`).
+- Queue secrets (`ttasks queue secret set|ls|rm`) pass credentials to
+  workflow scripts and are redacted from run logs.
+- The daemon pauses a stalled workflow task (idle iterations, repeated
+  rejections or script failures, or a holder that cannot work) and asks the
+  customer; `ttasks workflow resume KEY --decision continue|release` or
+  `ttasks cancel` decides it.
+- Every task reports a `category` beside `status`. Desktop shows a workflow
+  task's status coloured by its category with customer, script, or paused
+  markers, and a **Workflow** panel to choose outcomes, edit artifacts, read
+  script runs and logs, decide a pause, and move or cancel the task.
+- Every script run receives `TARIBOY_QUIET_EXIT`.
+
+### Changed
+
+- The quiet exit code of a recurring script is always `111`, and the Scripts
+  tab no longer has a **Quiet exit** field. `--quiet-exit` and the
+  `quiet_exit` request parameter are deprecated and still accepted for one
+  release; a code other than `111` wraps the command so that code is reported
+  as `111`. Schedules stored with another quiet code are rewritten the same
+  way on upgrade.
+- `tariboy workflow validate`, `tariboy image validate` and
+  `tariboy image source validate` print the result and exit 1 when the source
+  is invalid.
+
+### Removed
+
+- The earlier configurable task workflow engine, including `ttasks work`,
+  `ttasks workflows`, assignment-scoped questions, artifacts and observations,
+  and the Compose `workflows:` map. On upgrade, its tasks become flexible tasks
+  that keep their current status and record one `workflow.removed` event. A
+  non-empty Compose `workflows:` map is rejected; an empty `workflows: {}` is
+  ignored.
+
+[0.72.0]: https://github.com/alekzonder/tariboy/compare/v0.71.2...v0.72.0
+
 ## [0.71.2] - 2026-10-02
 
 ### Changed

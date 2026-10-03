@@ -1,7 +1,7 @@
 // Package version holds the single shared version string for all binaries.
 package version
 
-const Version = "0.71.2"
+const Version = "0.72.0"
 
 // Header is the response header the daemon stamps with Version on every HTTP
 // response, and that clients compare against their own build. It lives here,
