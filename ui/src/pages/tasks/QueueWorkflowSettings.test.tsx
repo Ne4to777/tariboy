@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ApiError } from "@/lib/api"
 import QueueWorkflowSettings from "./QueueWorkflowSettings"
@@ -19,12 +20,12 @@ const images = [
 ]
 const pool = (name: string, agents: string[]) => ({ id: 1, queue: "REL", name, agents, revision: 1, created_at: "", updated_at: "" })
 /** A stand-in for the pools editor: each button reports one saved pool. */
-const renderIt = () => render(<QueueWorkflowSettings queue="REL" target={remoteTarget} pools={(onPoolSaved) => <div>
+const renderIt = () => render(<MemoryRouter initialEntries={["/servers/h1/tasks"]}><Routes><Route path="/servers/:hostId/tasks" element={<QueueWorkflowSettings queue="REL" target={remoteTarget} pools={(onPoolSaved) => <div>
   pools editor
   <button type="button" onClick={() => onPoolSaved(pool("dev", ["dev-a"]))}>save dev</button>
   <button type="button" onClick={() => onPoolSaved(pool("qa", []))}>empty qa</button>
   <button type="button" onClick={() => onPoolSaved(pool("qa", ["qa-a"]))}>save qa</button>
-</div>} />)
+</div>} />} /></Routes></MemoryRouter>)
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -171,4 +172,17 @@ it("does not claim No workflow when the binding failed to load, and retries", as
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText(digest.slice(0, 12))).toBeInTheDocument()
   expect(screen.queryByText("boom")).not.toBeInTheDocument()
+})
+
+it("links the bound image to its detail page by its version tag, else by digest", async () => {
+  api.getQueueWorkflow.mockResolvedValue(binding)
+  const view = renderIt()
+  await waitFor(() => expect(screen.getByRole("link", { name: "release" }))
+    .toHaveAttribute("href", "/servers/h1/workflows/release/1.2.0"))
+  view.unmount()
+
+  api.listWorkflowImages.mockResolvedValue([{ name: "release", tag: "latest", version: "1.2.0", digest: "other", built_at: "" }])
+  renderIt()
+  await waitFor(() => expect(screen.getByRole("link", { name: "release" }))
+    .toHaveAttribute("href", `/servers/h1/workflows/release/${digest}`))
 })

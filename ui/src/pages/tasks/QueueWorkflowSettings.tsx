@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { ApiError, type ApiTarget } from "@/lib/api"
 import {
@@ -19,6 +20,12 @@ function detailList(error: ApiError, name: string): string[] {
 function sortImages(images: WorkflowImage[]): WorkflowImage[] {
   const rank = (image: WorkflowImage) => (image.tag === "latest" ? 0 : 1)
   return [...images].sort((a, b) => a.name.localeCompare(b.name) || rank(a) - rank(b) || a.tag.localeCompare(b.tag))
+}
+
+/** The tag of the bound content, the one equal to its version first; the digest when no tag names it. */
+function bindingRef(binding: QueueWorkflow, images: WorkflowImage[]): string {
+  const tags = images.filter((image) => image.name === binding.name && image.digest === binding.digest)
+  return (tags.find((image) => image.tag === binding.version) ?? tags[0])?.tag ?? binding.digest
 }
 
 /**
@@ -110,7 +117,11 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
       <span className={LABEL}>Workflow</span>
       {loaded && (binding ? (
         <p data-testid="binding" className="text-[12.5px]">
-          <strong>{binding.name}</strong> {binding.version}{" "}
+          {/* The queue settings live at /servers/:hostId/tasks; the image page is a sibling section. */}
+          <Link relative="path" className="font-semibold text-primary hover:underline"
+            to={`../workflows/${encodeURIComponent(binding.name)}/${encodeURIComponent(bindingRef(binding, images))}`}>
+            {binding.name}
+          </Link> {binding.version}{" "}
           <span className={MONO} title={binding.digest}>{binding.digest.slice(0, 12)}</span>
         </p>
       ) : <span className={EMPTY}>No workflow</span>)}

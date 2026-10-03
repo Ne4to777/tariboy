@@ -162,6 +162,9 @@ function MainApp() {
             <Route path="files" element={<ImageFiles />} />
           </Route>
 
+          <Route path="/servers/:hostId/workflows" element={<TerminalsPage serverView="workflows" />} />
+          <Route path="/servers/:hostId/workflows/:name/:tag" element={<TerminalsPage serverView="workflow-detail" />} />
+
           <Route path="/servers/:hostId/stores" element={<TerminalsPage serverView="stores" />} />
           <Route path="/servers/:hostId/stores/:name" element={<TerminalsPage serverView="store-detail" />} />
 

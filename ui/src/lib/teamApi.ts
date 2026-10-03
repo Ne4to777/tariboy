@@ -1,4 +1,5 @@
 import { apiOn, apiRawOn, resolveTarget, type ApiTarget } from "./api";
+import type { WorkflowBuildResult } from "./tasks";
 
 export interface TeamRow { name: string; lead: string; members: number }
 export interface TeamDetail { name: string; lead: string; members: string[]; broadcast: string; inbox: string; shared_dir: string }
@@ -29,3 +30,9 @@ export const uploadImageArchiveOn = async (target: ApiTarget, archive: Blob) => 
   return ((await response.json()) as {result: {import_id: string; ref: string; digest: string}}).result;
 };
 export const applyImageArchiveOn = (target: ApiTarget, importID: string, ref?: string) => apiOn(explicit(target), "POST", `/api/image-imports/${encodeURIComponent(importID)}/apply`, ref ? {ref} : {});
+export const downloadWorkflowArchiveOn = async (target: ApiTarget, name: string, tag: string) =>
+  (await apiRawOn(explicit(target), "GET", `/api/workflow-images/${encodeURIComponent(name)}/${encodeURIComponent(tag)}/export`)).blob();
+export const importWorkflowArchiveOn = async (target: ApiTarget, archive: Blob) => {
+  const response = await apiRawOn(explicit(target), "POST", "/api/workflow-image-imports", archive);
+  return ((await response.json()) as {result: WorkflowBuildResult}).result;
+};

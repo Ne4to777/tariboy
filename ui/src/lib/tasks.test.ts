@@ -22,6 +22,10 @@ import {
   listQueueSecrets,
   listTaskScriptRuns,
   listWorkflowImages,
+  getWorkflowImage,
+  removeWorkflowImage,
+  validateWorkflowDirectory,
+  buildWorkflowDirectory,
   moveTaskWorkflow,
   removeQueueSecret,
   resumeTaskWorkflow,
@@ -160,6 +164,17 @@ describe("workflow task client", () => {
     apiOn.mockResolvedValue({ workflows: [{ name: "development", tag: "latest" }], count: 1 })
     expect(await listWorkflowImages(remote)).toEqual([{ name: "development", tag: "latest" }])
     expect(lastCall()).toEqual([remote, "GET", "/api/workflow-images", undefined])
+  })
+
+  it("reads, removes, validates, and builds workflow images on the target", async () => {
+    await getWorkflowImage("dev flow", "1.0.0", remote)
+    expect(lastCall()).toEqual([remote, "GET", "/api/workflow-images/dev%20flow/1.0.0", undefined])
+    await removeWorkflowImage("dev", "latest", remote)
+    expect(lastCall()).toEqual([remote, "DELETE", "/api/workflow-images/dev/latest", undefined])
+    await validateWorkflowDirectory("/src/wf", remote)
+    expect(lastCall()).toEqual([remote, "POST", "/api/workflow-images/validate", { path: "/src/wf" }])
+    await buildWorkflowDirectory("/src/wf", remote)
+    expect(lastCall()).toEqual([remote, "POST", "/api/workflow-images/build", { path: "/src/wf" }])
   })
 })
 

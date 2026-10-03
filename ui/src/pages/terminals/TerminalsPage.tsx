@@ -21,6 +21,8 @@ import AllTasksWorkspace from "@/pages/tasks/AllTasksWorkspace";
 import ImagesPage from "@/pages/ImagesPage";
 import ImageTags from "@/pages/images/ImageTags";
 import StoresPage from "@/pages/StoresPage";
+import WorkflowImagesPage from "@/pages/workflows/WorkflowImagesPage";
+import WorkflowImageDetail from "@/pages/workflows/WorkflowImageDetail";
 import { ImageLayout } from "@/components/ImageLayout";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import { useCustomerQuestionNotifications } from "@/components/customerQuestionNotificationsContext";
@@ -36,10 +38,10 @@ type CreateDialogState = {
   imageRef?: string;
   cloneSource?: CloneAgentSource;
 };
-export type ServerView = "tasks" | "images" | "image-tags" | "image-detail" | "stores" | "store-detail" | "settings";
+export type ServerView = "tasks" | "images" | "image-tags" | "image-detail" | "workflows" | "workflow-detail" | "stores" | "store-detail" | "settings";
 
 export default function TerminalsPage({ serverView }: { serverView?: ServerView }) {
-  const { hostId: hostParam, agent: agentName, tab: agentTab, team: teamName, name: storeName } = useParams();
+  const { hostId: hostParam, agent: agentName, tab: agentTab, team: teamName, name: storeName, tag: routeTag } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const allTasks = searchParams.get("view") === "all";
@@ -379,6 +381,24 @@ export default function TerminalsPage({ serverView }: { serverView?: ServerView 
         ) : serverView === "image-detail" && hostId !== undefined ? (
           <RouteHostBoundary hostId={hostId} unavailable={routeUnavailable}>
             <ImageLayout hostId={hostId} basePath={`${serverBasePath}/images`} />
+          </RouteHostBoundary>
+        ) : serverView === "workflows" && hostId !== undefined ? (
+          <RouteHostBoundary hostId={hostId} unavailable={routeUnavailable}>
+            {(target) => <WorkflowImagesPage
+              key={`${hostId}\u0000${target?.baseURL ?? "local"}`}
+              target={target}
+              basePath={`${serverBasePath}/workflows`}
+            />}
+          </RouteHostBoundary>
+        ) : serverView === "workflow-detail" && hostId !== undefined && storeName && routeTag ? (
+          <RouteHostBoundary hostId={hostId} unavailable={routeUnavailable}>
+            {(target) => <WorkflowImageDetail
+              key={`${hostId}\u0000${storeName}\u0000${routeTag}\u0000${target?.baseURL ?? "local"}`}
+              target={target}
+              name={storeName}
+              tag={routeTag}
+              basePath={`${serverBasePath}/workflows`}
+            />}
           </RouteHostBoundary>
         ) : (serverView === "stores" || serverView === "store-detail") && hostId !== undefined ? (
           <RouteHostBoundary hostId={hostId} unavailable={routeUnavailable}>

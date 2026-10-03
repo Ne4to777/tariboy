@@ -19,6 +19,10 @@ describe("ServerContextBar", () => {
       .toHaveAttribute("href", "/servers/remote-1/tasks");
     expect(screen.getByRole("link", { name: "Images" }))
       .toHaveAttribute("href", "/servers/remote-1/images");
+    expect(screen.getByRole("link", { name: "Workflow images" }))
+      .toHaveAttribute("href", "/servers/remote-1/workflows");
+    expect(screen.getAllByRole("link").map((link) => link.textContent))
+      .toEqual(["Tasks", "Images", "Workflow images", "Stores", "Settings"]);
     expect(screen.getByRole("link", { name: "Settings" }))
       .toHaveAttribute("href", "/servers/remote-1/settings");
   });

@@ -455,6 +455,54 @@ export interface WorkflowStatusInfo { id: string; owner: string; terminal: boole
 export interface QueueWorkflow { queue: string; name: string; version: string; digest: string; revision: number; updated_at: string }
 export interface QueueSecretInfo { key: string; updated_at: string }
 export interface WorkflowImage { name: string; tag: string; version: string; digest: string; built_at: string }
+/** `kind` is "" for a terminal status. */
+export interface WorkflowOwner { kind: "pool" | "customer" | "script" | ""; pool?: string }
+export interface WorkflowLimits { idle_iterations?: number; rejected_requests?: number; script_failures?: number; unavailable_grace?: string }
+export interface WorkflowCheck { script: string; run_as?: string; timeout?: string }
+export interface WorkflowWatch { script: string; every: string; timeout?: string }
+export interface WorkflowTransition { on: string; to: string; requires?: string[]; checks?: WorkflowCheck[] }
+export interface WorkflowDefinitionStatus {
+  id: string
+  owner: WorkflowOwner
+  instructions?: string
+  watch?: WorkflowWatch
+  transitions?: WorkflowTransition[]
+  limits?: WorkflowLimits
+  terminal?: boolean
+  cancelled?: boolean
+}
+/** A parsed Workflowfile.yaml as the manifest stores it. */
+export interface WorkflowDefinition {
+  schema_version: number
+  name: string
+  workflow_version: string
+  initial_status: string
+  requires_secrets?: string[]
+  env?: Record<string, string>
+  limits?: WorkflowLimits
+  artifacts?: WorkflowDeclaredArtifact[]
+  statuses: WorkflowDefinitionStatus[]
+}
+export interface WorkflowFileEntry { path: string; sha256: string; executable: boolean; size: number }
+export interface WorkflowManifest {
+  schema_version: number
+  name: string
+  version: string
+  digest: string
+  built_at: string
+  definition: WorkflowDefinition
+  files: WorkflowFileEntry[]
+}
+export interface WorkflowValidationError { code: string; path: string; message: string }
+export interface WorkflowValidation {
+  valid: boolean
+  name: string
+  version: string
+  pools: string[]
+  files: string[]
+  errors: WorkflowValidationError[]
+}
+export interface WorkflowBuildResult { name: string; version: string; digest: string; tags: string[]; created: boolean }
 
 /**
  * A workflow task reports a workflow status ID in `status`, a flexible task its
@@ -555,3 +603,15 @@ export const removeQueueSecret = async (queue: string, key: string, target?: Api
 
 export const listWorkflowImages = async (target?: ApiTarget) =>
   (await call<{ workflows: WorkflowImage[]; count: number }>(target, "GET", "/api/workflow-images")).workflows
+const workflowImagePath = (name: string, tag: string) =>
+  `/api/workflow-images/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`
+/** The manifest a tag or a full digest names. */
+export const getWorkflowImage = (name: string, tag: string, target?: ApiTarget) =>
+  call<WorkflowManifest>(target, "GET", workflowImagePath(name, tag))
+export const removeWorkflowImage = (name: string, tag: string, target?: ApiTarget) =>
+  call<{ name: string; tag: string; removed: boolean; content_removed: boolean }>(target, "DELETE", workflowImagePath(name, tag))
+/** `path` is a Workflowfile.yaml, or its directory, on the host of the target. */
+export const validateWorkflowDirectory = (path: string, target?: ApiTarget) =>
+  call<WorkflowValidation>(target, "POST", "/api/workflow-images/validate", { path })
+export const buildWorkflowDirectory = (path: string, target?: ApiTarget) =>
+  call<WorkflowBuildResult>(target, "POST", "/api/workflow-images/build", { path })
