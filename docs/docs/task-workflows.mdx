@@ -859,8 +859,12 @@ description, artifact values, transition messages, and script messages** are
 untrusted input. The daemon renders each as bounded data inside a code fence
 that is longer than any run of backticks in the value, and the title, on one
 line, inside a code span sized the same way (descriptions are cut at 4000
-characters, the other values at 400, with a `… (cut)` marker), so a value that
-contains a heading, a fence, or "ignore previous instructions" stays text.
+characters, the other values at 400; a cut marker names the command that shows
+the full text: `ttasks show KEY` for the description, `ttasks artifacts show
+KEY NAME` for an artifact, `ttasks workflow get KEY --json` for the message of
+the transition that reached the status), so a value that contains a heading, a
+fence, or "ignore previous instructions" stays text. `ttasks workflow get KEY`
+also prints that transition's outcome and full message under "Reached by".
 Authors and the agent that entered the status are collapsed to one line, and
 instruction text that is not valid UTF-8 is repaired. Queue secret values never
 reach the block. If the workflow data cannot be read, the iteration still
