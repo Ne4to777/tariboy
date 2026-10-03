@@ -178,7 +178,7 @@ func TestWorkflowGoalFailedRequestPointsAtTheRunLog(t *testing.T) {
 	g.View.LastRequest = &tasks.TransitionRequest{ID: 4, Outcome: "ready", State: "failed", ResultMessage: "ci.sh could not start", CreatedAt: "2026-10-02T11:30:00Z"}
 	g.View.Runs = []tasks.ScriptRun{{ID: 9, Kind: "watch"}, {ID: 8, Kind: "check", RequestID: 5}, {ID: 7, Kind: "check", RequestID: 4}, {ID: 6, Kind: "check", RequestID: 3}}
 	want := "### Last transition request\n\n" +
-		"Your request for outcome `ready` failed: a check could not run. Repeating the request unchanged will not help. Read the log with `ttasks workflow log DEV-12 7` and fix the cause first.\n```\nci.sh could not start\n```\n\n"
+		"Your request for outcome `ready` failed: a check could not run. Repeating the request unchanged will not help. Read the log with `ttasks workflow log DEV-12 7`; retry once if the cause was transient; otherwise tell the customer.\n```\nci.sh could not start\n```\n\n"
 	if got := FormatRuntimeWorkflowGoal(g); !strings.Contains(got, want) {
 		t.Fatalf("goal =\n%s\nwant to contain\n%s", got, want)
 	}
@@ -267,7 +267,7 @@ func TestWorkflowGoalCutsLongValues(t *testing.T) {
 	g := poolGoal()
 	g.View.Artifacts = []tasks.Artifact{{Name: "summary", Author: "a", Value: strings.Repeat("ж", 10000)}}
 	got := FormatRuntimeWorkflowGoal(g)
-	want := "```\n" + strings.Repeat("ж", maxGoalValueRunes) + "… (cut)\n```\n"
+	want := "```\n" + strings.Repeat("ж", maxGoalValueRunes) + "… (cut; full value: ttasks artifacts show DEV-12 summary)\n```\n"
 	if !strings.Contains(got, want) {
 		t.Fatalf("value not cut to %d runes:\n%.400s", maxGoalValueRunes, got)
 	}
@@ -276,7 +276,7 @@ func TestWorkflowGoalCutsLongValues(t *testing.T) {
 func TestWorkflowGoalCutsALongDescriptionAtItsOwnLimit(t *testing.T) {
 	g := poolGoal()
 	g.Task.Description = strings.Repeat("ж", 10000)
-	want := "description:\n```\n" + strings.Repeat("ж", maxGoalDescriptionRunes) + "… (cut)\n```\n"
+	want := "description:\n```\n" + strings.Repeat("ж", maxGoalDescriptionRunes) + "… (cut; full text: ttasks show DEV-12)\n```\n"
 	if got := FormatRuntimeWorkflowGoal(g); !strings.Contains(got, want) {
 		t.Fatalf("description not cut to %d runes", maxGoalDescriptionRunes)
 	}
@@ -413,4 +413,13 @@ func (s *stubViewReader) GetWorkflow(context.Context, tasks.Actor, string) (task
 func (s *stubViewReader) GetTask(context.Context, tasks.Actor, string) (tasks.TaskDetail, error) {
 	s.taskReads++
 	return s.detail, nil
+}
+
+func TestWorkflowGoalCutTransitionMessageNamesWhereTheFullTextIs(t *testing.T) {
+	g := poolGoal()
+	g.View.Visits[0].Message = strings.Repeat("ж", 10000)
+	want := "transition message:\n```\n" + strings.Repeat("ж", maxGoalValueRunes) + "… (cut; full message: ttasks workflow get DEV-12 --json)\n```\n"
+	if got := FormatRuntimeWorkflowGoal(g); !strings.Contains(got, want) {
+		t.Fatalf("transition message not cut with its pointer:\n%.600s", got)
+	}
 }

@@ -234,6 +234,7 @@ func printWorkflow(raw json.RawMessage, key string, stdout io.Writer) bool {
 	for _, artifact := range artifacts {
 		fmt.Fprintf(stdout, "  %s  %s  %s\n", artifact.Name, artifact.Author, preview(artifact.Value))
 	}
+	printReachedBy(view, stdout)
 	if last := view.LastRequest; last != nil {
 		line := fmt.Sprintf("#%d %s %s by %s", last.ID, last.Outcome, last.State, last.Actor)
 		if last.ResultMessage != "" {
@@ -242,6 +243,47 @@ func printWorkflow(raw json.RawMessage, key string, stdout io.Writer) bool {
 		field("last_request", line)
 	}
 	return true
+}
+
+// printReachedBy prints the outcome and message that led to the current status,
+// the message whole and fenced as data, as the Goal block cuts it.
+func printReachedBy(view tasks.WorkflowView, stdout io.Writer) {
+	if len(view.Visits) < 2 {
+		return
+	}
+	prev, current := view.Visits[len(view.Visits)-2], view.Visits[len(view.Visits)-1]
+	line := "Reached by: "
+	if prev.Outcome != "" {
+		line += fmt.Sprintf("outcome %s of %s", terminalSafe(prev.Outcome), terminalSafe(prev.Status))
+	} else {
+		line += "a move out of " + terminalSafe(prev.Status)
+	}
+	if current.EnteredBy != "" {
+		line += ", entered by " + terminalSafe(current.EnteredBy)
+	}
+	fmt.Fprintln(stdout, line)
+	if prev.Message == "" {
+		return
+	}
+	text := terminalText(prev.Message)
+	fence := tasks.FenceFor(text, 3)
+	fmt.Fprintf(stdout, "message:\n%s\n%s\n%s\n", fence, strings.TrimRight(text, "\n"), fence)
+}
+
+// terminalSafe folds a value onto one line without control characters.
+func terminalSafe(value string) string {
+	return strings.Join(strings.Fields(terminalText(value)), " ")
+}
+
+// terminalText drops control characters other than newline and tab, which
+// would act on the operator's terminal.
+func terminalText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && r != '\t' && unicode.Is(unicode.Cc, r) {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 // preview folds a value onto one line and caps it at previewRunes runes.

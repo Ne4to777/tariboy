@@ -275,7 +275,7 @@ Binding, unbinding, reading a binding, pools, secrets, and triggers are
 operator-only: the host daemon acting as the customer.
 
 ```bash
-ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key pool-1
+ttasks queue pool set DEV developers --agents dev-1,dev-2 --revision 0 --idempotency-key pool-1
 printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
 ttasks queue workflow set DEV development:latest --revision 0
 ttasks queue workflow get DEV
@@ -1214,14 +1214,16 @@ The official Store (`official`) holds two workflow sources. Build one with
 
 The pull request flow, version `0.1.0`. It requires the queue secret `GH_TOKEN`
 and a `developers` pool, and declares the artifacts `plan`, `pull_request`, and
-`merge_commit`.
+`merge_commit`. The pool's agents run `official/tariboy-developer` with their
+own `GH_TOKEN` agent secret; see
+[Official workflow images](/docs/workflow-images#official-workflow-images).
 
 | Status | Owner | Outcomes | Gate |
 | --- | --- | --- | --- |
 | `plan` (initial) | pool `developers` | `planned` to `approval` | Needs the `plan` artifact. |
 | `approval` | customer | `approved` to `implement`; `changes_requested` to `plan` | None. |
 | `implement` | pool `developers` | `ready` to `review` | Needs the `pull_request` artifact; the check `pr-open.py` rejects unless the pull request exists and is open (or merged). The status allows 6 idle iterations. |
-| `review` | script (watched) | `merged` to `complete`; `changes_requested` to `implement` | `pr-monitor.py` runs every 60 seconds and picks the outcome from the pull request's checks, reviews, comments, and merge; it records `merge_commit`. |
+| `review` | script (watched) | `merged` to `complete`; `changes_requested` to `implement` | `pr-monitor.py` runs every 120 seconds and picks the outcome from the pull request's checks, reviews, comments, and merge; it records `merge_commit`. The status allows 10 script failures. A transient GitHub failure is quiet until it has lasted 15 minutes. |
 | `complete` | pool `developers` | `cleaned` to `done` | The check `merged-on-base.py`, run as the agent, rejects unless the merge commit is on the local base branch and the task's worktree and branch are gone. |
 | `done` | terminal | | |
 
@@ -1232,7 +1234,9 @@ an argument, a file, or a message.
 
 Version `0.1.0`. One pool status, `research`, owned by the pool `researchers`,
 with the outcome `reported` to `done`. It needs the artifact `report`, the
-research report as Markdown, and has no scripts and no secrets.
+research report as Markdown, and has no scripts and no secrets. The status
+allows 6 idle iterations. It runs on any image with the `tasks` plugin, such as
+`official/basic`.
 
 ## Agent pools
 
@@ -1247,7 +1251,7 @@ the pool again and retry. Emptying a pool that the queue's bound image uses is
 refused with `workflow_pool_empty`.
 
 ```bash
-ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key pool-1
+ttasks queue pool set DEV developers --agents dev-1,dev-2 --revision 0 --idempotency-key pool-1
 ttasks queue pool list DEV
 ttasks queue pool get DEV developers
 ```

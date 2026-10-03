@@ -88,7 +88,7 @@ func formatWorkflowGoalFallback(task tasks.Task) string {
 		"status: " + task.WorkflowStatus,
 		"category: " + string(task.Status),
 	}
-	lines = append(lines, goalDescription(task.Description)...)
+	lines = append(lines, goalDescription(task.Key, task.Description)...)
 	return strings.Join([]string{"# Agent Goal", head, goalDataNotice, strings.Join(lines, "\n")}, "\n\n")
 }
 
@@ -123,10 +123,10 @@ func FormatRuntimeWorkflowGoal(goal WorkflowGoal) string {
 		}
 		lines = append(lines, reached)
 		if prev.Message != "" {
-			lines = append(lines, "transition message:", fenced(prev.Message, maxGoalValueRunes))
+			lines = append(lines, "transition message:", fenced(prev.Message, maxGoalValueRunes, "full message: ttasks workflow get "+task.Key+" --json"))
 		}
 	}
-	lines = append(lines, goalDescription(task.Description)...)
+	lines = append(lines, goalDescription(task.Key, task.Description)...)
 	sections := []string{
 		strings.Join(head, "\n\n"),
 		strings.Join(lines, "\n"),
@@ -135,7 +135,7 @@ func FormatRuntimeWorkflowGoal(goal WorkflowGoal) string {
 	if working {
 		sections = append(sections, "### Outcomes\n\n"+goalOutcomes(view))
 	}
-	sections = append(sections, "### Artifacts\n\n"+goalArtifacts(view))
+	sections = append(sections, "### Artifacts\n\n"+goalArtifacts(task.Key, view))
 	if working {
 		if text := goalLastRequest(task.Key, view); text != "" {
 			sections = append(sections, "### Last transition request\n\n"+text)
@@ -206,13 +206,13 @@ func goalOutcomes(view tasks.WorkflowView) string {
 	return strings.Join(out, "\n")
 }
 
-func goalArtifacts(view tasks.WorkflowView) string {
+func goalArtifacts(key string, view tasks.WorkflowView) string {
 	if len(view.Artifacts) == 0 {
 		return "No artifact has been set."
 	}
 	out := make([]string, 0, len(view.Artifacts))
 	for _, a := range view.Artifacts {
-		out = append(out, fmt.Sprintf("- `%s` by %s:\n%s", a.Name, oneLine(a.Author), fenced(a.Value, maxGoalValueRunes)))
+		out = append(out, fmt.Sprintf("- `%s` by %s:\n%s", a.Name, oneLine(a.Author), fenced(a.Value, maxGoalValueRunes, "full value: ttasks artifacts show "+key+" "+a.Name)))
 	}
 	return strings.Join(out, "\n\n")
 }
@@ -230,16 +230,16 @@ func goalLastRequest(key string, view tasks.WorkflowView) string {
 	}
 	if req.State == "rejected" {
 		return fmt.Sprintf("Your request for outcome `%s` was rejected. A check script found that the condition does not hold; the message below says what to fix.\n%s",
-			req.Outcome, fenced(message, maxGoalValueRunes))
+			req.Outcome, fenced(message, maxGoalValueRunes, ""))
 	}
 	text := fmt.Sprintf("Your request for outcome `%s` failed: a check could not run. Repeating the request unchanged will not help.", req.Outcome)
 	for _, run := range view.Runs {
 		if run.Kind == "check" && run.RequestID == req.ID {
-			text += fmt.Sprintf(" Read the log with `ttasks workflow log %s %d` and fix the cause first.", key, run.ID)
+			text += fmt.Sprintf(" Read the log with `ttasks workflow log %s %d`; retry once if the cause was transient; otherwise tell the customer.", key, run.ID)
 			break
 		}
 	}
-	return text + "\n" + fenced(message, maxGoalValueRunes)
+	return text + "\n" + fenced(message, maxGoalValueRunes, "")
 }
 
 // previousVisit returns the visit before the current one.
@@ -279,19 +279,24 @@ func goalTitle(title string) string {
 }
 
 // goalDescription renders the untrusted description as fenced data.
-func goalDescription(description string) []string {
+func goalDescription(key, description string) []string {
 	if description == "" {
 		return []string{"description: (none)"}
 	}
-	return []string{"description:", fenced(description, maxGoalDescriptionRunes)}
+	return []string{"description:", fenced(description, maxGoalDescriptionRunes, "full text: ttasks show "+key)}
 }
 
 // fenced renders an untrusted value as data: inside a code fence longer than
-// any run of backticks in the value, cut to limit runes.
-func fenced(value string, limit int) string {
+// any run of backticks in the value, cut to limit runes. A cut value ends with
+// the cut marker, which names where the full text is when pointer is not empty.
+func fenced(value string, limit int, pointer string) string {
 	text, cut := tasks.CutRunes(value, limit)
 	if cut {
-		text += tasks.CutMarker
+		if pointer == "" {
+			text += tasks.CutMarker
+		} else {
+			text += strings.TrimSuffix(tasks.CutMarker, ")") + "; " + pointer + ")"
+		}
 	}
 	fence := tasks.FenceFor(text, 3)
 	return fence + "\n" + strings.TrimRight(text, "\n") + "\n" + fence

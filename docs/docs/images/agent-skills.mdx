@@ -30,7 +30,10 @@ directory explicitly under `skills`.
 
 `tariboy-developer` packages the `github-pr-workflow` skill for Native Tasks
 on GitHub-hosted repositories. At task intake, before implementation, the
-agent records exactly one completion mode on the Native Task:
+agent records exactly one completion mode on the Native Task. A task that
+follows a workflow is the exception: its status instructions drive the process,
+and no completion mode and no monitor are recorded on it. For a task without a
+workflow:
 
 - **PR mode** is the default whenever the task does not explicitly and
   unambiguously require the agent to merge into `main`.

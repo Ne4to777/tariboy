@@ -459,3 +459,28 @@ func TestOperatorReadyIgnoresWorkflowTasks(t *testing.T) {
 		t.Fatalf("ready = %s; want only the flexible open task", &out)
 	}
 }
+
+func TestWorkflowGetPrintsThePreviousVisitInFull(t *testing.T) {
+	long := strings.Repeat("item\n", 200) + "```\nend"
+	visits, _ := json.Marshal([]map[string]any{
+		{"sequence": 1, "status": "review", "outcome": "changes", "message": long},
+		{"sequence": 2, "status": "develop", "entered_by": "agent:reviewer-1"},
+	})
+	view := strings.Replace(sampleView, `"visits":[]`, `"visits":`+string(visits), 1)
+	withCaller(t, &recorder{result: json.RawMessage(view)})
+	var out strings.Builder
+	if code := Run(context.Background(), []string{"workflow", "get", "DEV-1"}, agentEnv(), &out, io.Discard); code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	want := "Reached by: outcome changes of review, entered by agent:reviewer-1\nmessage:\n````\n" + long + "\n````\n"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("text lacks the previous visit in full:\n%s", &out)
+	}
+	// No previous visit, no heading.
+	out.Reset()
+	withCaller(t, &recorder{result: json.RawMessage(sampleView)})
+	Run(context.Background(), []string{"workflow", "get", "DEV-1"}, agentEnv(), &out, io.Discard)
+	if strings.Contains(out.String(), "Reached by") {
+		t.Errorf("heading without a previous visit:\n%s", &out)
+	}
+}

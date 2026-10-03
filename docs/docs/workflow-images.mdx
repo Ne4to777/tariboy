@@ -360,7 +360,7 @@ To use `development` on a queue `DEV`:
 ```bash
 tariboy store refresh official
 tariboy workflow build official/development
-ttasks queue pool set DEV developers --agents worker,reviewer --revision 0 --idempotency-key dev-pool
+ttasks queue pool set DEV developers --agents dev-1,dev-2 --revision 0 --idempotency-key dev-pool
 printf '%s' "$GH_TOKEN" | ttasks queue secret set DEV GH_TOKEN
 ttasks queue workflow set DEV development:0.1.0 --revision 0
 ```
@@ -368,7 +368,25 @@ ttasks queue workflow set DEV development:0.1.0 --revision 0
 The secret is read from standard input so it never shows in the process list.
 The bind is refused with `workflow_pool_empty` or `workflow_secret_missing`
 until the pool and the secret exist. For `research`, build `official/research`,
-create a `researchers` pool, and bind `research:0.1.0`; it needs no secret.
+create a `researchers` pool, and bind `research:0.1.0`; it needs no secret and
+runs on any image that enables the `tasks` plugin, such as `official/basic`.
+
+The queue secret and the agents' tokens are independent. The queue secret
+`GH_TOKEN` is what the workflow's scripts (`pr-monitor.py`, `pr-open.py`) read.
+It needs read access to pull requests, issues, checks, and commit statuses of
+the repository. Each agent of the `developers` pool needs its own `GH_TOKEN`
+agent secret as well: the skill's `ensure` and `preflight` commands run in the
+agent's environment and use the agent's token, which also creates the pull
+request. Only github.com is supported.
+
+Every agent of the `developers` pool must:
+
+- run the image `official/tariboy-developer`;
+- have its own `GH_TOKEN` agent secret, as above;
+- have git push credentials for the repository;
+- have the repository checkout as its working directory;
+- have the loop and the Goal block enabled, because the Goal block carries the
+  status instructions.
 
 ## Using an image
 
