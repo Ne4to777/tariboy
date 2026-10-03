@@ -257,7 +257,7 @@ func checkScanned(src *workflowfile.File, entries []FileEntry) error {
 func (s *Store) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	return s.publishLocked(src, now)
+	return s.publishLocked(src, "", now)
 }
 
 // Validate runs every check Publish makes before it writes anything: the
@@ -312,13 +312,17 @@ func prepareSource(src *workflowfile.File) ([]sourceFile, []FileEntry, error) {
 	return files, entries, nil
 }
 
-// publishLocked is Publish for a caller that already holds mu.
-func (s *Store) publishLocked(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+// publishLocked is Publish for a caller that already holds mu. A non-empty
+// want refuses a source whose digest differs, before anything is written.
+func (s *Store) publishLocked(src *workflowfile.File, want string, now time.Time) (Manifest, bool, error) {
 	files, entries, err := prepareSource(src)
 	if err != nil {
 		return Manifest{}, false, err
 	}
 	digest := computeDigest(entries)
+	if want != "" && digest != want {
+		return Manifest{}, false, fmt.Errorf("%w: archive names %s, content is %s", ErrDigestMismatch, want, digest)
+	}
 
 	name, version := src.Name, src.WorkflowVersion
 	prev, err := s.readTag(name, version)

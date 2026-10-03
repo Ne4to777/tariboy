@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/images/{ref}/export", s.serveImageExport)
 	mux.HandleFunc("POST /api/image-imports", s.serveImageImportPreview)
 	mux.HandleFunc("POST /api/image-imports/{id}/apply", s.serveImageImportApply)
+	mux.HandleFunc("GET /api/workflow-images/{name}/{tag}/export", s.serveWorkflowImageExport)
+	mux.HandleFunc("POST /api/workflow-image-imports", s.serveWorkflowImageImport)
 	mux.HandleFunc("GET /api/groups/{name}/export", s.serveTeamExport)
 	mux.HandleFunc("POST /api/team-imports", s.serveTeamImportPreview)
 	mux.HandleFunc("PUT /api/files/raw", s.serveFileUpload)

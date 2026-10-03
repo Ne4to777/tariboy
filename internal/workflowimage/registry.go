@@ -43,6 +43,12 @@ func (r *Registry) insert(m Manifest) error {
 // under the package lock, so no other publication or removal can interleave
 // with the rollback.
 func (r *Registry) Publish(src *workflowfile.File, now time.Time) (Manifest, bool, error) {
+	return r.publish(src, "", now)
+}
+
+// publish is Publish that, with a non-empty want, refuses content whose
+// digest differs.
+func (r *Registry) publish(src *workflowfile.File, want string, now time.Time) (Manifest, bool, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -62,7 +68,7 @@ func (r *Registry) Publish(src *workflowfile.File, now time.Time) (Manifest, boo
 			}
 		}
 	}
-	m, created, err := r.Store.publishLocked(src, now)
+	m, created, err := r.Store.publishLocked(src, want, now)
 	if err != nil {
 		return Manifest{}, false, err
 	}

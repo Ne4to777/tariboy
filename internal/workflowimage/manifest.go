@@ -21,6 +21,11 @@ var (
 	// ErrInUse means a queue is bound to the image or a task, open or closed,
 	// is pinned to it.
 	ErrInUse = errors.New("workflow image is in use")
+	// ErrDigestMismatch means an imported archive does not hold the content
+	// its metadata names.
+	ErrDigestMismatch = errors.New("workflow archive content does not match its digest")
+	// ErrBadArchive means an import is not a readable workflow image archive.
+	ErrBadArchive = errors.New("not a workflow image archive")
 )
 
 // InvalidError is the error Publish returns when the manifest fails
