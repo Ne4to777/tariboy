@@ -20,7 +20,8 @@ in [Workflow images](/docs/workflow-images).
 :::note
 Desktop shows workflow tasks, lets the customer choose outcomes and pause
 decisions, and binds images, pools, and secrets in queue settings; see
-[Desktop](#desktop). `ttasks` and the REST API stay the way to script the same
+[Desktop](#desktop). It also builds, inspects, removes, and copies workflow
+images; see [Workflow images](/docs/workflow-images#desktop). `ttasks` and the REST API stay the way to script the same
 operations.
 :::
 
@@ -1371,7 +1372,9 @@ so its row agrees with the sheet.
 `Manage queues…` has a **Workflow** section on each queue card:
 
 - **Binding.** The bound image's name, version, and the first 12 characters of
-  its digest, or **No workflow**. Choose an image as `name:tag` and press
+  its digest, or **No workflow**. The name links to the image's page in
+  **Workflow images**, by its version tag when one names the bound content and
+  by digest otherwise. Choose an image as `name:tag` and press
   **Bind**; **Clear** asks for confirmation and unbinds. A binding changed
   elsewhere (`revision_conflict`) is reloaded with a notice so you can retry.
 - **Pools.** The queue's agent pools editor sits in the same section. A bind
