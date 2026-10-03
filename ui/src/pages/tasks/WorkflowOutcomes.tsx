@@ -13,7 +13,7 @@ const DEFAULT_WAIT_SECONDS = 90
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const RESULT_LABEL: Record<string, string> = { rejected: "Rejected", failed: "Failed", cancelled: "Cancelled" }
 
-type Notice = { kind: "result"; request: TransitionRequest } | { kind: "error"; label: string; message: string } | { kind: "timeout" }
+type Notice = { kind: "result"; request: TransitionRequest } | { kind: "error"; label: string; message: string } | { kind: "timeout"; requestId: number }
 /** A refusal that means the view is stale, so the panel refetches it. */
 const STALE_CODES = new Set(["status_changed", "transition_pending", "workflow_paused", "artifact_missing"])
 
@@ -51,7 +51,7 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
       let polls = Math.ceil(request.wait_seconds ?? DEFAULT_WAIT_SECONDS)
       while (request.state === "pending") {
         if (polls-- <= 0) {
-          if (mountedRef.current) setNotice({ kind: "timeout" })
+          if (mountedRef.current) setNotice({ kind: "timeout", requestId: request.id })
           return
         }
         await sleep(1000)
@@ -86,9 +86,9 @@ export default function WorkflowOutcomes({ taskKey, view, target, onChanged, onR
   }
 
   const last = view.last_request
-  // A timeout says the result is still to come; once the view has the
-  // request settled, it no longer applies.
-  const current = notice?.kind === "timeout" && last && last.state !== "pending" ? null : notice
+  // A timeout says the result of that request is still to come; once the view
+  // shows that same request settled, it no longer applies.
+  const current = notice?.kind === "timeout" && last?.id === notice.requestId && last.state !== "pending" ? null : notice
   const shown: Notice | null = current
     ?? (last && (last.state === "rejected" || last.state === "failed") && inCurrentVisit(view, last)
       ? { kind: "result", request: last } : null)

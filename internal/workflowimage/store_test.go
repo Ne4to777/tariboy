@@ -601,3 +601,14 @@ func TestNameWithDoubleDot(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreNameErrorsNameTheManifestField(t *testing.T) {
+	got := storeNameErrors(&workflowfile.File{Name: "a/b", WorkflowVersion: ".."})
+	if len(got) != 2 || got[0].Code != "name_invalid" || got[0].Path != "name" ||
+		got[1].Code != "version_invalid" || got[1].Path != "workflow_version" {
+		t.Fatalf("errors = %#v", got)
+	}
+	if errs := storeNameErrors(&workflowfile.File{Name: "demo", WorkflowVersion: "1.0.0"}); len(errs) != 0 {
+		t.Fatalf("valid names: %#v", errs)
+	}
+}

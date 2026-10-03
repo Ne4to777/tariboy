@@ -214,6 +214,20 @@ it("drops the timeout notice once the last request is no longer pending", async 
   expect(screen.getByRole("alert")).toHaveTextContent("no heading")
 })
 
+it("keeps the timeout notice while the view's last request is another one", async () => {
+  vi.useFakeTimers()
+  api.advanceTask.mockResolvedValue(request("pending", { wait_seconds: 1 }))
+  api.getTransitionRequest.mockResolvedValue(request("pending"))
+  const { rerender } = renderOutcomes()
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "approve" })) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+  // A view that still names an earlier, settled request says nothing about ours (id 11).
+  rerender({ ...customerView, last_request: request("rejected", { id: 10, result_message: "older" }) })
+  expect(screen.getByText(/still checking/i)).toBeInTheDocument()
+  rerender({ ...customerView, last_request: request("applied") })
+  expect(screen.queryByText(/still checking/i)).not.toBeInTheDocument()
+})
+
 it("bounds the message and lets a long target status wrap", () => {
   const to = "t".repeat(64)
   renderOutcomes({ ...customerView, outcomes: [{ on: "approve", to }] })

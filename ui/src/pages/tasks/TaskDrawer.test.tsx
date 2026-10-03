@@ -1,12 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import type { Task, TaskDetail as Detail } from "@/lib/tasks"
 import TaskDrawer from "./TaskDrawer"
+import { customerView, workflowTask } from "./workflowFixtures"
 
 const api = vi.hoisted(() => ({
   addTaskComment: vi.fn(),
   getTask: vi.fn(),
+  getTaskWorkflow: vi.fn(),
   listTaskEvents: vi.fn(),
   listTaskPrincipals: vi.fn(),
   listTasks: vi.fn(),
@@ -110,6 +112,22 @@ it("reloads the task when the tasks socket hints a change", async () => {
   expect(api.getTask).toHaveBeenCalledTimes(1)
   taskSocket.options?.onHint?.({ sequence: 7 })
   await waitFor(() => expect(api.getTask).toHaveBeenCalledTimes(2))
+})
+
+it("refetches a workflow task's panel on a hint for this task, and not for another", async () => {
+  // The drawer's history is the oldest page and the revision stays the same:
+  // only the hint can tell the panel something happened.
+  api.getTask.mockResolvedValue({ ...detail, task: workflowTask })
+  api.getTaskWorkflow.mockResolvedValue(customerView)
+  render(<TaskDrawer taskKey="REL-1" onClose={vi.fn()} />)
+  await screen.findByText("release@1.2.0")
+  await waitFor(() => expect(taskSocket.options?.enabled).toBe(true))
+  expect(api.getTaskWorkflow).toHaveBeenCalledTimes(1)
+  await act(async () => { taskSocket.options?.onHint?.({ sequence: 500, task_key: "OTHER-2" }) })
+  await waitFor(() => expect(taskSocket.options?.after).toBe(500))
+  expect(api.getTaskWorkflow).toHaveBeenCalledTimes(1)
+  await act(async () => { taskSocket.options?.onHint?.({ sequence: 501, task_key: "REL-1" }) })
+  await waitFor(() => expect(api.getTaskWorkflow).toHaveBeenCalledTimes(2))
 })
 
 it("opens at the width the Tasks tab saved and resizes it with the same handle", async () => {

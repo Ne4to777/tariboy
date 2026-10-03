@@ -276,16 +276,27 @@ func Validate(src *workflowfile.File) []workflowfile.ValidationError {
 	}
 }
 
+// storeNameErrors reports a name or version that could escape the store when
+// joined into a path, under the manifest field that holds it. The manifest
+// rules already refuse such values; this is the store's own guard.
+func storeNameErrors(src *workflowfile.File) []workflowfile.ValidationError {
+	var errs []workflowfile.ValidationError
+	if err := checkName("workflow name", src.Name); err != nil {
+		errs = append(errs, workflowfile.ValidationError{Code: "name_invalid", Path: "name", Message: err.Error()})
+	}
+	if err := checkName("workflow version", src.WorkflowVersion); err != nil {
+		errs = append(errs, workflowfile.ValidationError{Code: "version_invalid", Path: "workflow_version", Message: err.Error()})
+	}
+	return errs
+}
+
 // prepareSource validates src and reads its whole directory.
 func prepareSource(src *workflowfile.File) ([]sourceFile, []FileEntry, error) {
 	if errs := workflowfile.Validate(src); len(errs) > 0 {
 		return nil, nil, &InvalidError{Errors: errs}
 	}
-	if err := checkName("workflow name", src.Name); err != nil {
-		return nil, nil, err
-	}
-	if err := checkName("workflow version", src.WorkflowVersion); err != nil {
-		return nil, nil, err
+	if errs := storeNameErrors(src); len(errs) > 0 {
+		return nil, nil, &InvalidError{Errors: errs}
 	}
 	files, err := scan(src.Dir)
 	if err != nil {

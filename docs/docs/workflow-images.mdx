@@ -238,6 +238,8 @@ then code.
 
 `validate` runs the same checks as `build`, so a source `validate` accepts is
 one `build` accepts, apart from a version already published with other content.
+`tariboy workflow validate` prints the whole result and exits 1 when the source
+is invalid, so a script can gate on it.
 
 A manifest that cannot be read or decoded (including an unknown field) is
 reported as `workflow_invalid` without a per-field list.
@@ -310,7 +312,7 @@ tariboy workflow version update major|minor|patch [--path DIR]
 
 | Command | HTTP route | Result |
 | --- | --- | --- |
-| `workflow validate` | `POST /api/workflow-images/validate` | `valid`, `name`, `version`, `pools`, `files`, and `errors` (empty when valid). Validation errors are returned in the result, not as a failure. |
+| `workflow validate` | `POST /api/workflow-images/validate` | `valid`, `name`, `version`, `pools`, `files`, and `errors` (empty when valid). Validation errors are returned in the result, not as an HTTP failure; the CLI prints them and exits 1. |
 | `workflow build` | `POST /api/workflow-images/build` | `name`, `version`, `digest`, `tags`, and `created`. |
 | `workflow ls` | `GET /api/workflow-images` | `workflows` (one row per tag with `name`, `tag`, `version`, `digest`, `built_at`) and `count`. |
 | `workflow inspect NAME [TAG]` | `GET /api/workflow-images/{name}/{tag}` | The stored manifest. `TAG` is a tag or a full digest and defaults to `latest`. |

@@ -62,7 +62,7 @@ tariboy has three command surfaces:
 | `tariboy group rm` | Remove a group (detach members, delete channels; --volumes drops the shared dir) |
 | `tariboy image build --path DIR --name NAME [--tag TAG] [--repository-id ID --git-commit SHA]` | Build one ref and move every requested tag onto it, plus a frozen source snapshot; repeat explicit tags, or omit them to publish image_version plus latest (only latest when unversioned); an existing tag is moved, not refused; Git provenance must be paired |
 | `tariboy image build STORE/IMAGE [--name NAME] [--tag TAG]` | Restore available skill locks and build from the selected daemon's Store; default name is IMAGE and an omitted tag publishes image_version plus latest, or only latest when unversioned |
-| `tariboy image validate --path DIR --name NAME [--tag TAG]` | Validate the source and target ref without publishing; tag defaults to `latest` |
+| `tariboy image validate --path DIR --name NAME [--tag TAG]` | Validate the source and target ref without publishing; tag defaults to `latest`; prints the result and exits 1 when it is invalid |
 | `tariboy image version get [--path FILE_OR_DIR]` | Print the local image_version; defaults to ./Tariboyfile.yaml; no daemon required |
 | `tariboy image version update <major\|minor\|patch> [--path FILE_OR_DIR]` | Increment the local SemVer, reset lower components and remove suffixes; preserve YAML fields/comments |
 | `tariboy image inspect` | Show an image manifest |
@@ -108,7 +108,7 @@ tariboy has three command surfaces:
 | `tariboy store refresh NAME` | Reset a managed Git clone to its upstream, discarding local changes; fast-forward pull a local Git checkout; or reread a non-Git local directory |
 | `tariboy store auto NAME [--interval MINUTES] [--image IMAGE]` | Set the automatic refresh-and-build policy; the daemon refreshes every interval and rebuilds the selected images that need an update, and `--interval 0` disables it |
 | `tariboy store remove NAME` | Unregister a Store and remove only its managed clone; preserve local sources and built images |
-| `tariboy workflow validate [STORE/NAME] [--path DIR]` | Validate a workflow source directory without building it; reports every error with a stable code and path |
+| `tariboy workflow validate [STORE/NAME] [--path DIR]` | Validate a workflow source directory without building it; reports every error with a stable code and path, and exits 1 when the source is invalid |
 | `tariboy workflow build [STORE/NAME] [--path DIR]` | Validate and publish a workflow image under its `workflow_version` and `latest`; an identical rebuild is a no-op, different content for a published version fails with `workflow_version_published` |
 | `tariboy workflow ls` | List built workflow images, one row per tag |
 | `tariboy workflow inspect NAME [TAG]` | Show a workflow image manifest; TAG is a tag or full digest and defaults to `latest` |

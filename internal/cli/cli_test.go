@@ -213,6 +213,43 @@ func TestRunCreatesTaskQueue(t *testing.T) {
 	}
 }
 
+// TestRunValidateExitsNonZeroWhenInvalid pins that a validate command exits 1
+// on a `valid: false` result, after printing the whole result, so a script
+// can gate on it; the HTTP result itself is not an error.
+func TestRunValidateExitsNonZeroWhenInvalid(t *testing.T) {
+	src := t.TempDir()
+	commandArgs := map[string][]string{
+		"workflow validate": {"workflow", "validate", "--path", src},
+		"image validate":    {"image", "validate", "--name", "developer", "--path", src},
+	}
+	invalid := `{"valid":false,"errors":[{"code":"transition_target_unknown","path":"statuses[0].transitions[0].to","message":"transition target \"nowhere\" names no status"}]}`
+	for name, argv := range commandArgs {
+		for _, mode := range []string{"text", "json"} {
+			t.Run(name+" "+mode, func(t *testing.T) {
+				args := append([]string{}, argv...)
+				if mode == "json" {
+					args = append(args, "--json")
+				}
+				var out, errOut bytes.Buffer
+				code := Run(context.Background(), commands.BuildRegistry(), args, &fakeCaller{result: json.RawMessage(invalid)}, nil, &out, &errOut)
+				if code != 1 || !strings.Contains(out.String(), "transition_target_unknown") {
+					t.Fatalf("invalid: exit=%d out=%s err=%s", code, out.String(), errOut.String())
+				}
+				out.Reset()
+				code = Run(context.Background(), commands.BuildRegistry(), args, &fakeCaller{result: json.RawMessage(`{"valid":true,"errors":[]}`)}, nil, &out, &errOut)
+				if code != 0 || !strings.Contains(out.String(), "true") {
+					t.Fatalf("valid: exit=%d out=%s err=%s", code, out.String(), errOut.String())
+				}
+			})
+		}
+	}
+	// Another command with a `valid` field is not a gate.
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), testReg(t), []string{"daemon", "status"}, &fakeCaller{result: json.RawMessage(`{"valid":false}`)}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("daemon status exit=%d", code)
+	}
+}
+
 func TestRunResolvesImageSourcePathAgainstClientCWD(t *testing.T) {
 	root := t.TempDir()
 	workdir := filepath.Join(root, "work")

@@ -77,6 +77,9 @@ tariboy image build --path ./reviewer-image --name reviewer --tag v4 \
 tariboy image ls
 ```
 
+`tariboy image validate` prints its result in full and exits 1 when the source
+or the target ref is invalid, so a script can stop before `image build`.
+
 Provide `--repository-id` and `--git-commit` together when the source is an
 exact Git revision. Tariboy records those explicit values in the frozen
 source snapshot; it never infers a commit from the current working directory.

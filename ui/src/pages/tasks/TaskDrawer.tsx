@@ -125,6 +125,9 @@ export default function TaskDrawer({
   // whole task log and reload this panel once per event.
   const [sequence, setSequence] = useState(0)
   const [live, setLive] = useState(false)
+  // The last hint about this task. The drawer's history holds only the oldest
+  // events, so the workflow panel follows this instead of the newest event.
+  const [taskHint, setTaskHint] = useState(0)
   useEffect(() => {
     listTasks({ limit: 1 }, target)
       .then((page) => {
@@ -142,11 +145,17 @@ export default function TaskDrawer({
       setSequence(hint.sequence)
       // Every task on the host shares this stream; only this one's events
       // change what the panel shows.
-      if (!hint.task_key || hint.task_key === taskKey) void load()
+      if (!hint.task_key || hint.task_key === taskKey) {
+        setTaskHint((current) => Math.max(current, hint.sequence))
+        void load()
+      }
     },
     // A reset says the host pruned events this panel may have missed; the
     // reload covers that, and the stream stays where it is.
-    onReset: () => { void load() },
+    onReset: (resetSequence: number) => {
+      setTaskHint((current) => Math.max(current + 1, resetSequence))
+      void load()
+    },
   })
 
   // An agent on another server can only work a task that lives there. Other
@@ -193,6 +202,7 @@ export default function TaskDrawer({
       detail={detail}
       principals={principals}
       events={events}
+      liveSequence={taskHint}
       width={detailWidth}
       resizeHandle={resizeHandle}
       onClose={onClose}

@@ -119,10 +119,10 @@ func Run(ctx context.Context, reg *registry.Registry, argv []string, call Caller
 		}
 		if jsonOut {
 			fmt.Fprintln(out, string(raw))
-			return 0
+		} else {
+			printHuman(raw, out)
 		}
-		printHuman(raw, out)
-		return 0
+		return resultExitCode(cmd.Path, raw)
 	}
 	route := cmd.HTTP.Path
 	for _, wc := range wildcardNames(cmd.HTTP.Path) {
@@ -148,9 +148,25 @@ func Run(ctx context.Context, reg *registry.Registry, argv []string, call Caller
 	}
 	if jsonOut {
 		fmt.Fprintln(out, string(raw))
+	} else {
+		printHuman(raw, out)
+	}
+	return resultExitCode(cmd.Path, raw)
+}
+
+// resultExitCode is 1 for a validate command whose result says the source is
+// invalid. The route returns validation errors in its result, not as an HTTP
+// error, so without this a script could not gate on the command.
+func resultExitCode(path string, raw json.RawMessage) int {
+	if !strings.HasSuffix(path, ".validate") {
 		return 0
 	}
-	printHuman(raw, out)
+	var result struct {
+		Valid *bool `json:"valid"`
+	}
+	if json.Unmarshal(raw, &result) == nil && result.Valid != nil && !*result.Valid {
+		return 1
+	}
 	return 0
 }
 

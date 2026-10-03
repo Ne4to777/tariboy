@@ -39,6 +39,7 @@ export default function TaskDetail({
   detail,
   target,
   events,
+  liveSequence,
   principals,
   width,
   resizeHandle,
@@ -54,6 +55,11 @@ export default function TaskDetail({
   detail: Detail
   target?: ApiTarget
   events: TaskEvent[]
+  /**
+   * The sequence of the last realtime hint about this task, for an owner
+   * whose `events` may not include the newest ones.
+   */
+  liveSequence?: number
   principals: TaskPrincipals | null
   width: number
   resizeHandle: ReactNode
@@ -187,7 +193,7 @@ export default function TaskDetail({
   const openWaits = commentWaits.filter((wait) => !wait.resolved_at)
   const editable = task.access !== "context" && task.access !== "respond"
   // The workflow panel refetches when a new event arrives.
-  const eventSequence = events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
+  const eventSequence = Math.max(events.reduce((latest, event) => Math.max(latest, event.sequence), 0), liveSequence ?? 0)
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) close() }}>
@@ -406,7 +412,7 @@ export default function TaskDetail({
             <div className="rounded-[8px] bg-muted px-3 py-[11px]"><MarkdownContent>{task.description}</MarkdownContent></div>
             <p className={EMPTY}>Response access — comments only.</p>
           </div>}
-          <TaskComments comments={comments} waits={commentWaits}principals={principals} assignee={task.assignee}
+          <TaskComments comments={comments} waits={commentWaits} principals={principals} assignee={task.assignee}
             formFirst={commentOrder === "newest"} order={commentOrder} onOrderChange={setCommentOrder}
             onComment={onComment} onDirtyChange={setCommentDirty} target={target} onUploadingChange={setUploadingComment} />
           <section className="flex min-w-0 flex-col gap-1">

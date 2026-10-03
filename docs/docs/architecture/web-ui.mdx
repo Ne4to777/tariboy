@@ -346,7 +346,8 @@ another server…** for one, and neither its banner nor a comment chip asks for
 a comment on the workflow's own (`system:workflow`) wait. In place of the status
 select it renders `WorkflowPanel`, which loads the view with `getTaskWorkflow`
 (on mount, on a new task revision, on a new event sequence passed down by
-`TaskDetail` as `eventSequence`, and after each change; a request counter drops
+`TaskDetail` as `eventSequence`, which in the chat `TaskDrawer` also follows
+the last socket hint about the task through `liveSequence`, and after each change; a request counter drops
 a response older than the newest) and composes
 `WorkflowPauseBanner` (`resumeTaskWorkflow`, `cancelWorkflowTask`),
 `WorkflowOutcomes` (`advanceTask`, then `getTransitionRequest` once a second
