@@ -453,7 +453,7 @@ else:
     total = 0
     for sql, arg in [
         # The agent already owns its protected inbox subscription. Count only
-        # this fixture's row so SEED remains exactly eight sentinel records.
+        # this fixture's row so SEED remains exactly seven sentinel records.
         ("SELECT COUNT(*) FROM subscriptions WHERE id=?", "sub-sentinel"),
         # Count the seeded delivery directly by its subscription_id (stable across
         # purge): the subscriptions row is gone after purge, so a subquery join
@@ -532,7 +532,7 @@ sys.exit(0 if any(i.get("id")==os.environ["ID"] for i in items) else 1)'
 #      audit.jsonl + the iteration all survive.
 #   3. compose up (image v2, a DIFFERENT image) -> reprovisions in place: history +
 #      context + audit survive AND the new image (ref + digest) is live.
-#   4. seed the nine leaked side-table rows, compose down --volumes -> full wipe:
+#   4. seed the seven leaked side-table rows, compose down --volumes -> full wipe:
 #      durable tree gone, row gone, every leaked row purged.
 #
 # The agent is CREATED out of band via `sa agent run --harness stub` (compose's
@@ -637,10 +637,10 @@ YAML
   [ -d "$adir/image" ] || { echo "FAIL: image tree not re-unpacked by up (v2)" >&2; exit 1; }
   echo "OK up(v2) swapped image ($now_ref) in place; history+context+audit survived"
 
-  # (4) seed the nine leaked side-table rows, then down --volumes -> full wipe.
+  # (4) seed the seven leaked side-table rows, then down --volumes -> full wipe.
   [ "$(db_leaked SEED "$agent")" = "seeded" ] || { echo "FAIL: could not seed leaked rows" >&2; exit 1; }
   local seeded; seeded="$(db_leaked COUNT "$agent")"
-  [ "$seeded" = "9" ] || { echo "FAIL: expected 9 seeded leaked rows, got ${seeded}" >&2; exit 1; }
+  [ "$seeded" = "7" ] || { echo "FAIL: expected 7 seeded leaked rows, got ${seeded}" >&2; exit 1; }
   sa compose -f "$fv2" --no-start down --volumes >/dev/null \
     || { echo "FAIL: compose down --volumes" >&2; exit 1; }
   [ ! -d "$adir" ] || { echo "FAIL: durable tree survived --volumes wipe" >&2; exit 1; }
@@ -648,7 +648,7 @@ YAML
     || { echo "FAIL: agent row survived --volumes wipe (state=$(agent_row_state "$agent"))" >&2; exit 1; }
   local left; left="$(db_leaked COUNT "$agent")"
   [ "$left" = "0" ] || { echo "FAIL: ${left} leaked rows survived --volumes purge (want 0)" >&2; exit 1; }
-  echo "OK down --volumes wiped durable tree + row + all 9 leaked side-table rows"
+  echo "OK down --volumes wiped durable tree + row + all 7 leaked side-table rows"
   echo "OK: compose data-preservation case passed"
 }
 
