@@ -151,8 +151,13 @@ longer installs a separate built-in Store tree.
 
 A Store may also hold workflow sources at
 `workflows/<workflow_name>/Workflowfile.yaml`. Store detail lists them beside
-images, and `tariboy workflow build STORE/NAME` builds one. See
-[Workflow images](/docs/workflow-images).
+images, and `tariboy workflow build STORE/NAME` builds one. The official Store
+provides two: `development`, the pull request flow (`plan`, `approval`,
+`implement`, `review`, `complete`, `done`; it needs the `GH_TOKEN` queue secret
+and a `developers` pool), and `research`, one pool status for a `researchers`
+pool that produces a `report` artifact. See
+[Workflow images](/docs/workflow-images#official-workflow-images) for the
+operator sequence.
 
 ### Automatic refresh and build
 

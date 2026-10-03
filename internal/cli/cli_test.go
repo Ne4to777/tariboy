@@ -243,6 +243,13 @@ func TestRunValidateExitsNonZeroWhenInvalid(t *testing.T) {
 			})
 		}
 	}
+	// `image source validate` also returns `valid`, but it is not a gate: its
+	// callers read the result and expect exit 0.
+	var srcOut, srcErr bytes.Buffer
+	srcInvalid := `{"valid":false,"diagnostics":[{"path":"Tariboyfile.yaml","message":"bad"}]}`
+	if code := Run(context.Background(), commands.BuildRegistry(), []string{"image", "source", "validate", "dev"}, &fakeCaller{result: json.RawMessage(srcInvalid)}, nil, &srcOut, &srcErr); code != 0 {
+		t.Fatalf("image source validate exit=%d out=%s err=%s", code, srcOut.String(), srcErr.String())
+	}
 	// Another command with a `valid` field is not a gate.
 	var out, errOut bytes.Buffer
 	if code := Run(context.Background(), testReg(t), []string{"daemon", "status"}, &fakeCaller{result: json.RawMessage(`{"valid":false}`)}, nil, &out, &errOut); code != 0 {

@@ -154,11 +154,13 @@ func Run(ctx context.Context, reg *registry.Registry, argv []string, call Caller
 	return resultExitCode(cmd.Path, raw)
 }
 
-// resultExitCode is 1 for a validate command whose result says the source is
-// invalid. The route returns validation errors in its result, not as an HTTP
-// error, so without this a script could not gate on the command.
+// resultExitCode is 1 for `image validate` or `workflow validate` when the
+// result says the source is invalid. The route returns validation errors in its
+// result, not as an HTTP error, so without this a script could not gate on the
+// command. Other commands with a `valid` field, such as `image source
+// validate`, keep exit 0.
 func resultExitCode(path string, raw json.RawMessage) int {
-	if !strings.HasSuffix(path, ".validate") {
+	if path != "image.validate" && path != "workflow.validate" {
 		return 0
 	}
 	var result struct {

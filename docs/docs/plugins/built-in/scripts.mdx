@@ -128,8 +128,9 @@ convention, is also what a shell reports for a usage error and what `grep`,
 command would have stayed quiet forever. Exit `112` is reserved by the same
 protocol and is an ordinary failure for agent scripts.
 
-The former `--quiet-exit CODE` flag is deprecated and accepted for one more
-release. A code other than `111` wraps the stored command in a nested `sh -c`
+The former `--quiet-exit CODE` flag, and the `quiet_exit` request parameter
+behind it, are deprecated. The official Store skills no longer send it; the
+daemon still accepts it for one more release, and a later release removes it. A code other than `111` wraps the stored command in a nested `sh -c`
 that reports that code as `111`; the definition then shows the wrapped command.
 Schedules created before this change were rewritten the same way when the
 daemon was upgraded.

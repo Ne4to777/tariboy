@@ -485,7 +485,7 @@ the one reported. A refusal writes nothing.
 | 2 | `not_found` | 404 | The task is unknown or not visible to the caller. |
 | 3 | `workflow_not_bound` | 409 | The task has no workflow (a flexible task). |
 | 4 | `workflow_closed` | 409 | The task is `done` or `cancelled`. |
-| 5 | `workflow_paused` | 409 | The task is paused. Reserved; it does not occur today. |
+| 5 | `workflow_paused` | 409 | The task is paused and waits for the customer's decision; the message carries the pause reason. It is checked after `workflow_closed` and before `status_changed`. See [Pauses](#pauses). |
 | 6 | `status_changed` | 409 | `from` is set and the task is in another status; the error carries the current `status`. |
 | 7 | `status_unknown` | 409 | The pinned image does not declare the task's status. |
 | 8 | `not_holder` | 403 | The caller does not own the status: an agent that is not the holder, an agent in a customer status, or anyone in a script status. |
@@ -1203,6 +1203,36 @@ pending request.
 | A script status never moves | Read `ttasks workflow runs KEY`. A run of `quiet` verdicts means the condition has not happened; `failure` verdicts mean a broken script: read its log. The operator can always `ttasks workflow move` the task. |
 | `workflow log` returns `forbidden` | The caller is neither the customer nor a holder of the task, or the run is a `run_as: agent` check of another holder. |
 | A secret value shows in a log | It was rotated or removed after the run, or it was printed encoded. Rotate the secret and fix the script. |
+
+## Official workflows
+
+The official Store (`official`) holds two workflow sources. Build one with
+`tariboy workflow build official/NAME`, then bind a queue as shown in
+[Workflow images](/docs/workflow-images#official-workflow-images).
+
+### `development`
+
+The pull request flow, version `0.1.0`. It requires the queue secret `GH_TOKEN`
+and a `developers` pool, and declares the artifacts `plan`, `pull_request`, and
+`merge_commit`.
+
+| Status | Owner | Outcomes | Gate |
+| --- | --- | --- | --- |
+| `plan` (initial) | pool `developers` | `planned` to `approval` | Needs the `plan` artifact. |
+| `approval` | customer | `approved` to `implement`; `changes_requested` to `plan` | None. |
+| `implement` | pool `developers` | `ready` to `review` | Needs the `pull_request` artifact; the check `pr-open.py` rejects unless the pull request exists and is open (or merged). The status allows 6 idle iterations. |
+| `review` | script (watched) | `merged` to `complete`; `changes_requested` to `implement` | `pr-monitor.py` runs every 60 seconds and picks the outcome from the pull request's checks, reviews, comments, and merge; it records `merge_commit`. |
+| `complete` | pool `developers` | `cleaned` to `done` | The check `merged-on-base.py`, run as the agent, rejects unless the merge commit is on the local base branch and the task's worktree and branch are gone. |
+| `done` | terminal | | |
+
+The token stays in the process environment of the scripts; it never appears in
+an argument, a file, or a message.
+
+### `research`
+
+Version `0.1.0`. One pool status, `research`, owned by the pool `researchers`,
+with the outcome `reported` to `done`. It needs the artifact `report`, the
+research report as Markdown, and has no scripts and no secrets.
 
 ## Agent pools
 
