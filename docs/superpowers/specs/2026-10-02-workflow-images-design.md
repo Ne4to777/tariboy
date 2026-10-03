@@ -788,3 +788,68 @@ Updated with the phase that changes the behavior:
 - `docs/docs/security-controls.mdx` — queue secrets, the script boundary;
 - `docs/docs/development.mdx` — the workflow test paragraph;
 - `tariboy-store/README.md` — the `workflows/` layout.
+
+## Implementation record
+
+All seven phases were implemented on the branch `worktree-workflow-images-design`
+(Tariboy) and `workflow-images` (tariboy-store), 2026-10-02/03. Where the
+implementation deliberately departs from the text above, the code and the
+product documentation under `docs/docs/` are authoritative. The departures:
+
+- **Script exit codes.** `scripts.quiet_exit` stays in the schema, always
+  `NULL`, instead of being dropped (a rebuild of `scripts` would cascade into
+  `script_runs`). The deprecated `quiet_exit` request parameter is **not**
+  removed in this branch: all phases ship together, so removing it would give
+  agents on already-built images no release of grace. The nested legacy wrapper
+  calls `sh` through the agent's `PATH`.
+- **Workflow image.** The digest covers the stored file bytes only. A version is
+  immutable even after its tag is removed. `workflow inspect` and `workflow rm`
+  take `NAME` and `TAG` as separate arguments. `tariboy workflow validate` runs
+  the same source scan as `build` and exits `1` when the source is invalid.
+- **Engine.** The old engine's `tasks.workflow_version_id` column and the
+  `task_workflow_versions` table stay in the schema, unused. A new holder is
+  eligible only when it has no assigned open task (the Goal reconciler's own
+  predicate). `advance` takes `--from STATUS`; a mismatch is `status_changed`.
+  Leaving a pool status resolves only the holder's own questions; waits authored
+  by `system:workflow` are ignored by Goal selection, so a task in a customer
+  status (or paused) releases its agent at once — the "existing wait grace" in
+  the Goal section does not apply. An image cannot be removed while any task,
+  open or closed, pins it. Emptying a pool is refused while a bound image or an
+  open task's image names it. A holder keeps read access to its task through its
+  holder row even after the assignee is cleared.
+- **Scripts.** The task snapshot carries `visit: {id, entered_at}` so a watch
+  script can tell "my outcome was applied and the task came back" from "the
+  daemon restarted before applying it". `transition_rejected` and
+  `transition_failed` are request states and events, not error codes; new codes
+  are `script_running`, `run_log_invalid`, `source_invalid`, and the secret
+  codes `invalid_secret`, `invalid_secret_key`, `secret_too_large`. A pending
+  request carries `wait_seconds`. Queue secret values of at least six bytes are
+  replaced with `[redacted]` in a script's message, in artifact values it
+  returns, and in the served log tail (a filter of current values only; the
+  file on disk is not redacted). A run log is readable by the customer and by
+  the task's holders; the log of a `run_as: agent` run only by the customer and
+  the holder recorded on the run. After a crash, an orphaned script is
+  terminated only with proof of identity from `/proc/<pid>/environ`, and an
+  interrupted watch is rescheduled after `every`. Quiet watch runs leave no
+  event; only the newest 20 per visit are kept, and only the task's newest 20
+  quiet run directories survive. Checks start before watches. Nightly retention
+  removes `<base-dir>/tasks/<KEY>/`.
+- **Goal and pause.** `release` keeps the pool's holder row marked `released`:
+  the released agent is excluded from dispatch for that task and pool until
+  another agent takes it or an operator move deletes the released rows; with no
+  other member the task stays `open`. The pause takes over the customer's single
+  open wait; a holder's open question is absorbed and named in the pause comment.
+  Count limits cannot be `0` (only `unavailable_grace: 0` is allowed).
+  `rejected_requests` counts every rejection in the visit, not only consecutive
+  ones. An iteration does not count as idle when a request of the visit is
+  pending or was cancelled/applied during it, when the holder's own question is
+  open or answered during it, when it ended as `harness_error`, or when it
+  started before the visit's `resumed_at`. The Goal an iteration ran with lives
+  in memory, so an adopted iteration after a restart is never counted.
+- **UI.** No per-status filter; the Active/Closed/All views select by category.
+  `WorkflowView` exposes `declared_artifacts` and `statuses`. The panel
+  refetches on workflow events, not only on the task revision.
+- **Store.** The `development` scripts are Python (`pr-open.py`,
+  `pr-monitor.py`, `merged-on-base.py`, shared `pr_lib.py`); `github-pr.py
+  monitor` stays in the developer image for tasks without a workflow, quiet
+  with `111`.
