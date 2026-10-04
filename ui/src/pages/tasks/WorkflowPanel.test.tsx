@@ -92,14 +92,15 @@ it("refetches the view and reports the change after an outcome applies", async (
   expect(api.getTaskWorkflow).toHaveBeenCalledTimes(2)
 })
 
-async function openMenuItem(name: string) {
-  await userEvent.click(await screen.findByRole("button", { name: "Workflow actions" }))
-  await userEvent.click(await screen.findByRole("menuitem", { name }))
+// The actions are labeled buttons in the panel header, not a menu: a click
+// opens the move form or the cancel confirmation directly.
+async function openAction(name: string) {
+  await userEvent.click(await screen.findByRole("button", { name }))
 }
 
 it("moves to a declared status with a required reason after confirmation", async () => {
   const { onTaskChanged } = renderPanel()
-  await openMenuItem("Move to status…")
+  await openAction("Move to status…")
   const select = screen.getByLabelText("Target status")
   // Every declared status but the current one; terminal ones last, grouped.
   expect(within(select).getAllByRole("option").map((option) => option.getAttribute("value")))
@@ -131,7 +132,7 @@ it("lists every declared artifact, so one with no value can be set", async () =>
 it("shows a refused move inline", async () => {
   api.moveTaskWorkflow.mockRejectedValue(new ApiError(400, "status_unknown", "the image does not declare status x"))
   const { onTaskChanged } = renderPanel()
-  await openMenuItem("Move to status…")
+  await openAction("Move to status…")
   await userEvent.selectOptions(screen.getByLabelText("Target status"), "publish")
   await userEvent.type(screen.getByLabelText("Reason"), "why not")
   await userEvent.click(screen.getByRole("button", { name: "Move" }))
@@ -140,12 +141,12 @@ it("shows a refused move inline", async () => {
   expect(onTaskChanged).not.toHaveBeenCalled()
 })
 
-it("cancels the task from the menu after confirmation, and not when declined", async () => {
+it("cancels the task after confirmation, and not when declined", async () => {
   const { onTaskChanged } = renderPanel()
-  await openMenuItem("Cancel task")
+  await openAction("Cancel task")
   await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Go back" }))
   expect(api.cancelWorkflowTask).not.toHaveBeenCalled()
-  await openMenuItem("Cancel task")
+  await openAction("Cancel task")
   await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel task" }))
   await waitFor(() => expect(api.cancelWorkflowTask).toHaveBeenCalledWith("REL-1", target))
   await waitFor(() => expect(onTaskChanged).toHaveBeenCalledTimes(1))
@@ -153,7 +154,7 @@ it("cancels the task from the menu after confirmation, and not when declined", a
 
 it("settles a declined move: the form stays open and Move works again", async () => {
   renderPanel()
-  await openMenuItem("Move to status…")
+  await openAction("Move to status…")
   await userEvent.selectOptions(screen.getByLabelText("Target status"), "draft")
   await userEvent.type(screen.getByLabelText("Reason"), "why")
   await userEvent.click(screen.getByRole("button", { name: "Move" }))
@@ -168,7 +169,7 @@ it("disables Move while the move is in flight", async () => {
   let finish!: () => void
   api.moveTaskWorkflow.mockReturnValue(new Promise<void>((resolve) => { finish = resolve }))
   renderPanel()
-  await openMenuItem("Move to status…")
+  await openAction("Move to status…")
   await userEvent.selectOptions(screen.getByLabelText("Target status"), "draft")
   await userEvent.type(screen.getByLabelText("Reason"), "why")
   await userEvent.click(screen.getByRole("button", { name: "Move" }))
@@ -179,10 +180,10 @@ it("disables Move while the move is in flight", async () => {
   await waitFor(() => expect(screen.queryByLabelText("Target status")).not.toBeInTheDocument())
 })
 
-it("shows a failed cancel next to the menu, not as a view error with a retry", async () => {
+it("shows a failed cancel next to the actions, not as a view error with a retry", async () => {
   api.cancelWorkflowTask.mockRejectedValue(new ApiError(409, "workflow_closed", "the task is already closed"))
   const { onTaskChanged } = renderPanel()
-  await openMenuItem("Cancel task")
+  await openAction("Cancel task")
   await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel task" }))
   expect(await screen.findByRole("alert")).toHaveTextContent("the task is already closed")
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
@@ -223,15 +224,13 @@ it("guards Cancel while it runs and clears its error when another action starts"
   let fail!: (error: Error) => void
   api.cancelWorkflowTask.mockReturnValueOnce(new Promise((_, reject) => { fail = reject }))
   renderPanel()
-  await openMenuItem("Cancel task")
+  await openAction("Cancel task")
   await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel task" }))
   await waitFor(() => expect(api.cancelWorkflowTask).toHaveBeenCalledTimes(1))
-  await userEvent.click(screen.getByRole("button", { name: "Workflow actions" }))
-  expect(await screen.findByRole("menuitem", { name: "Cancel task" })).toHaveAttribute("aria-disabled", "true")
-  await userEvent.keyboard("{Escape}")
+  expect(screen.getByRole("button", { name: "Cancel task" })).toBeDisabled()
   await act(async () => { fail(new ApiError(409, "workflow_closed", "the task is already closed")) })
   expect(await screen.findByText("the task is already closed")).toBeInTheDocument()
-  await openMenuItem("Move to status…")
+  await openAction("Move to status…")
   expect(screen.queryByText("the task is already closed")).not.toBeInTheDocument()
 })
 
@@ -259,7 +258,6 @@ it("lets a long status ID wrap in the header and the visits", async () => {
 it("offers no cancel for a closed task", async () => {
   api.getTaskWorkflow.mockResolvedValue({ ...customerView, status: "publish", category: "done", owner: "", outcomes: [] })
   renderPanel({ ...workflowTask, status: "publish", category: "done", waiting_on: undefined })
-  await userEvent.click(await screen.findByRole("button", { name: "Workflow actions" }))
-  expect(await screen.findByRole("menuitem", { name: "Move to status…" })).toBeInTheDocument()
-  expect(screen.queryByRole("menuitem", { name: "Cancel task" })).not.toBeInTheDocument()
+  expect(await screen.findByRole("button", { name: "Move to status…" })).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Cancel task" })).not.toBeInTheDocument()
 })

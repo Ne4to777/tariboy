@@ -450,6 +450,32 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   await expect(page.getByTestId(`task-row-${key}`), "step 5: the closed task is listed").toContainText("Done");
   step("5 approved and closed");
 
+  // Step 5b: the customer moves one task by hand and cancels another. The
+  // confirmation opens above the detail sheet, so its buttons take the click.
+  const createWorkflowTask = async (title: string) => {
+    const created = await request.post(`${daemonURL}/api/tasks`, { data: { queue: "WFUI", title, idempotency_key: `tasks-browser-${title}` } });
+    expect(created.ok()).toBe(true);
+    return (await created.json()).result.key as string;
+  };
+  const moveKey = await createWorkflowTask("Move by hand");
+  const cancelKey = await createWorkflowTask("Cancel by hand");
+  await page.getByRole("radio", { name: "Active", exact: true }).click();
+  await page.getByTestId(`task-row-${moveKey}`).locator(".task-row-main").click();
+  await detail.getByRole("button", { name: "Move to status…" }).click();
+  await detail.getByLabel("Target status").selectOption("done");
+  await detail.getByLabel("Reason", { exact: true }).fill("closed by hand");
+  await detail.getByRole("button", { name: "Move", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Move task" }).click({ timeout: 5_000 });
+  await expect.poll(async () => (await taskFromAPI(request, moveKey)).status, "step 5b: the move lands").toBe("done");
+  await detail.getByRole("button", { name: "Close task detail" }).click();
+  await page.getByTestId(`task-row-${cancelKey}`).locator(".task-row-main").click();
+  await detail.getByRole("button", { name: "Cancel task" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Cancel task" }).click({ timeout: 5_000 });
+  await expect.poll(async () => ((await taskFromAPI(request, cancelKey)) as { category?: string }).category,
+    "step 5b: the cancel lands").toBe("cancelled");
+  await detail.getByRole("button", { name: "Close task detail" }).click();
+  step("5b moved and cancelled by hand");
+
   // Step 6: queue settings show the binding and manage secrets.
   await page.getByRole("button", { name: "Queue: all" }).click();
   await page.getByRole("menuitem", { name: "Manage queues…" }).click();
@@ -490,5 +516,9 @@ test("Tasks production workspace drives a workflow queue: bind, approve, secrets
   const flexDetail = page.locator(".task-detail-panel");
   await expect(flexDetail.getByRole("combobox", { name: "Status", exact: true }), "step 7: flexible task keeps its status select").toBeVisible();
   await expect(flexDetail.getByLabel("Assignee", { exact: true }), "step 7: flexible task keeps its assignee control").toBeVisible();
+  // The header menu opens above the detail sheet, so its item takes the click.
+  await flexDetail.getByRole("button", { name: "Task actions" }).click();
+  await page.getByRole("menuitem", { name: "Move to another server…" }).click({ timeout: 5_000 });
+  await expect(page.getByRole("dialog", { name: "Move to another server" }), "step 7: the menu item opens its dialog").toBeVisible();
   step("7 flexible unchanged");
 });

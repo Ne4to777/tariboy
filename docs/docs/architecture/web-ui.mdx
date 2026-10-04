@@ -331,6 +331,10 @@ the task and its history arrive; refreshing the task already open keeps the
 loaded panel in place. History rows read as time, kind, a
 one-line `key value · key value` payload summary and actor; the panel never
 prints a raw JSON payload.
+The sheet is a modal `Dialog` at `z-[60]`, so every floating primitive that can
+open from inside it — dropdown menu, select, context menu, tooltip, and the
+alert dialog that confirms an action — stacks at `z-[70]`; at the old `z-50`
+they opened under the sheet's overlay and took no click.
 The detail sheet's own keyboard- and pointer-accessible separator is the only
 one the workspace has. Arrow keys move it, Shift increases the step, Home and
 double-click restore its default, and the clamped width persists in the
@@ -361,8 +365,9 @@ a response older than the newest) and composes
 until the request settles or `wait_seconds` passes), `WorkflowArtifacts`
 (`setTaskArtifact`, `getTaskArtifactHistory`; every entry of the view's
 `declared_artifacts`), `WorkflowRuns` (`getTaskScriptRunLog`), the visit list,
-and the actions menu with `moveTaskWorkflow` (targets from the view's
-`statuses`) and `cancelWorkflowTask`. Destructive actions confirm through
+and the header's labeled **Move to status…** and **Cancel task** buttons with
+`moveTaskWorkflow` (targets from the view's `statuses`) and
+`cancelWorkflowTask`. Destructive actions confirm through
 the controlled alert dialog of `useWorkflowConfirm`; `workflowShared.ts` holds
 `errorText` and `useMounted`. Messages, values, and logs
 render as React text. Every call passes the `ApiTarget` of the surrounding

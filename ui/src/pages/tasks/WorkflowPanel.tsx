@@ -1,7 +1,5 @@
-import { MoreHorizontal } from "lucide-react"
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import type { ApiTarget } from "@/lib/api"
 import { cancelWorkflowTask, getTaskWorkflow, moveTaskWorkflow, type Task, type WorkflowView } from "@/lib/tasks"
@@ -45,10 +43,6 @@ export function WorkflowPanel({ task, eventSequence = 0, target, onTaskChanged }
   // Only the newest request may set the view: an older response that
   // arrives late is dropped.
   const latest = useRef(0)
-  // Set while the menu closes to open the move form; the menu then hands the
-  // focus to the form's status select instead of back to its trigger.
-  const openingMove = useRef(false)
-  const moveSelect = useRef<HTMLSelectElement>(null)
 
   const load = useCallback(async () => {
     const request = ++latest.current
@@ -115,27 +109,18 @@ export function WorkflowPanel({ task, eventSequence = 0, target, onTaskChanged }
           {view.owner && <span className="min-w-0">owner <span className={cn(MONO_ID, "text-foreground")}>{view.owner}</span></span>}
           {view.holder && <span className="min-w-0">holder <span className={cn(MONO_ID, "text-foreground")}>{view.holder}</span></span>}
         </div>
-        {editable && <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Workflow actions"
-              className="size-7 rounded-[8px] text-muted-foreground hover:bg-accent hover:text-foreground"><MoreHorizontal className="size-3.5" /></Button>
-          </DropdownMenuTrigger>
-          {/* The move form takes the focus; the menu must not hand it back. */}
-          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
-            if (!openingMove.current) return
-            openingMove.current = false
-            event.preventDefault()
-            moveSelect.current?.focus()
-          }}>
-            <DropdownMenuItem onSelect={() => { openingMove.current = true; setCancelError(""); setMoving(true) }}>Move to status…</DropdownMenuItem>
-            {!closed && <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={canceling}
-              onSelect={cancel}>Cancel task</DropdownMenuItem>}
-          </DropdownMenuContent>
-        </DropdownMenu>}
+        {/* Labeled, not behind a menu: the customer's manual way out of the
+            workflow has to be found without hunting for it. */}
+        {editable && <div className="flex shrink-0 items-center gap-1">
+          <Button type="button" variant="ghost" size="sm" className="h-7"
+            onClick={() => { setCancelError(""); setMoving(true) }}>Move to status…</Button>
+          {!closed && <Button type="button" variant="ghost" size="sm" className="h-7 text-destructive hover:text-destructive"
+            disabled={canceling} onClick={cancel}>Cancel task</Button>}
+        </div>}
       </div>
       {failure}
       {cancelError && <p role="alert" className="text-[12px] text-status-failed">{cancelError}</p>}
-      {moving && <MoveForm view={view} selectRef={moveSelect} onDone={() => setMoving(false)} onMove={move} />}
+      {moving && <MoveForm view={view} onDone={() => setMoving(false)} onMove={move} />}
       <WorkflowOutcomes taskKey={task.key} view={view} target={target} onChanged={changed} onRefresh={refresh} />
       <WorkflowArtifacts taskKey={task.key} artifacts={view.artifacts} declared={view.declared_artifacts ?? []}
         editable={editable && !closed} target={target} onChanged={changed} />
@@ -171,9 +156,8 @@ function moveTargets(view: WorkflowView) {
   return { open: others.filter((status) => !status.terminal), terminal: others.filter((status) => status.terminal) }
 }
 
-function MoveForm({ view, selectRef, onMove, onDone }: {
+function MoveForm({ view, onMove, onDone }: {
   view: WorkflowView
-  selectRef: RefObject<HTMLSelectElement | null>
   onMove: (to: string, reason: string) => Promise<boolean>
   onDone: () => void
 }) {
@@ -195,7 +179,7 @@ function MoveForm({ view, selectRef, onMove, onDone }: {
       onSubmit={(event) => { event.preventDefault(); submit() }}>
       <span className={LABEL}>Move to status</span>
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <SelectShell ref={selectRef} aria-label="Target status" value={to} className="h-[26px] w-auto max-w-full text-[12px] md:text-[12px]"
+        <SelectShell autoFocus aria-label="Target status" value={to} className="h-[26px] w-auto max-w-full text-[12px] md:text-[12px]"
           onChange={(event) => setTo(event.target.value)}>
           <option value="">Choose a status</option>
           {open.map((status) => <option key={status.id} value={status.id}>{status.id}</option>)}
