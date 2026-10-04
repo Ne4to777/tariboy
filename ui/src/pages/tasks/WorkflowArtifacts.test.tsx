@@ -41,18 +41,32 @@ it("lets a long author wrap", () => {
   expect(screen.getByText(author)).toHaveClass("min-w-0", "break-all")
 })
 
-it("shows each artifact with its author and a long value collapsed to six lines, as text", () => {
-  renderArtifacts()
+it("shows each artifact with its author and a long value collapsed to six lines, as Markdown", () => {
+  renderArtifacts({ artifacts: [{ ...notes, value: "# Title\n\n**bold**\n4\n5\n6\nseventh\neighth" }] })
   const item = screen.getByText("notes").closest("li")!
   expect(within(item).getByText("agent:writer")).toBeInTheDocument()
-  const value = item.querySelector("pre")!
-  expect(value.textContent).toBe("<i>one</i>\n2\n3\n4\n5\n6")
-  expect(value.querySelector("i")).toBeNull()
+  expect(within(item).getByRole("heading", { name: "Title" })).toBeInTheDocument()
+  expect(within(item).getByText("bold").tagName).toBe("STRONG")
+  expect(within(item).queryByText(/eighth/)).not.toBeInTheDocument()
   const expand = within(item).getByRole("button", { name: "Show all 8 lines" })
   expect(expand).toHaveAttribute("aria-expanded", "false")
   fireEvent.click(expand)
-  expect(item.querySelector("pre")!.textContent).toBe(notes.value)
+  expect(within(item).getByText(/eighth/)).toBeInTheDocument()
   expect(within(item).getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true")
+})
+
+it("switches a value to plain text, which never interprets Markdown or HTML", () => {
+  renderArtifacts()
+  const item = screen.getByText("notes").closest("li")!
+  const text = within(item).getByRole("button", { name: "Text" })
+  expect(text).toHaveAttribute("aria-pressed", "false")
+  fireEvent.click(text)
+  expect(text).toHaveAttribute("aria-pressed", "true")
+  const value = item.querySelector("pre")!
+  expect(value.textContent).toBe("<i>one</i>\n2\n3\n4\n5\n6")
+  expect(value.querySelector("i")).toBeNull()
+  fireEvent.click(within(item).getByRole("button", { name: "Show all 8 lines" }))
+  expect(item.querySelector("pre")!.textContent).toBe(notes.value)
 })
 
 it("loads the history only when asked", async () => {
@@ -97,20 +111,18 @@ it("offers no edit action when the task cannot be edited", () => {
   expect(screen.queryByRole("button", { name: "Set" })).not.toBeInTheDocument()
 })
 
-it("collapses one very long line by length and keeps every value in a focusable scroll box", async () => {
+it("collapses one very long line by length and shows the whole value, unclipped, once expanded", async () => {
   const long = "x".repeat(5000)
   api.getTaskArtifactHistory.mockResolvedValue([{ ...notes, id: 2, value: long }])
   renderArtifacts({ artifacts: [{ ...notes, value: long }] })
   const item = screen.getByText("notes").closest("li")!
-  const value = item.querySelector("pre")!
-  expect(value.textContent).toHaveLength(600)
-  expect(value).toHaveClass("max-h-60", "overflow-auto")
-  expect(value).toHaveAttribute("tabindex", "0")
+  fireEvent.click(within(item).getByRole("button", { name: "Text" }))
+  expect(item.querySelector("pre")!.textContent).toHaveLength(600)
   fireEvent.click(within(item).getByRole("button", { name: "Show all 5000 characters" }))
-  expect(item.querySelector("pre")!.textContent).toBe(long)
-  expect(item.querySelector("pre")).toHaveClass("max-h-60", "overflow-auto")
+  const value = item.querySelector("pre")!
+  expect(value.textContent).toBe(long)
+  expect(value).not.toHaveClass("max-h-60")
+  expect(value).not.toHaveClass("overflow-auto")
   await act(async () => { fireEvent.click(within(item).getByRole("button", { name: "History" })) })
-  const entry = item.querySelector("ol pre")!
-  expect(entry).toHaveClass("max-h-60", "overflow-auto")
-  expect(entry).toHaveAttribute("tabindex", "0")
+  expect(item.querySelector("ol pre")).not.toBeNull()
 })

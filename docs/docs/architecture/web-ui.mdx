@@ -369,8 +369,9 @@ and the header's labeled **Move to status…** and **Cancel task** buttons with
 `moveTaskWorkflow` (targets from the view's `statuses`) and
 `cancelWorkflowTask`. Destructive actions confirm through
 the controlled alert dialog of `useWorkflowConfirm`; `workflowShared.ts` holds
-`errorText` and `useMounted`. Messages, values, and logs
-render as React text. Every call passes the `ApiTarget` of the surrounding
+`errorText` and `useMounted`. Messages and logs render as React text;
+artifact values render through `MarkdownContent`, or as React text when an
+artifact is switched to **Text**. Every call passes the `ApiTarget` of the surrounding
 component. After a drawer action `TasksWorkspace` reloads the tree as well as
 the detail, so the row agrees with the drawer before the socket reports the
 change. In queue settings, `QueueWorkflowSettings` (`getQueueWorkflow`,

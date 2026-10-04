@@ -40,7 +40,7 @@ it("renders the header, outcomes, artifacts, runs and visits of the view", async
   expect(header).toHaveTextContent("review")
   expect(header).toHaveTextContent("customer")
   expect(screen.getByRole("button", { name: "approve" })).toBeInTheDocument()
-  expect(screen.getByText("Artifacts").closest("section")).toHaveTextContent("# Notes")
+  expect(screen.getByText("Artifacts").closest("section")).toContainElement(screen.getByRole("heading", { name: "Notes" }))
   expect(screen.getByText("Script runs").closest("section")).toHaveTextContent("./scripts/ci.sh")
   const visits = screen.getByText("Visits").closest("section")!
   expect(visits).toHaveTextContent("draft")

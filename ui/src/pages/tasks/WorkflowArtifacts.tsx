@@ -5,6 +5,7 @@ import type { ApiTarget } from "@/lib/api"
 import { getTaskArtifactHistory, setTaskArtifact, type WorkflowArtifact, type WorkflowDeclaredArtifact } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 import { COUNT, EMPTY, LABEL, MONO, QUIET_ACTION } from "./panelStyles"
+import { MarkdownContent, MarkdownModeSegment, type MarkdownMode } from "./TaskMarkdown"
 import { formatTaskTime } from "./taskTime"
 import { errorText } from "./workflowShared"
 
@@ -14,8 +15,8 @@ const COLLAPSED_CHARS = 600
 
 /**
  * The task's artifacts: the current value of each, its author and time, the
- * history on demand, and for the customer an edit action. Values are text the
- * daemon never parses, so they render as preformatted text, never as Markdown.
+ * history on demand, and for the customer an edit action. The daemon never
+ * parses a value: it renders as Markdown, or as plain text when switched.
  */
 export default function WorkflowArtifacts({ taskKey, artifacts, declared, editable, target, onChanged }: {
   taskKey: string
@@ -59,6 +60,7 @@ function ArtifactItem({ taskKey, name, artifact, description, editable, target, 
   const [error, setError] = useState("")
   const [history, setHistory] = useState<WorkflowArtifact[] | null>(null)
   const [historyError, setHistoryError] = useState("")
+  const [mode, setMode] = useState<MarkdownMode>("rich")
   const save = () => {
     if (draft === null) return
     setSaving(true)
@@ -83,7 +85,9 @@ function ArtifactItem({ taskKey, name, artifact, description, editable, target, 
           <span className={cn(MONO, "min-w-0 break-all text-muted-foreground")}>{artifact.author}</span>
           <time dateTime={artifact.created_at} className={cn(MONO, "text-muted-foreground")}>{formatTaskTime(artifact.created_at)}</time>
         </> : <span className={EMPTY}>no value</span>}
-        <span className="ml-auto flex gap-1">
+        <span className="ml-auto flex items-center gap-1">
+          {artifact && draft === null && <MarkdownModeSegment label={`Show ${name} as`} names={["Markdown", "Text"]}
+            mode={mode} onModeChange={setMode} />}
           {artifact && <Button type="button" variant="ghost" className={QUIET_ACTION} aria-expanded={history !== null}
             onClick={toggleHistory}>History</Button>}
           {editable && draft === null && <Button type="button" variant="ghost" className={QUIET_ACTION}
@@ -99,30 +103,30 @@ function ArtifactItem({ taskKey, name, artifact, description, editable, target, 
           <Button type="button" variant="ghost" size="sm" className="h-7" disabled={saving}
             onClick={() => { setDraft(null); setError("") }}>Discard</Button>
         </div>
-      </div> : artifact && <ArtifactValue value={artifact.value} />}
+      </div> : artifact && <ArtifactValue value={artifact.value} markdown={mode === "rich"} />}
       {error && <p role="alert" className="text-[12px] text-status-failed">{error}</p>}
       {historyError && <p role="alert" className="text-[12px] text-status-failed">{historyError}</p>}
       {history && <ol className="flex min-w-0 flex-col gap-1.5 border-l border-border pl-2.5">
         {history.map((entry) => <li key={entry.id} className="flex min-w-0 flex-col gap-0.5">
           <span className={cn(MONO, "text-muted-foreground")}>{entry.author} · {formatTaskTime(entry.created_at)}</span>
-          <ArtifactValue value={entry.value} />
+          <ArtifactValue value={entry.value} markdown={mode === "rich"} />
         </li>)}
       </ol>}
     </li>
   )
 }
 
-function ArtifactValue({ value }: { value: string }) {
+function ArtifactValue({ value, markdown }: { value: string, markdown: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const lines = value.split("\n")
   const manyLines = lines.length > COLLAPSED_LINES
   const short = lines.slice(0, COLLAPSED_LINES).join("\n").slice(0, COLLAPSED_CHARS)
   const long = short.length < value.length
+  const shown = long && !expanded ? short : value
   return <div className="flex min-w-0 flex-col items-start gap-0.5">
-    {/* Scrolls inside its own box, focusable so the keyboard can scroll it. */}
-    <pre tabIndex={0} className="max-h-60 w-full min-w-0 overflow-auto rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11.5px] whitespace-pre-wrap break-words">
-      {long && !expanded ? short : value}
-    </pre>
+    {markdown
+      ? <div className="w-full min-w-0 rounded-[8px] bg-muted px-2.5 py-2"><MarkdownContent>{shown}</MarkdownContent></div>
+      : <pre className="w-full min-w-0 rounded-[8px] bg-muted px-2.5 py-2 font-mono text-[11.5px] whitespace-pre-wrap break-words">{shown}</pre>}
     {long && <Button type="button" variant="ghost" className={QUIET_ACTION} aria-expanded={expanded}
       onClick={() => setExpanded(!expanded)}>
       {expanded ? "Show less" : manyLines ? `Show all ${lines.length} lines` : `Show all ${value.length} characters`}

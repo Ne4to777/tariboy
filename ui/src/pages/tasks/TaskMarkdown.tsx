@@ -121,14 +121,16 @@ export type MarkdownMode = "rich" | "source"
  * exported separately so the owner of the label row renders it there; an editor
  * given no explicit mode still shows its own switch and keeps its own state.
  */
-export function MarkdownModeSegment({ label, mode, onModeChange, disabled = false }: {
+export function MarkdownModeSegment({ label, mode, onModeChange, disabled = false, names = ["Rich text", "Markdown"] }: {
   label: string
   mode: MarkdownMode
   onModeChange: (mode: MarkdownMode) => void
   disabled?: boolean
+  /** The names of the rich and the source mode. */
+  names?: readonly [string, string]
 }) {
   return <div role="group" aria-label={label} className="flex shrink-0 gap-0.5 rounded-[9px] bg-muted p-0.5">
-    {([["rich", "Rich text"], ["source", "Markdown"]] as const).map(([value, text]) => (
+    {([["rich", names[0]], ["source", names[1]]] as const).map(([value, text]) => (
       <button key={value} type="button" aria-pressed={mode === value} disabled={disabled}
         onClick={() => onModeChange(value)}
         className={`h-[22px] rounded-[7px] px-[9px] text-[11.5px] disabled:opacity-50 ${mode === value
