@@ -1,3 +1,35 @@
+## [0.74.0] - 2026-10-05
+
+### Added
+
+- The Store detail splits its sources into **Agent images** and **Workflow
+  images** tabs. The Workflow images tab lists each workflow source with its
+  `workflow_version`, compares it with the built `latest` tag on the host
+  (missing, update needed, up to date, or "Comparison unavailable"), and
+  **Build** publishes it through the workflow-image build endpoint using the
+  `STORE/NAME` selector.
+
+### Changed
+
+- The agent **Chat** tab is now the only place for an agent's messaging. Its
+  toolbar switches between **Chat**, **Channels** (subscriptions, channel tail,
+  watches and send) and **Queue** (Queue/Archive/DLQ, mark processed, reply,
+  requeue, Clear queue), kept in the URL as `?view=chat|channels|queue`.
+- **Advanced** opens on Prompt and no longer has Channels or Messages. Old
+  `advanced?view=channels` and `advanced?view=messages` links redirect to
+  `chat?view=channels` and `chat?view=queue`. **Autopilot** shows the
+  event-trigger count with a link to Chat → Channels instead of a second
+  subscription editor.
+
+### Fixed
+
+- A message counts as unread only when another participant of the chat sent
+  it. A `system:workflow` task assignment in an agent's Tasks chat no longer
+  keeps the sidebar badge and the Chat tab dot lit after every conversation
+  has been read.
+
+[0.74.0]: https://github.com/alekzonder/tariboy/compare/v0.73.0...v0.74.0
+
 ## [0.73.0] - 2026-10-05
 
 ### Added
