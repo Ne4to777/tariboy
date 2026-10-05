@@ -63,6 +63,16 @@ func taskOpenAPISchemas() map[string]map[string]any {
 			"state":     map[string]any{"type": "string", "enum": []string{"pending", "running", "finished", "interrupted", "cancelled"}},
 			"verdict":   map[string]any{"type": "string", "enum": []string{"pass", "reject", "outcome", "quiet", "failure"}},
 			"exit_code": integer, "holder": str, "message": str, "created_at": str, "started_at": str, "finished_at": str, "log_path": str}),
+		"SourceRun": objectSchema([]string{"id", "queue", "source", "script", "state", "tasks_created", "started_at"}, map[string]any{
+			"id": integer, "queue": str, "source": str, "script": str,
+			"state":     map[string]any{"type": "string", "enum": []string{"running", "finished", "interrupted", "cancelled"}},
+			"verdict":   map[string]any{"type": "string", "enum": []string{"items", "quiet", "failure"}},
+			"exit_code": integer, "message": str, "tasks_created": integer, "started_at": str, "finished_at": str, "log_path": str}),
+		"QueueSource": objectSchema([]string{"queue", "name", "script", "every", "failures"}, map[string]any{
+			"queue": str, "name": str, "script": str, "every": str, "timeout": str,
+			"next_run_at": map[string]any{"type": "string", "description": "When the source runs next; absent while it runs"},
+			"failures":    map[string]any{"type": "integer", "description": "Failed or interrupted runs since the last good one"},
+			"last_run":    schemaRef("SourceRun")}),
 		"QueueWorkflowTrigger": objectSchema([]string{"id", "queue", "pattern", "action", "enabled", "created_by", "created_at", "updated_at"}, map[string]any{"id": integer, "queue": str, "pattern": str, "correlation_key": str, "action": str, "enabled": boolean, "created_by": str, "created_at": str, "updated_at": str}),
 		"TaskEvent":            objectSchema([]string{"sequence", "event_id", "queue", "kind", "actor", "task_revision", "payload", "created_at"}, map[string]any{"sequence": integer, "event_id": str, "task_key": str, "queue": str, "kind": str, "actor": str, "task_revision": integer, "payload": free, "created_at": str}),
 	}

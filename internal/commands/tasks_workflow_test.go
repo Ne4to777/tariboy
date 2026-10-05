@@ -107,6 +107,15 @@ func (s *workflowStub) RemoveQueueSecret(_ context.Context, a tasks.Actor, queue
 	return s.err
 }
 
+func (s *workflowStub) ListQueueSources(_ context.Context, a tasks.Actor, queue string) ([]tasks.QueueSource, error) {
+	s.record(a, "queue_source_ls %s", queue)
+	return []tasks.QueueSource{{Queue: queue, Name: "pull-requests", Script: "./scripts/prs.sh", Every: "2m", Failures: 1}}, s.err
+}
+func (s *workflowStub) QueueSourceRunLog(_ context.Context, a tasks.Actor, queue string, id int64, maxBytes int) (string, bool, error) {
+	s.record(a, "queue_source_log %s %d max=%d", queue, id, maxBytes)
+	return "source log\n", false, s.err
+}
+
 func workflowServer(t *testing.T, stub *workflowStub) *httptest.Server {
 	t.Helper()
 	server := api.NewServer(BuildRegistry(), &registry.Ctx{
@@ -151,6 +160,10 @@ func TestWorkflowRoutesCallTheServiceAsTheCustomer(t *testing.T) {
 			`"cleared":true`},
 		{"queue secret ls", "GET", "/api/task-queues/DEV/secrets", nil, `queue_secret_ls DEV`,
 			`"secrets":[{"key":"GH_TOKEN","updated_at":"2026-10-02T00:00:00Z"}]`},
+		{"queue source ls", "GET", "/api/task-queues/DEV/sources", nil, `queue_source_ls DEV`,
+			`"sources":[{"queue":"DEV","name":"pull-requests"`},
+		{"queue source log", "GET", "/api/task-queues/DEV/source-runs/5/log?max_bytes=10", nil, `queue_source_log DEV 5 max=10`,
+			`"run_id":5,"text":"source log\n","truncated":false`},
 		{"queue secret rm", "DELETE", "/api/task-queues/DEV/secrets/GH_TOKEN", nil, `queue_secret_rm DEV GH_TOKEN`,
 			`"removed":true`},
 	}

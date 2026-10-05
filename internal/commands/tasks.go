@@ -311,6 +311,21 @@ func TaskOperatorCommands() []registry.Command {
 				items, err := control.ListQueueSecrets(ctx, actor, stringParam(p, "queue"))
 				return map[string]any{"secrets": items, "count": len(items)}, err
 			}),
+		taskRoute("tasks.queue.source.ls", "GET", "/api/task-queues/{queue}/sources", "List the workflow sources of a queue and their last runs",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				items, err := control.ListQueueSources(ctx, actor, stringParam(p, "queue"))
+				return map[string]any{"sources": items, "count": len(items)}, err
+			}),
+		taskRoute("tasks.queue.source.log", "GET", "/api/task-queues/{queue}/source-runs/{id}/log", "Read the tail of a workflow source run's log",
+			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
+				id := int64Param(p, "id")
+				maxBytes, err := tasks.ParseMaxBytes(p["max_bytes"])
+				if err != nil {
+					return nil, err
+				}
+				text, truncated, err := control.QueueSourceRunLog(ctx, actor, stringParam(p, "queue"), id, maxBytes)
+				return map[string]any{"run_id": id, "text": text, "truncated": truncated}, err
+			}),
 		taskRoute("tasks.queue.secret.rm", "DELETE", "/api/task-queues/{queue}/secrets/{key}", "Remove a queue secret",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				queue, key := stringParam(p, "queue"), stringParam(p, "key")
@@ -449,7 +464,7 @@ func taskHTTPArgs(path string) []registry.Arg {
 		return []registry.Arg{{Name: "outcome", Required: true, Help: "Outcome to declare"}, {Name: "message", Help: "Message recorded with the transition"}, {Name: "from", Help: "Status the caller believes the task is in; a different current status is refused with status_changed"}}
 	case "tasks.artifacts.set":
 		return []registry.Arg{{Name: "value", Help: "Artifact value, stored as given"}}
-	case "tasks.workflow.runs.log":
+	case "tasks.workflow.runs.log", "tasks.queue.source.log":
 		return []registry.Arg{{Name: "max_bytes", Type: registry.Int, Help: "Largest log tail to return in bytes (default 65536, maximum 1048576)"}}
 	case "tasks.workflow.move":
 		return []registry.Arg{{Name: "to", Required: true, Help: "Target status id"}, {Name: "reason", Required: true, Help: "Why the task is moved"}}
@@ -486,7 +501,9 @@ func taskHTTPResultSchema(path string) map[string]any {
 		return objectSchema([]string{"runs", "count"}, map[string]any{"runs": arrayOf("ScriptRun"), "count": map[string]any{"type": "integer"}})
 	case "tasks.workflow.runs.get":
 		return schemaRef("ScriptRun")
-	case "tasks.workflow.runs.log":
+	case "tasks.queue.source.ls":
+		return objectSchema([]string{"sources", "count"}, map[string]any{"sources": arrayOf("QueueSource"), "count": map[string]any{"type": "integer"}})
+	case "tasks.workflow.runs.log", "tasks.queue.source.log":
 		return objectSchema([]string{"run_id", "text", "truncated"}, map[string]any{"run_id": map[string]any{"type": "integer"}, "text": map[string]any{"type": "string"}, "truncated": map[string]any{"type": "boolean"}})
 	case "tasks.artifacts.set":
 		return schemaRef("Artifact")
