@@ -35,8 +35,9 @@ storage, means Simple. Simple changes only what the agent workspace shows: its
 tabs are <strong>Chat</strong>, <strong>Tasks</strong>, <strong>Console</strong>, and <strong>Configuration</strong>, an agent
 opens on Chat, and a route to a hidden tab (Autopilot, Activity, Advanced) is
 redirected to Chat. Its Chat tab is the personal conversation alone, with the toolbar
-starting at message search: there is no <strong>Chat</strong>/<strong>Channels</strong> switch, no chat
-tablist, and no <strong>New chat</strong>. The sidebar, the server row, and the agent
+starting at message search: there is no <strong>Chat</strong>/<strong>Channels</strong>/<strong>Queue</strong> switch,
+no chat tablist, and no <strong>New chat</strong>; a <code>?view=channels</code> or <code>?view=queue</code> link
+opens that personal chat. The sidebar, the server row, and the agent
 header — Start/Stop and Exec included — are the same in both modes. Expert is
 the complete workspace described below. The mode hides interface only; it is
 not an access control, and the API and CLI are unchanged.</p>
@@ -227,6 +228,15 @@ interval in whole minutes and one <strong>Auto</strong> checkbox per image, save
 and reported back from the daemon. An interval of <code>0</code> disables it. See
 <a href="/tariboy/docs/images#automatic-refresh-and-build">Images → Automatic refresh and build</a>
 for the daemon-side cycle.
+Image sources sit on the <strong>Agent images</strong> tab of the detail. Its <strong>Workflow
+images</strong> tab lists the Store’s workflow sources, each source <code>workflow_version</code>,
+and the version of that workflow’s built <code>latest</code> tag on the same host. It shows
+source errors (Build disabled), missing latest, update needed (highlighted), and
+up to date; when the workflow image list cannot be read it shows “Comparison
+unavailable” and keeps Build. <strong>Build</strong> sends the <code>STORE/NAME</code> selector to the
+workflow-image build endpoint, reports the published version and tags,
+dispatches <code>tariboy:workflow-image-built</code>, and reloads the detail and the
+comparison. Workflow sources have no automatic builds.
 Every request carries the explicit host target, including builds through the
 existing image-build endpoint. Requests for a previous route cannot replace the
 new Store view. Removal uses an in-app confirmation and preserves local sources
@@ -397,8 +407,10 @@ mentions, explicit questions, and answer-wait semantics remain daemon-owned.
 Beside <strong>Send comment</strong>, a secondary <strong>Send Ok</strong> action includes the selected
 Ask mention and posts <code>Ok</code> without changing the Ask selection. It is hidden
 as soon as the comment contains text.</p>
-<p>The agent <strong>Chat</strong> tab is the first tab, directly before <strong>Tasks</strong>, and owns
-both halves of an agent’s messaging in one section. <strong>Chat</strong> is its default
+<p>The agent <strong>Chat</strong> tab is the first tab, directly before <strong>Tasks</strong>, and is the
+one place for everything in an agent’s messaging: the conversation, the
+channels it is subscribed to, and its delivery queue. No other tab edits
+subscriptions or shows the queue. <strong>Chat</strong> is its default
 view: the conversation with that agent — the customer’s messages in its inbox
 merged with its messages in the customer’s channel — rendered as one thread.
 There is no separate conversation list: the sidebar’s selected agent is the
@@ -418,7 +430,8 @@ still a chip that opens the task panel, which is how a task is answered from
 its notification. Consecutive messages from one author are grouped under a
 single header, and a continuation row shows its own time in the avatar column
 on hover.</p>
-<p>The tab has one 48px toolbar: the <strong>Chat</strong>/<strong>Channels</strong> switch, the chat
+<p>The tab has one 48px toolbar: the <strong>Chat</strong>/<strong>Channels</strong>/<strong>Queue</strong> switch, kept
+in the URL as <code>?view=chat|channels|queue</code> (an unknown value opens Chat), the chat
 tablist, search over the loaded page, <code>you + &lt;agent&gt; · N messages</code> (the
 participants in a shared chat), the read action,
 transcript export, and a menu. The message-type filter lives in that menu; it
@@ -444,8 +457,10 @@ queue with the message as its description and the agent as its assignee.</p>
 customer’s participant row in each chat. One sidebar row stands for the whole
 agent, so the dot on the <strong>Chat</strong> tab and the badge on the sidebar row are the
 sum over that agent’s three chats and the row previews whichever of them moved
-last — an unread task notification cannot hide behind a quiet conversation. The
-toolbar’s own state is the open chat’s mark, and all of them survive a remount.
+last — an unread task notification cannot hide behind a quiet conversation. Only
+a participant’s message counts: a notice from a non-participant sender, such as
+a <code>system:workflow</code> task assignment in the <strong>Tasks</strong> chat, is shown in the feed
+but never counted or marked as unread. The toolbar’s own state is the open chat’s mark, and all of them survive a remount.
 Opening the chat still marks it read at the timestamp of the newest message
 actually shown, never at the current time. The feed carries the read mark the
 chat was opened at, and the unread rule — a <code>N new messages</code> pill — is drawn
@@ -468,8 +483,26 @@ publish is in flight, two quiet ticks once the daemon has stored it, and two
 primary ticks with <code>Read by &lt;agent&gt; · HH:MM</code> once the agent has spoken after
 it — shown once per run of own messages. A true receipt would need the agent
 side to record message consumption.</p>
-<p><strong>Channels</strong> is the same section’s second view and keeps the existing
-subscription list, channel tail, and channel send.</p>
+<p><strong>Channels</strong> is the same section’s second view, under the same 48px toolbar,
+which names the selected channel and its number of provider watches. On the
+left is the agent’s subscription list — its Autopilot event triggers: protected
+rows (its own inbox, <code>group:*</code>) are read-only, ad-hoc rows have
+<strong>Unsubscribe</strong>, and a combobox picks an existing channel or validates a typed
+one before <strong>Subscribe</strong>. On the right is the selected channel: its tail polled
+every 2s with time, source, type and text; a collapsible <strong>Watches</strong> block with
+each watch’s params and subscribers; and a send row with a message <code>type</code> and
+text. The server-wide <strong>Settings → Advanced → Channels</strong> screen keeps the
+browse-all-channels list in the same layout.</p>
+<p><strong>Queue</strong> is the third view: the agent’s delivery queue, not the conversation.
+Its toolbar carries the <strong>Queue</strong>/<strong>Archive</strong>/<strong>DLQ</strong> sub-views, the row count
+and, on Queue, <strong>Clear queue</strong>. Queue rows can be marked processed or replied
+to, DLQ rows requeued, Archive rows show their result, and any row expands its
+<code>subject</code> and <code>data</code>.</p>
+<p><strong>Advanced</strong> opens on Prompt and no longer holds Channels or Messages; a saved
+<code>advanced?view=channels</code> or <code>advanced?view=messages</code> link is replaced with
+<code>chat?view=channels</code> or <code>chat?view=queue</code>. <strong>Autopilot</strong> no longer edits
+subscriptions either: its card shows <code>Event triggers: N channels</code> (just
+<code>Event triggers</code> when the count cannot be loaded) and links to Chat → Channels.</p>
 <p>Live updates ride one <code>/api/messages/ws</code> socket per server. Its frames are
 refetch hints, never authority: a hint reloads the typed HTTP response, and a
 reconnect reloads unconditionally because the socket replays nothing. A frame
@@ -477,10 +510,9 @@ for a publication a chat owns names that chat — <code>{chat, agent, id, channe
 named; <code>chat</code> is absent for a channel no chat owns, and such a frame still
 falls back to the agent it concerns, which is what existing consumers read. The
 sidebar mounts one such socket per configured host, so the chat order changes as
-a message lands rather than on the next poll. <strong>Advanced → Messages</strong>
-(Queue/Archive/DLQ) is unchanged: it is the delivery queue, not the
-conversation.</p>
-<p>An agent’s <strong>Messages → Queue</strong> view can still mark one row processed. Its
+a message lands rather than on the next poll. <strong>Chat → Queue</strong>
+(Queue/Archive/DLQ) refreshes from the agent event stream with a 3s poll.</p>
+<p>An agent’s <strong>Chat → Queue</strong> view can still mark one row processed. Its
 <strong>Clear queue</strong> bulk action instead opens an in-app destructive confirmation:
 pending deliveries for the selected agent are physically deleted and cannot be
 recovered, while Archive, DLQ, shared messages, and other agents’ deliveries

@@ -372,7 +372,9 @@ ever moves a mark forward, so a late or duplicated request from a second window
 cannot resurrect messages already read. A mark is <code>chat_participants.read_ts</code>,
 one row per participant; the single pre-chats <code>chat_read_v1</code> value in
 <code>daemon_config</code> is carried into those rows by the migration. Only messages
-another participant sent can be unread — a participant’s own never count.</p>
+another participant sent can be unread — a participant’s own never count, and
+neither does a message from a sender that is not a participant of the chat,
+such as a <code>system:workflow</code> notice in an agent’s tasks chat.</p>
 <p>The <code>/api/messages/ws</code> frame is <code>{chat, agent, id, channel, type, from, ts}</code>
 and is a refetch hint, not the message: HTTP stays authoritative. <code>chat</code> names
 the chat that owns the channel, so a client refetches exactly one conversation,
@@ -397,7 +399,7 @@ old <code>user:&lt;$USER&gt;</code> channel over to it.</p>
 <span class="line"><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0">tariboy</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF"> agent</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF"> unsubscribe</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF">agen</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">t</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583">&gt;</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF">channe</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">l</span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583">&gt;</span></span></code></pre>
 <p><code>channel tail</code> reads messages on a channel. It does not show per-agent delivery
 state such as <code>acked_at</code>, <code>attempts</code>, or DLQ.</p>
-<p>In an agent’s Desktop <strong>Messages → Queue</strong> view, <strong>Clear queue</strong> physically
+<p>In an agent’s Desktop <strong>Chat → Queue</strong> view, <strong>Clear queue</strong> physically
 removes every pending delivery for that agent after explicit destructive
 confirmation. Archive, DLQ, shared messages, and other agents’ deliveries are
 unchanged; messages awaiting queue-trigger ingestion are also retained. The

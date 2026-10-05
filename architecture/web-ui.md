@@ -46,8 +46,9 @@ storage, means Simple. Simple changes only what the agent workspace shows: its
 tabs are **Chat**, **Tasks**, **Console**, and **Configuration**, an agent
 opens on Chat, and a route to a hidden tab (Autopilot, Activity, Advanced) is
 redirected to Chat. Its Chat tab is the personal conversation alone, with the toolbar
-starting at message search: there is no **Chat**/**Channels** switch, no chat
-tablist, and no **New chat**. The sidebar, the server row, and the agent
+starting at message search: there is no **Chat**/**Channels**/**Queue** switch,
+no chat tablist, and no **New chat**; a `?view=channels` or `?view=queue` link
+opens that personal chat. The sidebar, the server row, and the agent
 header — Start/Stop and Exec included — are the same in both modes. Expert is
 the complete workspace described below. The mode hides interface only; it is
 not an access control, and the API and CLI are unchanged.
@@ -256,6 +257,15 @@ interval in whole minutes and one **Auto** checkbox per image, saved together
 and reported back from the daemon. An interval of `0` disables it. See
 [Images → Automatic refresh and build](/docs/images#automatic-refresh-and-build)
 for the daemon-side cycle.
+Image sources sit on the **Agent images** tab of the detail. Its **Workflow
+images** tab lists the Store's workflow sources, each source `workflow_version`,
+and the version of that workflow's built `latest` tag on the same host. It shows
+source errors (Build disabled), missing latest, update needed (highlighted), and
+up to date; when the workflow image list cannot be read it shows "Comparison
+unavailable" and keeps Build. **Build** sends the `STORE/NAME` selector to the
+workflow-image build endpoint, reports the published version and tags,
+dispatches `tariboy:workflow-image-built`, and reloads the detail and the
+comparison. Workflow sources have no automatic builds.
 Every request carries the explicit host target, including builds through the
 existing image-build endpoint. Requests for a previous route cannot replace the
 new Store view. Removal uses an in-app confirmation and preserves local sources
@@ -439,8 +449,10 @@ Beside **Send comment**, a secondary **Send Ok** action includes the selected
 Ask mention and posts `Ok` without changing the Ask selection. It is hidden
 as soon as the comment contains text.
 
-The agent **Chat** tab is the first tab, directly before **Tasks**, and owns
-both halves of an agent's messaging in one section. **Chat** is its default
+The agent **Chat** tab is the first tab, directly before **Tasks**, and is the
+one place for everything in an agent's messaging: the conversation, the
+channels it is subscribed to, and its delivery queue. No other tab edits
+subscriptions or shows the queue. **Chat** is its default
 view: the conversation with that agent — the customer's messages in its inbox
 merged with its messages in the customer's channel — rendered as one thread.
 There is no separate conversation list: the sidebar's selected agent is the
@@ -461,7 +473,8 @@ its notification. Consecutive messages from one author are grouped under a
 single header, and a continuation row shows its own time in the avatar column
 on hover.
 
-The tab has one 48px toolbar: the **Chat**/**Channels** switch, the chat
+The tab has one 48px toolbar: the **Chat**/**Channels**/**Queue** switch, kept
+in the URL as `?view=chat|channels|queue` (an unknown value opens Chat), the chat
 tablist, search over the loaded page, `you + <agent> · N messages` (the
 participants in a shared chat), the read action,
 transcript export, and a menu. The message-type filter lives in that menu; it
@@ -489,8 +502,10 @@ Unread belongs to the conversation, not to the tab. It is the read mark of the
 customer's participant row in each chat. One sidebar row stands for the whole
 agent, so the dot on the **Chat** tab and the badge on the sidebar row are the
 sum over that agent's three chats and the row previews whichever of them moved
-last — an unread task notification cannot hide behind a quiet conversation. The
-toolbar's own state is the open chat's mark, and all of them survive a remount.
+last — an unread task notification cannot hide behind a quiet conversation. Only
+a participant's message counts: a notice from a non-participant sender, such as
+a `system:workflow` task assignment in the **Tasks** chat, is shown in the feed
+but never counted or marked as unread. The toolbar's own state is the open chat's mark, and all of them survive a remount.
 Opening the chat still marks it read at the timestamp of the newest message
 actually shown, never at the current time. The feed carries the read mark the
 chat was opened at, and the unread rule — a `N new messages` pill — is drawn
@@ -515,8 +530,28 @@ primary ticks with `Read by <agent> · HH:MM` once the agent has spoken after
 it — shown once per run of own messages. A true receipt would need the agent
 side to record message consumption.
 
-**Channels** is the same section's second view and keeps the existing
-subscription list, channel tail, and channel send.
+**Channels** is the same section's second view, under the same 48px toolbar,
+which names the selected channel and its number of provider watches. On the
+left is the agent's subscription list — its Autopilot event triggers: protected
+rows (its own inbox, `group:*`) are read-only, ad-hoc rows have
+**Unsubscribe**, and a combobox picks an existing channel or validates a typed
+one before **Subscribe**. On the right is the selected channel: its tail polled
+every 2s with time, source, type and text; a collapsible **Watches** block with
+each watch's params and subscribers; and a send row with a message `type` and
+text. The server-wide **Settings → Advanced → Channels** screen keeps the
+browse-all-channels list in the same layout.
+
+**Queue** is the third view: the agent's delivery queue, not the conversation.
+Its toolbar carries the **Queue**/**Archive**/**DLQ** sub-views, the row count
+and, on Queue, **Clear queue**. Queue rows can be marked processed or replied
+to, DLQ rows requeued, Archive rows show their result, and any row expands its
+`subject` and `data`.
+
+**Advanced** opens on Prompt and no longer holds Channels or Messages; a saved
+`advanced?view=channels` or `advanced?view=messages` link is replaced with
+`chat?view=channels` or `chat?view=queue`. **Autopilot** no longer edits
+subscriptions either: its card shows `Event triggers: N channels` (just
+`Event triggers` when the count cannot be loaded) and links to Chat → Channels.
 
 Live updates ride one `/api/messages/ws` socket per server. Its frames are
 refetch hints, never authority: a hint reloads the typed HTTP response, and a
@@ -526,11 +561,10 @@ type, from, ts}` — so an open conversation refetches only when its own chat is
 named; `chat` is absent for a channel no chat owns, and such a frame still
 falls back to the agent it concerns, which is what existing consumers read. The
 sidebar mounts one such socket per configured host, so the chat order changes as
-a message lands rather than on the next poll. **Advanced → Messages**
-(Queue/Archive/DLQ) is unchanged: it is the delivery queue, not the
-conversation.
+a message lands rather than on the next poll. **Chat → Queue**
+(Queue/Archive/DLQ) refreshes from the agent event stream with a 3s poll.
 
-An agent's **Messages → Queue** view can still mark one row processed. Its
+An agent's **Chat → Queue** view can still mark one row processed. Its
 **Clear queue** bulk action instead opens an in-app destructive confirmation:
 pending deliveries for the selected agent are physically deleted and cannot be
 recovered, while Archive, DLQ, shared messages, and other agents' deliveries

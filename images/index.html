@@ -116,7 +116,8 @@ Stores are the source of canonical agent images and skills; the daemon no
 longer installs a separate built-in Store tree.</p>
 <p>A Store may also hold workflow sources at
 <code>workflows/&lt;workflow_name&gt;/Workflowfile.yaml</code>. Store detail lists them beside
-images, and <code>tariboy workflow build STORE/NAME</code> builds one. The official Store
+images, and <code>tariboy workflow build STORE/NAME</code> builds one; the Web UI Store
+detail lists them on its <strong>Workflow images</strong> tab with a <strong>Build</strong> button. The official Store
 provides two: <code>development</code>, the pull request flow (<code>plan</code>, <code>approval</code>,
 <code>implement</code>, <code>review</code>, <code>complete</code>, <code>done</code>; it needs the <code>GH_TOKEN</code> queue secret
 and a <code>developers</code> pool), and <code>research</code>, one pool status for a <code>researchers</code>
