@@ -168,3 +168,30 @@ func TestChatListLeavesAnEmptyChatWithoutASender(t *testing.T) {
 	}
 	t.Fatalf("tasks chat missing from %#v", list)
 }
+
+// Only a participant of the chat can leave the customer something unread. A
+// workflow notice in the tasks chat is addressed to the agent, so it must not
+// light the sidebar badge; the agent own word in that chat still does.
+func TestChatListCountsOnlyParticipantsAsUnread(t *testing.T) {
+	b, _ := chatFixture(t)
+	tasks, err := b.GetChat(ChatIDTasks("worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish(t, b, Message{Channel: tasks.Channel, Source: "system:workflow", Type: "task.assigned", Text: "Task assigned: DEV-1"})
+	publish(t, b, Message{Channel: tasks.Channel, Source: "agent:worker", Type: "message", Text: "on it"})
+
+	list, err := b.ChatList("user:customer", DefaultChatTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range list {
+		if row.ID == tasks.ID {
+			if row.Unread != 1 {
+				t.Fatalf("only the agent message counts as unread, got %d", row.Unread)
+			}
+			return
+		}
+	}
+	t.Fatalf("tasks chat missing from %#v", list)
+}

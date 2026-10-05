@@ -489,8 +489,10 @@ Unread belongs to the conversation, not to the tab. It is the read mark of the
 customer's participant row in each chat. One sidebar row stands for the whole
 agent, so the dot on the **Chat** tab and the badge on the sidebar row are the
 sum over that agent's three chats and the row previews whichever of them moved
-last — an unread task notification cannot hide behind a quiet conversation. The
-toolbar's own state is the open chat's mark, and all of them survive a remount.
+last — an unread task notification cannot hide behind a quiet conversation. Only
+a participant's message counts: a notice from a non-participant sender, such as
+a `system:workflow` task assignment in the **Tasks** chat, is shown in the feed
+but never counted or marked as unread. The toolbar's own state is the open chat's mark, and all of them survive a remount.
 Opening the chat still marks it read at the timestamp of the newest message
 actually shown, never at the current time. The feed carries the read mark the
 chat was opened at, and the unread rule — a `N new messages` pill — is drawn

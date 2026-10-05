@@ -149,7 +149,9 @@ func (b *Bus) ChatList(principal string, types []string) ([]ChatSummary, error) 
 }
 
 // chatChannelSummary aggregates one chat own channel: its last message and how
-// many messages from other participants arrived after the read mark.
+// many messages from other participants arrived after the read mark. A sender
+// that is not a participant, such as a system:* notice addressed to the agent,
+// is shown in the feed but never counts as unread.
 func (b *Bus) chatChannelSummary(chat Chat, principal, readTS string, types []string) (ChatSummary, error) {
 	filter, filterArgs := typeFilterSQL(types)
 	var summary ChatSummary
@@ -158,9 +160,10 @@ func (b *Bus) chatChannelSummary(chat Chat, principal, readTS string, types []st
 	// maximum" behaviour, so the last message comes back in one pass.
 	err := b.db.QueryRow(`
 		SELECT max(ts), type, text, sender,
-		       COALESCE(sum(CASE WHEN sender <> ? AND ts > ? THEN 1 ELSE 0 END), 0)
+		       COALESCE(sum(CASE WHEN sender <> ? AND ts > ? AND sender IN (
+		           SELECT principal FROM chat_participants WHERE chat_id = ?) THEN 1 ELSE 0 END), 0)
 		FROM messages WHERE channel = ? AND `+filter,
-		append([]any{principal, readTS, chat.Channel}, filterArgs...)...,
+		append([]any{principal, readTS, chat.ID, chat.Channel}, filterArgs...)...,
 	).Scan(&lastTS, &lastType, &lastText, &lastFrom, &summary.Unread)
 	if err != nil {
 		return ChatSummary{}, err

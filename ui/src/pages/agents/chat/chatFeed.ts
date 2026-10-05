@@ -80,13 +80,24 @@ export function shortTime(iso: string): string {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 }
 
+/** Whether a message can be unread: another participant of the chat wrote it
+ *  after the mark. A system notice addressed to the agent is not from a
+ *  participant, so it never is. */
+function isUnread(
+  message: ChatMessage, customer: string, readTS: string, participants: readonly string[],
+): boolean {
+  return message.from !== customer && message.ts > readTS && participants.includes(message.from);
+}
+
 /** How many of the agent's messages are newer than the mark.
  *
  *  An empty mark means the customer has read nothing here, so every message the
  *  agent sent is new. That is the same rule the daemon counts by, which is what
  *  keeps this number equal to the sidebar's. */
-export function unreadCount(messages: ChatMessage[], customer: string, readTS: string): number {
-  return messages.filter((message) => message.from !== customer && message.ts > readTS).length;
+export function unreadCount(
+  messages: ChatMessage[], customer: string, readTS: string, participants: readonly string[],
+): number {
+  return messages.filter((message) => isUnread(message, customer, readTS, participants)).length;
 }
 
 /**
@@ -103,11 +114,12 @@ export function buildFeed(
   messages: ChatMessage[],
   customer: string,
   readTS: string,
+  participants: readonly string[],
   now: Date = new Date(),
 ): FeedItem[] {
   const items: FeedItem[] = [];
   const firstUnread = messages.findIndex(
-    (message) => message.from !== customer && message.ts > readTS,
+    (message) => isUnread(message, customer, readTS, participants),
   );
   let day = "";
   let previousAuthor = "";

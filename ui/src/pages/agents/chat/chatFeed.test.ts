@@ -3,6 +3,7 @@ import { buildFeed, taskKeysOf, unreadCount, type FeedItem } from "./chatFeed";
 import type { ChatMessage } from "@/lib/api";
 
 const CUSTOMER = "user:customer";
+const PARTICIPANTS = [CUSTOMER, "agent:worker"];
 // A fixed "now" so day labels are asserted against a known today.
 const NOW = new Date("2026-09-15T18:00:00Z");
 
@@ -21,14 +22,23 @@ describe("buildFeed", () => {
       message("b", CUSTOMER, "2026-09-15T10:01:00Z"),
       message("c", "agent:worker", "2026-09-15T10:02:00Z"),
       message("d", "agent:worker", "2026-09-15T10:03:00Z"),
-    ], CUSTOMER, "2026-09-15T10:01:00Z", NOW);
+    ], CUSTOMER, "2026-09-15T10:01:00Z", PARTICIPANTS, NOW);
     expect(kinds(feed)).toEqual(["day", "message", "message", "unread", "message", "message"]);
     expect(labels(feed)).toEqual(["Today", "2 new messages"]);
   });
 
   it("treats a chat that has never been read as entirely new, the way the daemon counts it", () => {
-    const feed = buildFeed([message("a", "agent:worker", "2026-09-15T10:00:00Z")], CUSTOMER, "", NOW);
+    const feed = buildFeed([message("a", "agent:worker", "2026-09-15T10:00:00Z")], CUSTOMER, "", PARTICIPANTS, NOW);
     expect(kinds(feed)).toEqual(["day", "unread", "message"]);
+    expect(labels(feed)).toEqual(["Today", "1 new message"]);
+  });
+
+  it("draws the unread rule above the first participant message, past a system notice", () => {
+    const feed = buildFeed([
+      message("a", "system:workflow", "2026-09-15T10:00:00Z"),
+      message("b", "agent:worker", "2026-09-15T10:01:00Z"),
+    ], CUSTOMER, "", PARTICIPANTS, NOW);
+    expect(kinds(feed)).toEqual(["day", "message", "unread", "message"]);
     expect(labels(feed)).toEqual(["Today", "1 new message"]);
   });
 
@@ -36,7 +46,7 @@ describe("buildFeed", () => {
     const feed = buildFeed([
       message("a", "agent:worker", "2026-09-15T10:00:00Z"),
       message("b", CUSTOMER, "2026-09-15T10:05:00Z"),
-    ], CUSTOMER, "2026-09-15T10:00:00Z", NOW);
+    ], CUSTOMER, "2026-09-15T10:00:00Z", PARTICIPANTS, NOW);
     expect(kinds(feed)).toEqual(["day", "message", "message"]);
   });
 
@@ -45,7 +55,7 @@ describe("buildFeed", () => {
       message("a", "agent:worker", "2026-09-14T10:00:00Z"),
       message("b", "agent:worker", "2026-09-14T10:01:00Z"),
       message("c", "agent:worker", "2026-09-15T09:00:00Z"),
-    ], CUSTOMER, "2026-09-15T23:00:00Z", NOW);
+    ], CUSTOMER, "2026-09-15T23:00:00Z", PARTICIPANTS, NOW);
     expect(labels(feed)).toEqual(["Yesterday", "Today"]);
     expect(feed.filter((item) => item.kind === "message").map((item) => item.head))
       .toEqual([true, false, true]);
@@ -57,7 +67,7 @@ describe("buildFeed", () => {
       message("b", CUSTOMER, "2026-09-15T10:01:00Z"),
       message("c", "agent:worker", "2026-09-15T10:30:00Z"),
       message("d", CUSTOMER, "2026-09-15T11:00:00Z"),
-    ], CUSTOMER, "2026-09-15T23:00:00Z", NOW);
+    ], CUSTOMER, "2026-09-15T23:00:00Z", PARTICIPANTS, NOW);
     const own = feed.filter((item) => item.kind === "message" && item.mine);
     expect(own.map((item) => item.kind === "message" && item.receipt))
       .toEqual(["read", "read", "delivered"]);
@@ -73,8 +83,16 @@ describe("unreadCount", () => {
       message("b", CUSTOMER, "2026-09-15T10:05:00Z"),
       message("c", "agent:worker", "2026-09-15T10:06:00Z"),
     ];
-    expect(unreadCount(messages, CUSTOMER, "2026-09-15T10:00:00Z")).toBe(1);
-    expect(unreadCount(messages, CUSTOMER, "2026-09-15T10:06:00Z")).toBe(0);
+    expect(unreadCount(messages, CUSTOMER, "2026-09-15T10:00:00Z", PARTICIPANTS)).toBe(1);
+    expect(unreadCount(messages, CUSTOMER, "2026-09-15T10:06:00Z", PARTICIPANTS)).toBe(0);
+  });
+
+  it("ignores a notice from a sender that is not a participant, as the daemon does", () => {
+    const messages = [
+      message("a", "system:workflow", "2026-09-15T10:01:00Z"),
+      message("b", "agent:worker", "2026-09-15T10:02:00Z"),
+    ];
+    expect(unreadCount(messages, CUSTOMER, "", PARTICIPANTS)).toBe(1);
   });
 });
 

@@ -432,7 +432,9 @@ ever moves a mark forward, so a late or duplicated request from a second window
 cannot resurrect messages already read. A mark is `chat_participants.read_ts`,
 one row per participant; the single pre-chats `chat_read_v1` value in
 `daemon_config` is carried into those rows by the migration. Only messages
-another participant sent can be unread — a participant's own never count.
+another participant sent can be unread — a participant's own never count, and
+neither does a message from a sender that is not a participant of the chat,
+such as a `system:workflow` notice in an agent's tasks chat.
 
 The `/api/messages/ws` frame is `{chat, agent, id, channel, type, from, ts}`
 and is a refetch hint, not the message: HTTP stays authoritative. `chat` names

@@ -106,6 +106,11 @@ export default function AgentChat({ hostId = "", leading, personalOnly = false }
   // the service one.
   const writable = selected === "dm" || !isKind(selected);
   const current = shared.find((chat) => chat.id === selected);
+  // Only a participant's message can be unread, the rule the daemon counts by.
+  const participants = useMemo(
+    () => (isKind(selected) ? [customer, `agent:${name}`] : current?.participants ?? []),
+    [selected, customer, name, current],
+  );
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -175,15 +180,16 @@ export default function AgentChat({ hostId = "", leading, personalOnly = false }
       pending ? [...messages, pending] : messages,
       customer,
       anchor ?? "",
+      participants,
     ),
-    [messages, pending, customer, anchor],
+    [messages, pending, customer, anchor, participants],
   );
   const shown = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return feed;
     return feed.filter((item) => item.kind !== "message" || item.message.text.toLowerCase().includes(needle));
   }, [feed, query]);
-  const newCount = anchor === null ? 0 : unreadCount(messages, customer, anchor);
+  const newCount = anchor === null ? 0 : unreadCount(messages, customer, anchor, participants);
   const openQuestion = messages.at(-1)?.type === QUESTION_TYPE
     && messages.at(-1)?.from !== customer;
 
