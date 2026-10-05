@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AgentNameContext, AgentStatusContext } from "@/lib/agent";
 import type { AgentStatus } from "@/lib/types";
 import AgentAutopilotTab from "./AgentAutopilotTab";
@@ -12,9 +13,6 @@ vi.mock("@/components/LoopControls", () => ({
 }));
 vi.mock("@/components/IterationTimeoutControl", () => ({
   IterationTimeoutControl: () => <div data-testid="iteration-timeout" />,
-}));
-vi.mock("@/components/AgentSubscriptions", () => ({
-  AgentSubscriptions: () => <div data-testid="agent-subscriptions" />,
 }));
 
 afterEach(() => vi.restoreAllMocks());
@@ -41,16 +39,22 @@ function response(result: unknown, ok = true, status = 200) {
   } as Response);
 }
 
-// AgentAutopilotTab fires apiGet("/api/budgets/status") in a mount effect; stub
-// it so the render is not waiting on a real request.
-function renderAutopilot(status: AgentStatus) {
-  vi.stubGlobal("fetch", vi.fn(() => response({ budgets: [] })));
+// AgentAutopilotTab fires apiGet("/api/budgets/status") and the subscription
+// count in mount effects; stub both so the render is not waiting on a real
+// request.
+function renderAutopilot(status: AgentStatus, subscriptions: Promise<Response> = response({ channels: [] })) {
+  vi.stubGlobal("fetch", vi.fn((path: string) =>
+    path === "/api/agents/worker/subscriptions" ? subscriptions : response({ budgets: [] })));
   return render(
-    <AgentNameContext.Provider value="worker">
-      <AgentStatusContext.Provider value={{ status, refresh: async () => {} }}>
-        <AgentAutopilotTab />
-      </AgentStatusContext.Provider>
-    </AgentNameContext.Provider>,
+    <MemoryRouter initialEntries={["/agents/local/worker/autopilot"]}>
+      <AgentNameContext.Provider value="worker">
+        <AgentStatusContext.Provider value={{ status, refresh: async () => {} }}>
+          <Routes>
+            <Route path="/agents/:hostId/:agent/:tab/*" element={<AgentAutopilotTab />} />
+          </Routes>
+        </AgentStatusContext.Provider>
+      </AgentNameContext.Provider>
+    </MemoryRouter>,
   );
 }
 
@@ -100,4 +104,24 @@ it("shows an informational AI stall reason without reporting a halt", async () =
     await screen.findByText("agent stalled - no AI-proxy requests for 300 seconds"),
   ).toHaveClass("text-destructive");
   expect(screen.queryByTestId("halt-reason")).not.toBeInTheDocument();
+});
+
+it("counts the event triggers and links to Chat → Channels instead of editing them", async () => {
+  renderAutopilot(stopped, response({ channels: [
+    { name: "agent:worker", kind: "agent", protected: true },
+    { name: "chat:release", kind: "chat", protected: false },
+  ] }));
+
+  expect(await screen.findByText("Event triggers: 2 channels")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Manage in Chat → Channels" }))
+    .toHaveAttribute("href", "/agents/local/worker/chat?view=channels");
+  expect(screen.queryByRole("button", { name: "Subscribe" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+});
+
+it("keeps the event-trigger link when the count cannot be loaded", async () => {
+  renderAutopilot(stopped, response("boom", false, 500));
+
+  expect(await screen.findByRole("link", { name: "Manage in Chat → Channels" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("Event triggers")).toBeInTheDocument());
 });

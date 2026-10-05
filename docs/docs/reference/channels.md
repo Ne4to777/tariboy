@@ -468,7 +468,7 @@ tariboy agent unsubscribe <agent> <channel>
 `channel tail` reads messages on a channel. It does not show per-agent delivery
 state such as `acked_at`, `attempts`, or DLQ.
 
-In an agent's Desktop **Messages → Queue** view, **Clear queue** physically
+In an agent's Desktop **Chat → Queue** view, **Clear queue** physically
 removes every pending delivery for that agent after explicit destructive
 confirmation. Archive, DLQ, shared messages, and other agents' deliveries are
 unchanged; messages awaiting queue-trigger ingestion are also retained. The

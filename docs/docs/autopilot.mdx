@@ -70,5 +70,9 @@ allow agents and plugins to wake work without polling. Begin with one explicit
 subscription and one observable publisher, then add fan-out and groups after
 the single-agent delivery lifecycle is understood.
 
+In Desktop an agent's event triggers are managed in **Chat → Channels**; the
+Autopilot card shows how many there are and links there. The delivery queue,
+with its Archive and DLQ, is **Chat → Queue**.
+
 See [Messaging architecture](/docs/architecture/messaging) and [Channel
 reference](/docs/reference/channels) for the complete contract.

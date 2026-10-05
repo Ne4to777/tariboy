@@ -1,14 +1,17 @@
 import { useSearchParams } from "react-router-dom";
 import ChannelsPage from "@/pages/ChannelsPage";
+import AgentMessages from "@/pages/AgentMessages";
 import AgentChat from "./chat/AgentChat";
 import { useUiMode } from "@/lib/uiMode";
 
-// One section for both halves of an agent's messaging: the conversation the
-// customer holds with it, and the raw channels it is subscribed to. They share
-// a section because they are the same bus read two ways.
+// The one section for everything an agent's messaging holds: the conversation
+// the customer has with it, the channels it is subscribed to (its event
+// triggers), and its delivery queue. They share a section because they are the
+// same bus read three ways; Autopilot and Advanced link here instead.
 const VIEWS = [
   ["chat", "Chat"],
   ["channels", "Channels"],
+  ["queue", "Queue"],
 ] as const;
 type View = typeof VIEWS[number][0];
 
@@ -26,7 +29,7 @@ export default function AgentChatTab({ hostId = "" }: { hostId?: string }) {
     next.set("view", key);
     setParams(next, { replace: true });
   };
-  /* The switch is rendered into the chat's own toolbar rather than above it,
+  /* The switch is rendered into each view's own toolbar rather than above it,
      so the section keeps one 48px control row instead of stacking two. */
   const segment = (
     <div role="group" aria-label="Messaging view" className="flex shrink-0 gap-0.5 rounded-[9px] bg-muted p-0.5">
@@ -48,12 +51,6 @@ export default function AgentChatTab({ hostId = "" }: { hostId?: string }) {
   // Simple is the personal chat alone: no Channels, no other chats.
   if (simple) return <AgentChat hostId={hostId} personalOnly />;
   if (view === "chat") return <AgentChat hostId={hostId} leading={segment} />;
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex h-12 shrink-0 items-center pl-4">{segment}</div>
-      <div className="min-h-0 flex-1">
-        <ChannelsPage />
-      </div>
-    </div>
-  );
+  if (view === "queue") return <AgentMessages leading={segment} />;
+  return <ChannelsPage leading={segment} />;
 }

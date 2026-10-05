@@ -79,6 +79,11 @@ export function AgentSubscriptions(
   return (
     <div className="w-2/5 min-w-[12rem] shrink-0 overflow-auto">
       <div className="p-2 text-xs font-medium text-muted-foreground">SUBSCRIPTIONS</div>
+      {/* These are the agent's event triggers: Autopilot links here rather
+          than keeping a second editor. */}
+      <p className="px-2 pb-2 text-[11.5px] leading-[1.45] text-muted-foreground">
+        Every message on these channels wakes this agent in Autopilot.
+      </p>
       {subs.map((s) => (
         // The channel name is a native <button>, so keyboard users can activate
         // it (Enter/Space select the row → populate the right pane) with no

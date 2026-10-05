@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AgentSubscriptions } from "@/components/AgentSubscriptions";
+import { Link } from "react-router-dom";
 import { IterationTimeoutControl } from "@/components/IterationTimeoutControl";
 import { LoopToggle } from "@/components/LoopControls";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +19,14 @@ export default function AgentAutopilotTab() {
   const name = useAgentName();
   const { status, refresh } = useAgentStatus();
   const [budgets, setBudgets] = useState<BudgetStatus[]>([]);
+  // Event triggers are the agent's subscriptions, edited only in Chat →
+  // Channels; Autopilot shows their count. null leaves the count out.
+  const [triggers, setTriggers] = useState<number | null>(null);
+  useEffect(() => {
+    void apiGet<{ channels: unknown[] }>(`/api/agents/${encodeURIComponent(name)}/subscriptions`)
+      .then((result) => setTriggers(result.channels.length))
+      .catch(() => setTriggers(null));
+  }, [name]);
   useEffect(() => {
     void apiGet<{ budgets: BudgetStatus[] }>("/api/budgets/status")
       .then((result) => setBudgets(result.budgets.filter(
@@ -27,7 +35,7 @@ export default function AgentAutopilotTab() {
       .catch(() => setBudgets([]));
   }, [name]);
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
+    <div className="grid max-w-3xl gap-4">
       <Card>
         <CardHeader>
           <CardTitle>Autopilot</CardTitle>
@@ -59,6 +67,18 @@ export default function AgentAutopilotTab() {
             />
           </div>
           <IterationTimeoutControl name={name} status={status} refresh={refresh} />
+          <div className="flex items-center gap-2 rounded-md border p-3 text-sm">
+            <span className="font-medium">
+              {triggers === null ? "Event triggers" : `Event triggers: ${triggers} channel${triggers === 1 ? "" : "s"}`}
+            </span>
+            <Link
+              to={{ pathname: "../chat", search: "?view=channels" }}
+              relative="path"
+              className="ml-auto text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Manage in Chat → Channels
+            </Link>
+          </div>
           <div className="space-y-2 rounded-md border p-3 text-sm">
             <div className="font-medium">Budget status</div>
             {budgets.map((budget) => (
@@ -74,15 +94,6 @@ export default function AgentAutopilotTab() {
               <p className="text-muted-foreground">No global or agent-specific budget is configured.</p>
             )}
           </div>
-        </CardContent>
-      </Card>
-      <Card className="min-h-0">
-        <CardHeader>
-          <CardTitle>Event triggers</CardTitle>
-          <CardDescription>Channels and messages that can wake this agent.</CardDescription>
-        </CardHeader>
-        <CardContent className="min-h-[20rem]">
-          <AgentSubscriptions name={name} />
         </CardContent>
       </Card>
     </div>

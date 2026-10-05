@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useAgentName } from "@/lib/agent";
 import {
@@ -15,7 +15,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +27,7 @@ import { fmtDateTime } from "@/lib/time";
 
 // The three sub-views map onto the P5 inbox status filter. Queue is the default.
 type View = "queue" | "archive" | "dlq";
+const VIEWS: [View, string][] = [["queue", "Queue"], ["archive", "Archive"], ["dlq", "DLQ"]];
 const VIEW_STATUS: Record<View, InboxStatus> = {
   queue: "pending",
   archive: "processed",
@@ -65,7 +65,7 @@ function MessageRow({
   const kind = item.kind && item.kind !== "event" ? item.kind : "";
   const hasDetails = !!item.subject || !!item.data;
   return (
-    <div className="border-b py-2 last:border-0">
+    <div className="border-b px-4 py-2 last:border-0">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -118,11 +118,13 @@ function MessageRow({
   );
 }
 
-// Per-agent Messages tab: Queue | Archive | DLQ sub-views over the P5 inbox
-// endpoints. All lists are newest-first (the backend orders them). Operator
-// actions (mark-processed, reply, requeue) mutate then reload the active view;
-// live refresh rides the SSE `message` stream with a poll fallback.
-export default function AgentMessages() {
+// Per-agent delivery queue (Chat → Queue): Queue | Archive | DLQ sub-views over
+// the P5 inbox endpoints. `leading` is the caller's view switch, rendered at the
+// start of the same 48px toolbar as the sub-views. All lists are newest-first
+// (the backend orders them). Operator actions (mark-processed, reply, requeue)
+// mutate then reload the active view; live refresh rides the SSE `message`
+// stream with a poll fallback.
+export default function AgentMessages({ leading }: { leading?: ReactNode } = {}) {
   const name = useAgentName();
   const [view, setView] = useState<View>("queue");
   const [page, setPage] = useState<{ view: View; items: InboxItem[] }>({ view: "queue", items: [] });
@@ -211,42 +213,51 @@ export default function AgentMessages() {
   }[view];
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <Tabs value={view} onValueChange={(v) => setView(v as View)}>
-        <div className="flex items-center justify-between gap-2">
-          <TabsList>
-            <TabsTrigger value="queue">Queue</TabsTrigger>
-            <TabsTrigger value="archive">Archive</TabsTrigger>
-            <TabsTrigger value="dlq">DLQ</TabsTrigger>
-          </TabsList>
-          {view === "queue" && items.length > 0 && (
-            <Button size="sm" variant="outline" onClick={openBulkDialog} disabled={busy}>
-              Clear queue
-            </Button>
-          )}
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-12 shrink-0 items-center gap-2 pr-3 pl-4">
+        {leading}
+        <div role="tablist" aria-label="Queue view" className="flex shrink-0 gap-0.5 rounded-[9px] bg-muted p-0.5">
+          {VIEWS.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={view === key}
+              onClick={() => setView(key)}
+              className={`h-[22px] rounded-[7px] px-[9px] text-[11.5px] ${view === key
+                ? "bg-card font-medium text-foreground shadow-[var(--raise)]"
+                : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        {(["queue", "archive", "dlq"] as View[]).map((v) => (
-          <TabsContent key={v} value={v}>
-            <div className="rounded border bg-muted/20 p-2">
-              {items.length === 0 && (
-                <p className="p-2 text-sm text-muted-foreground">{empty}</p>
-              )}
-              {items.map((it) => (
-                <MessageRow
-                  key={it.id}
-                  item={it}
-                  view={v}
-                  expanded={expanded.has(it.id)}
-                  onToggle={() => toggle(it.id)}
-                  onProcess={() => openDialog("processed", it)}
-                  onReply={() => openDialog("reply", it)}
-                  onRequeue={() => void requeue(it)}
-                />
-              ))}
-            </div>
-          </TabsContent>
+        <span className="text-[11.5px] text-muted-foreground">
+          {items.length} message{items.length === 1 ? "" : "s"}
+        </span>
+        {view === "queue" && items.length > 0 && (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={openBulkDialog} disabled={busy}>
+            Clear queue
+          </Button>
+        )}
+      </div>
+      <div role="tabpanel" className="min-h-0 flex-1 overflow-auto border-t">
+        {items.length === 0 && (
+          <p className="px-4 py-3 text-sm text-muted-foreground">{empty}</p>
+        )}
+        {items.map((it) => (
+          <MessageRow
+            key={it.id}
+            item={it}
+            view={view}
+            expanded={expanded.has(it.id)}
+            onToggle={() => toggle(it.id)}
+            onProcess={() => openDialog("processed", it)}
+            onReply={() => openDialog("reply", it)}
+            onRequeue={() => void requeue(it)}
+          />
         ))}
-      </Tabs>
+      </div>
 
       <Dialog open={dialog !== null} onOpenChange={(o) => { if (!o && !busy) setDialog(null); }}>
         <DialogContent>

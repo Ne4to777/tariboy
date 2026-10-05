@@ -1,12 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { AgentSubscriptions } from "@/components/AgentSubscriptions";
 import { useAgentName } from "@/lib/agent";
@@ -17,7 +15,7 @@ interface Msg { id: string; ts: string; type: string; source: string; text: stri
 // its params, and the agents subscribed under it. Read-only view.
 interface Watch { watch: string; params?: Record<string, unknown> | null; subscribers?: string[] }
 
-export default function ChannelsPage() {
+export default function ChannelsPage({ leading }: { leading?: ReactNode } = {}) {
   // Under /agent/:name/channels the left column is the agent's manageable
   // subscriptions (AgentSubscriptions); the global mount (no :name) keeps the
   // browse-all-channels + tail/send panel. messenger chat-routes (bind/create) live
@@ -66,8 +64,23 @@ export default function ChannelsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex flex-1 gap-4 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* One 48px control row, like the chat's: the caller's view switch, then
+          the selected channel and how many provider watches feed it. */}
+      <div className="flex h-12 shrink-0 items-center gap-2 pr-3 pl-4">
+        {leading}
+        {sel ? (
+          <>
+            <span className="truncate font-mono text-[12.5px] font-medium">{sel}</span>
+            <span className="shrink-0 text-[11.5px] text-muted-foreground">
+              {watches.length} watch{watches.length === 1 ? "" : "es"} · refreshed every 2s
+            </span>
+          </>
+        ) : (
+          <span className="text-[11.5px] text-muted-foreground">Select a channel.</span>
+        )}
+      </div>
+      <div className="flex min-h-0 flex-1 border-t">
       {name ? (
         <AgentSubscriptions name={name} selected={sel} onSelect={setSel} />
       ) : (
@@ -83,73 +96,78 @@ export default function ChannelsPage() {
           {channels.length === 0 && <p className="p-2 text-sm text-muted-foreground">No channels.</p>}
         </div>
       )}
-      <div className="flex flex-1 flex-col gap-3 overflow-hidden">
-        {sel ? (
-          <>
-          <Card className="flex flex-1 flex-col overflow-hidden">
-            <CardHeader className="pb-2"><CardTitle className="text-base font-mono">{sel}</CardTitle></CardHeader>
-            <CardContent className="flex flex-1 flex-col gap-2 overflow-hidden">
-              <ScrollArea className="h-[45vh] rounded border bg-muted/30 p-2">
-                {msgs.map((m) => (
-                  <div key={m.id} className="border-b py-1 text-sm last:border-0">
-                    <span className="mr-2 text-xs text-muted-foreground">{m.source}·{m.type}</span>
-                    <span>{m.text}</span>
-                  </div>
-                ))}
-                {msgs.length === 0 && <p className="text-sm text-muted-foreground">No messages.</p>}
-              </ScrollArea>
-              <div className="flex gap-2">
-                <Input value={type} onChange={(e) => setType(e.target.value)} className="h-8 w-28" placeholder="type" />
-                <Input value={text} onChange={(e) => setText(e.target.value)} className="h-8 flex-1" placeholder="message text"
-                  onKeyDown={(e) => { if (e.key === "Enter") void send(); }} />
-                <Button size="sm" onClick={() => void send()}>Send</Button>
+      {sel && (
+        <div className="flex min-w-0 flex-1 flex-col border-l">
+          <div className="min-h-0 flex-1 overflow-auto py-1">
+            {msgs.map((m) => (
+              <div key={m.id} className="grid grid-cols-[4.5rem_minmax(0,10rem)_minmax(0,1fr)] gap-2.5 px-4 py-1.5 text-[12.5px]">
+                <span className="font-mono text-[11.5px] text-muted-foreground tabular-nums" title={m.ts}>
+                  {m.ts ? fmtTime(m.ts) : ""}
+                </span>
+                <span className="truncate font-mono text-[11.5px] text-muted-foreground">{m.source} · {m.type}</span>
+                <span className="break-words whitespace-pre-wrap">{m.text}</span>
               </div>
-            </CardContent>
-          </Card>
-          <WatchesCard watches={watches} />
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground">Select a channel.</p>
-        )}
-      </div>
+            ))}
+            {msgs.length === 0 && <p className="px-4 py-2 text-sm text-muted-foreground">No messages.</p>}
+          </div>
+          <Watches watches={watches} />
+          <div className="flex gap-2 border-t px-3 py-2.5">
+            <Input value={type} onChange={(e) => setType(e.target.value)} className="h-8 w-28 font-mono" placeholder="type" />
+            <Input value={text} onChange={(e) => setText(e.target.value)} className="h-8 flex-1" placeholder="message text"
+              onKeyDown={(e) => { if (e.key === "Enter") void send(); }} />
+            <Button size="sm" onClick={() => void send()}>Send</Button>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
 }
 
-// WatchesCard renders a channel's distinct provider watches (§8.1/§10, Phase R):
+// fmtTime is the wall-clock time of a tail row; the full timestamp is its title.
+function fmtTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleTimeString([], { hour12: false });
+}
+
+// Watches renders a channel's distinct provider watches (§8.1/§10, Phase R):
 // each watch's identity, its params pretty-printed, and the subscribed agents.
-// Read-only — this is an inspect view, not an editor.
-function WatchesCard({ watches }: { watches: Watch[] }) {
+// Read-only — this is an inspect view, not an editor — and collapsible so the
+// tail keeps the height when a channel has many watches.
+function Watches({ watches }: { watches: Watch[] }) {
+  const [open, setOpen] = useState(true);
   return (
-    <Card className="shrink-0">
-      <CardHeader className="pb-2"><CardTitle className="text-sm">Watches</CardTitle></CardHeader>
-      <CardContent className="pt-0">
-        {watches.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No watches on this channel.</p>
-        ) : (
-          <ScrollArea className="max-h-[22vh]">
-            <ul className="space-y-2">
-              {watches.map((w) => (
-                <li key={w.watch} className="rounded border p-2 text-sm">
-                  <div className="mb-1 font-mono text-xs">{w.watch}</div>
-                  {w.params && Object.keys(w.params).length > 0 && (
-                    <pre className="mb-1 overflow-x-auto rounded bg-muted/50 p-1 text-xs">{JSON.stringify(w.params, null, 2)}</pre>
-                  )}
-                  <div className="flex flex-wrap gap-1">
-                    {(w.subscribers ?? []).map((s) => (
-                      <Badge key={s} variant="secondary" className="font-mono text-xs">{s}</Badge>
-                    ))}
-                    {(w.subscribers ?? []).length === 0 && (
-                      <span className="text-xs text-muted-foreground">no subscribers</span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </ScrollArea>
-        )}
-      </CardContent>
-    </Card>
+    <div className="shrink-0 border-t px-4 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">Watches</span>
+        <Badge variant="secondary">{watches.length}</Badge>
+        <button type="button" onClick={() => setOpen(!open)}
+          className="ml-auto text-xs text-muted-foreground underline-offset-2 hover:underline">
+          {open ? "hide" : "show"}
+        </button>
+      </div>
+      {open && (watches.length === 0 ? (
+        <p className="mt-1 text-sm text-muted-foreground">No watches on this channel.</p>
+      ) : (
+        <ul className="mt-1 max-h-[22vh] space-y-2 overflow-auto">
+          {watches.map((w) => (
+            <li key={w.watch} className="py-1">
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="mr-1 font-mono text-xs">{w.watch}</span>
+                {(w.subscribers ?? []).map((s) => (
+                  <Badge key={s} variant="secondary" className="font-mono text-xs">{s}</Badge>
+                ))}
+                {(w.subscribers ?? []).length === 0 && (
+                  <span className="text-xs text-muted-foreground">no subscribers</span>
+                )}
+              </div>
+              {w.params && Object.keys(w.params).length > 0 && (
+                <pre className="mt-1 overflow-x-auto rounded bg-muted/50 p-1 text-xs">{JSON.stringify(w.params, null, 2)}</pre>
+              )}
+            </li>
+          ))}
+        </ul>
+      ))}
+    </div>
   );
 }
