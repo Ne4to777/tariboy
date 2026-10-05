@@ -19,7 +19,7 @@ const (
 	MaxSourceResultBytes      = 1 << 20
 	MaxSourceItems            = 50
 	MaxSourceKeyBytes         = 200
-	MaxSourceTitleBytes       = 256
+	MaxSourceTitleBytes       = 1 << 10
 	MaxSourceDescriptionBytes = 16 << 10
 )
 

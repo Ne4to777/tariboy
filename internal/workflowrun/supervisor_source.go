@@ -36,7 +36,7 @@ type unrecordedSource struct {
 // SourceEnv returns the TARIBOY_* entries of one source run, sorted by name.
 // A source run has no task, so it gets no task key, status, or snapshot.
 func SourceEnv(job tasks.SourceJob, workflowDir, sourceDir, resultFile string) []string {
-	env := []string{
+	return []string{
 		"TARIBOY_QUIET_EXIT=" + strconv.Itoa(script.QuietExit),
 		"TARIBOY_RESULT_FILE=" + resultFile,
 		"TARIBOY_SOURCE_DIR=" + sourceDir,
@@ -46,7 +46,6 @@ func SourceEnv(job tasks.SourceJob, workflowDir, sourceDir, resultFile string) [
 		"TARIBOY_WORKFLOW_NAME=" + job.WorkflowName,
 		"TARIBOY_WORKFLOW_VERSION=" + job.WorkflowVersion,
 	}
-	return env
 }
 
 // passSources starts the due sources while a slot is free, and kills a running

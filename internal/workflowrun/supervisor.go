@@ -107,7 +107,7 @@ type worker struct {
 	retry       map[int64]unrecorded       // completions to record again
 	sources     map[string]*activeRun      // running source runs by queue/source
 	sourceRetry map[int64]unrecordedSource // source completions to record again
-	quietDirs   map[string][]string        // task key -> directories of its newest quiet runs, oldest first
+	quietDirs   map[string][]string        // task key or "source:QUEUE/NAME" -> directories of its newest quiet runs, oldest first
 	recovered   bool                       // RecoverScriptRuns has succeeded
 }
 

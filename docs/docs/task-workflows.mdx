@@ -768,7 +768,7 @@ creates a new task when a new commit arrives.
 | Field | Meaning |
 | --- | --- |
 | `key` | Required; at most 200 bytes of `A-Z a-z 0-9 . _ : @ / # -`; unique in the result. |
-| `title` | Required; one line of at most 256 bytes. |
+| `title` | Required; one line of at most 1 KiB. |
 | `description` | Optional Markdown of at most 16 KiB. The daemon appends a line naming the source and the key. |
 | `priority` | Optional `P0` to `P3`; `P2` by default. |
 | `artifacts` | Optional; names the image declares, each a non-empty UTF-8 value of at most 64 KiB. Stored on the new task, authored by `script:<path>`. |
