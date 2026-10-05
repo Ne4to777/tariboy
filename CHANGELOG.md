@@ -1,3 +1,32 @@
+## [0.73.0] - 2026-10-05
+
+### Added
+
+- Workflow images can be copied between daemons:
+  `GET /api/workflow-images/{name}/{tag}/export` returns a portable archive and
+  `POST /api/workflow-image-imports` publishes it like `workflow build`,
+  refusing content whose digest differs (`workflow_digest_mismatch`).
+- Desktop has a **Workflow images** page in each server workspace: build an
+  image from a directory on the server, list tags with the queues bound to
+  them, open the status graph, limits, artifacts, secrets, env and files of a
+  tag, remove a tag, and upload an image to other servers. Queue workflow
+  settings link the bound image to its page.
+
+### Changed
+
+- Workflow artifact values render as Markdown, with a Markdown / Text switch
+  per artifact; expanded long values are shown in full.
+- The workflow panel shows labeled **Move to status…** and **Cancel task**
+  buttons instead of an icon menu.
+
+### Fixed
+
+- Menus, selects, tooltips and confirmation dialogs opened from the task
+  detail sheet appear above it and accept clicks, so workflow move and cancel
+  and the flexible task actions menu work again.
+
+[0.73.0]: https://github.com/alekzonder/tariboy/compare/v0.72.0...v0.73.0
+
 ## [0.72.0] - 2026-10-03
 
 ### Added
