@@ -5,6 +5,7 @@ import type { Daemon } from "@/lib/daemons";
 import {
   addStore,
   buildStoreImage,
+  buildStoreWorkflow,
   getStore,
   listStores,
   refreshStore,
@@ -13,9 +14,12 @@ import {
   type Store,
   type StoreDetail,
   type StoreImage,
+  type StoreWorkflow,
 } from "@/lib/stores";
+import { listWorkflowImages, type WorkflowImage } from "@/lib/tasks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,6 +49,15 @@ const imageStatuses = (image: StoreImage) => {
   return statuses;
 };
 
+// latest is the built latest workflow_version: undefined when not built, null
+// when the registry could not be read.
+const workflowStatus = (workflow: StoreWorkflow, latest: string | null | undefined) => {
+  if (workflow.error) return `Source error: ${workflow.error}`;
+  if (latest === null) return "Comparison unavailable";
+  if (latest === undefined) return "Latest not built";
+  return latest === workflow.version ? "Up to date" : "Update needed";
+};
+
 export default function StoresPage({ target, name, basePath }: {
   target: Daemon | null;
   name?: string;
@@ -64,6 +77,7 @@ export default function StoresPage({ target, name, basePath }: {
   const [autoImages, setAutoImages] = useState<string[]>([]);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeError, setRemoveError] = useState("");
+  const [workflowImages, setWorkflowImages] = useState<WorkflowImage[] | null>(null);
   const buildGeneration = useRef(0);
 
   useEffect(() => {
@@ -87,6 +101,12 @@ export default function StoresPage({ target, name, basePath }: {
     }).finally(() => {
       if (current) setLoading(false);
     });
+    if (name) {
+      void listWorkflowImages(target).then(
+        (images) => { if (current) setWorkflowImages(images); },
+        () => { if (current) setWorkflowImages(null); },
+      );
+    }
     return () => { current = false; };
   }, [name, target]);
 
@@ -154,6 +174,38 @@ export default function StoresPage({ target, name, basePath }: {
       if (isCurrent()) setBusy("");
     }
   };
+
+  const buildWorkflow = async (workflowName: string) => {
+    if (!name) return;
+    const requestedBuild = ++buildGeneration.current;
+    const isCurrent = () => mounted.current && buildGeneration.current === requestedBuild;
+    setBusy(`workflow:${workflowName}`);
+    setError("");
+    setStatus("");
+    try {
+      const built = await buildStoreWorkflow(target, `${name}/${workflowName}`);
+      if (!isCurrent()) return;
+      setStatus(`Built ${built.name} ${built.version} (tags: ${built.tags.join(", ")}).`);
+      setBusy("");
+      window.dispatchEvent(new Event("tariboy:workflow-image-built"));
+      const [refreshed, images] = await Promise.all([
+        getStore(target, name),
+        listWorkflowImages(target).catch(() => null),
+      ]);
+      if (isCurrent()) {
+        setDetail(refreshed);
+        setWorkflowImages(images);
+      }
+    } catch (cause) {
+      if (isCurrent()) setError(message(cause));
+    } finally {
+      if (isCurrent()) setBusy("");
+    }
+  };
+
+  const latestWorkflow = (workflowName: string) => workflowImages
+    ? workflowImages.find((image) => image.name === workflowName && image.tag === "latest")?.version
+    : null;
 
   const saveAuto = async () => {
     if (!name) return;
@@ -253,63 +305,102 @@ export default function StoresPage({ target, name, basePath }: {
       {loading && <p role="status" className="text-sm text-muted-foreground">Loading Store…</p>}
       {detail && <section className="space-y-2">
         <h2 className="font-medium">Images</h2>
-        <div className="grid gap-3 md:grid-cols-[14rem_auto]">
-          <Input
-            aria-label="Automatic build interval"
-            type="number"
-            min={0}
-            step={1}
-            placeholder="0"
-            value={autoInterval}
-            disabled={Boolean(busy)}
-            onChange={(event) => setAutoInterval(event.target.value)}
-          />
-          <Button variant="outline" disabled={Boolean(busy)} onClick={() => void saveAuto()}>
-            {busy === "auto" ? "Saving…" : "Save automatic builds"}
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Automatic builds refresh this Store every interval in minutes and rebuild the checked images that need an
-          update, publishing image_version and latest. An interval of 0 disables them.
-        </p>
-        <div className="overflow-x-auto rounded border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-              <tr><th className="px-3 py-2">Auto</th><th className="px-3 py-2">Image</th><th className="px-3 py-2">Source image_version</th><th className="px-3 py-2">Latest image_version</th><th className="px-3 py-2">Status</th><th className="px-3 py-2" /></tr>
-            </thead>
-            <tbody>
-              {detail.images.map((image) => <tr key={image.name} className={`border-t ${image.update_needed ? "bg-amber-50 dark:bg-amber-950/30" : ""}`}>
-                <td className="px-3 py-2">
-                  <input
-                    type="checkbox"
-                    aria-label={`Automatic builds for ${image.name}`}
-                    checked={autoImages.includes(image.name)}
-                    disabled={Boolean(busy) || Boolean(image.error)}
-                    onChange={(event) => setAutoImages((current) => event.target.checked
-                      ? [...current, image.name]
-                      : current.filter((selected) => selected !== image.name))}
-                  />
-                </td>
-                <td className="px-3 py-2 font-mono">{image.name}</td>
-                <td className="px-3 py-2 font-mono text-xs">{image.version || "Not specified"}</td>
-                <td className="px-3 py-2 font-mono text-xs">{image.latest_status === "missing" ? "Not built" : image.latest_status === "error" ? "Inspection failed" : image.built_version || "Not specified"}</td>
-                <td className={`px-3 py-2 text-xs ${image.error || image.latest_status === "error" ? "text-destructive" : "text-muted-foreground"}`}>
-                  {imageStatuses(image).map((status) => <div key={status}>{status}</div>)}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  <Button
-                    size="sm"
-                    disabled={Boolean(busy) || Boolean(image.error)}
-                    onClick={() => void build(image.name)}
-                  >
-                    {busy === `build:${image.name}` ? `Building ${image.name}…` : `Build ${image.name}`}
-                  </Button>
-                </td>
-              </tr>)}
-              {detail.images.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No images in this Store.</td></tr>}
-            </tbody>
-          </table>
-        </div>
+        <Tabs defaultValue="agent">
+          <TabsList>
+              <TabsTrigger value="agent">Agent images</TabsTrigger>
+              <TabsTrigger value="workflow">Workflow images</TabsTrigger>
+          </TabsList>
+          <TabsContent value="agent" className="space-y-2">
+            <div className="grid gap-3 md:grid-cols-[14rem_auto]">
+              <Input
+                aria-label="Automatic build interval"
+                type="number"
+                min={0}
+                step={1}
+                placeholder="0"
+                value={autoInterval}
+                disabled={Boolean(busy)}
+                onChange={(event) => setAutoInterval(event.target.value)}
+              />
+              <Button variant="outline" disabled={Boolean(busy)} onClick={() => void saveAuto()}>
+                {busy === "auto" ? "Saving…" : "Save automatic builds"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Automatic builds refresh this Store every interval in minutes and rebuild the checked images that need an
+              update, publishing image_version and latest. An interval of 0 disables them.
+            </p>
+            <div className="overflow-x-auto rounded border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                  <tr><th className="px-3 py-2">Auto</th><th className="px-3 py-2">Image</th><th className="px-3 py-2">Source image_version</th><th className="px-3 py-2">Latest image_version</th><th className="px-3 py-2">Status</th><th className="px-3 py-2" /></tr>
+                </thead>
+                <tbody>
+                  {detail.images.map((image) => <tr key={image.name} className={`border-t ${image.update_needed ? "bg-amber-50 dark:bg-amber-950/30" : ""}`}>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Automatic builds for ${image.name}`}
+                        checked={autoImages.includes(image.name)}
+                        disabled={Boolean(busy) || Boolean(image.error)}
+                        onChange={(event) => setAutoImages((current) => event.target.checked
+                          ? [...current, image.name]
+                          : current.filter((selected) => selected !== image.name))}
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-mono">{image.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{image.version || "Not specified"}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{image.latest_status === "missing" ? "Not built" : image.latest_status === "error" ? "Inspection failed" : image.built_version || "Not specified"}</td>
+                    <td className={`px-3 py-2 text-xs ${image.error || image.latest_status === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+                      {imageStatuses(image).map((status) => <div key={status}>{status}</div>)}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Button
+                        size="sm"
+                        disabled={Boolean(busy) || Boolean(image.error)}
+                        onClick={() => void build(image.name)}
+                      >
+                        {busy === `build:${image.name}` ? `Building ${image.name}…` : `Build ${image.name}`}
+                      </Button>
+                    </td>
+                  </tr>)}
+                  {detail.images.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No images in this Store.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </TabsContent>
+          <TabsContent value="workflow">
+            <div className="overflow-x-auto rounded border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                  <tr><th className="px-3 py-2">Workflow</th><th className="px-3 py-2">Source workflow_version</th><th className="px-3 py-2">Latest workflow_version</th><th className="px-3 py-2">Status</th><th className="px-3 py-2" /></tr>
+                </thead>
+                <tbody>
+                  {(detail.workflows ?? []).map((workflow) => {
+                    const latest = latestWorkflow(workflow.name);
+                    const status = workflowStatus(workflow, latest);
+                    return <tr key={workflow.name} className={`border-t ${status === "Update needed" ? "bg-amber-50 dark:bg-amber-950/30" : ""}`}>
+                      <td className="px-3 py-2 font-mono">{workflow.name}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{workflow.version || "Not specified"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{latest === null ? "Unknown" : latest ?? "Not built"}</td>
+                      <td className={`px-3 py-2 text-xs ${workflow.error ? "text-destructive" : "text-muted-foreground"}`}>{status}</td>
+                      <td className="px-3 py-2 text-right">
+                        <Button
+                          size="sm"
+                          disabled={Boolean(busy) || Boolean(workflow.error)}
+                          onClick={() => void buildWorkflow(workflow.name)}
+                        >
+                          {busy === `workflow:${workflow.name}` ? `Building ${workflow.name}…` : `Build ${workflow.name}`}
+                        </Button>
+                      </td>
+                    </tr>;
+                  })}
+                  {!detail.workflows?.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">No workflow images in this Store.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </TabsContent>
+        </Tabs>
       </section>}
     </> : <>
       <div>

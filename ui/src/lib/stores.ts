@@ -1,5 +1,6 @@
 import { apiOn, type ImageBuildResult } from "@/lib/api";
 import type { Daemon } from "@/lib/daemons";
+import type { WorkflowBuildResult } from "@/lib/tasks";
 
 export interface Store {
   name: string;
@@ -22,8 +23,15 @@ export interface StoreAuto {
   images: string[];
 }
 
+export interface StoreWorkflow {
+  name: string;
+  version: string;
+  error?: string;
+}
+
 export interface StoreDetail extends Store {
   images: StoreImage[];
+  workflows?: StoreWorkflow[];
   auto?: StoreAuto;
 }
 
@@ -43,3 +51,5 @@ export const removeStore = (target: Target, name: string) =>
   apiOn<{ removed: boolean }>(target, "DELETE", storePath(name));
 export const buildStoreImage = (target: Target, input: { source: string; name?: string; tag?: string }) =>
   apiOn<ImageBuildResult>(target, "POST", "/api/images/build", input);
+export const buildStoreWorkflow = (target: Target, source: string) =>
+  apiOn<WorkflowBuildResult>(target, "POST", "/api/workflow-images/build", { source });

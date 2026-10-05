@@ -257,6 +257,15 @@ interval in whole minutes and one **Auto** checkbox per image, saved together
 and reported back from the daemon. An interval of `0` disables it. See
 [Images → Automatic refresh and build](/docs/images#automatic-refresh-and-build)
 for the daemon-side cycle.
+Image sources sit on the **Agent images** tab of the detail. Its **Workflow
+images** tab lists the Store's workflow sources, each source `workflow_version`,
+and the version of that workflow's built `latest` tag on the same host. It shows
+source errors (Build disabled), missing latest, update needed (highlighted), and
+up to date; when the workflow image list cannot be read it shows "Comparison
+unavailable" and keeps Build. **Build** sends the `STORE/NAME` selector to the
+workflow-image build endpoint, reports the published version and tags,
+dispatches `tariboy:workflow-image-built`, and reloads the detail and the
+comparison. Workflow sources have no automatic builds.
 Every request carries the explicit host target, including builds through the
 existing image-build endpoint. Requests for a previous route cannot replace the
 new Store view. Removal uses an in-app confirmation and preserves local sources

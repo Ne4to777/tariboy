@@ -473,3 +473,100 @@ describe("Store automatic builds", () => {
     expect(await screen.findByText("Automatic builds run every 30 min for 2 image(s).")).toBeInTheDocument();
   });
 });
+
+describe("Store workflow images", () => {
+  it("lists workflow sources in their own tab and builds one from the Store", async () => {
+    vi.mocked(fetchAllAgents).mockResolvedValue([
+      { host: { id: "", label: "This daemon (local)" }, agents: [] },
+    ]);
+    const calls: Call[] = [];
+    let built = false;
+    let buildFails = true;
+    const workflowBuilt = vi.fn();
+    window.addEventListener("tariboy:workflow-image-built", workflowBuilt);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      const method = init.method ?? "GET";
+      calls.push({ url, method, body: typeof init.body === "string" ? init.body : undefined });
+      if (url.endsWith("/api/stores/old") && method === "GET") {
+        return Promise.resolve(envelope({
+          name: "old",
+          source: "/srv/old",
+          path: "/srv/old",
+          images: [{ name: "reviewer", version: "1.0.0", built_version: "1.0.0", update_needed: false, latest_status: "built" }],
+          workflows: [
+            { name: "development", version: "0.3.0" },
+            { name: "equal", version: "1.0.0" },
+            { name: "fresh", version: "0.1.0" },
+            { name: "broken", version: "", error: "invalid Workflowfile.yaml" },
+          ],
+        }));
+      }
+      if (url.endsWith("/api/workflow-images") && method === "GET") {
+        return Promise.resolve(envelope({
+          workflows: [
+            { name: "development", tag: "latest", version: built ? "0.3.0" : "0.2.0", digest: "d1", built_at: "" },
+            { name: "development", tag: "0.2.0", version: "0.2.0", digest: "d1", built_at: "" },
+            { name: "equal", tag: "latest", version: "1.0.0", digest: "d2", built_at: "" },
+          ],
+          count: 3,
+        }));
+      }
+      if (url.endsWith("/api/workflow-images/build") && method === "POST") {
+        if (buildFails) {
+          buildFails = false;
+          return Promise.resolve(envelope("workflow build failed", false));
+        }
+        built = true;
+        return Promise.resolve(envelope({ name: "development", version: "0.3.0", digest: "d3", tags: ["0.3.0", "latest"], created: true }));
+      }
+      return Promise.resolve(envelope({ agents: [], groups: [], count: 0 }));
+    }));
+
+    renderPage("/servers/local/stores/old", "local");
+
+    expect(await screen.findByRole("button", { name: "Build reviewer" })).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Workflow images" }));
+    const row = async (workflow: string) => (await screen.findByText(workflow, { selector: "td" })).closest("tr") as HTMLElement;
+    expect(screen.queryByRole("button", { name: "Build reviewer" })).not.toBeInTheDocument();
+    await waitFor(async () => expect(within(await row("development")).getByText("Update needed")).toBeInTheDocument());
+    expect(within(await row("development")).getByText("0.2.0")).toBeInTheDocument();
+    expect(within(await row("equal")).getByText("Up to date")).toBeInTheDocument();
+    expect(within(await row("fresh")).getByText("Latest not built")).toBeInTheDocument();
+    expect(within(await row("broken")).getByText("Source error: invalid Workflowfile.yaml")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build broken" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Build development" }));
+    expect(await screen.findByText("workflow build failed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Build development" }));
+    expect(await screen.findByText("Built development 0.3.0 (tags: 0.3.0, latest).")).toBeInTheDocument();
+    const build = calls.filter((call) => call.url.endsWith("/api/workflow-images/build"));
+    expect(JSON.parse(build[1]?.body ?? "{}")).toEqual({ source: "old/development" });
+    await waitFor(async () => expect(within(await row("development")).getByText("Up to date")).toBeInTheDocument());
+    expect(workflowBuilt).toHaveBeenCalledTimes(1);
+    window.removeEventListener("tariboy:workflow-image-built", workflowBuilt);
+  });
+
+  it("keeps workflow builds available when built images cannot be compared", async () => {
+    vi.mocked(fetchAllAgents).mockResolvedValue([
+      { host: { id: "", label: "This daemon (local)" }, agents: [] },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      const method = init.method ?? "GET";
+      if (url.endsWith("/api/stores/old") && method === "GET") {
+        return Promise.resolve(envelope({
+          name: "old", source: "/srv/old", path: "/srv/old", images: [], workflows: [{ name: "development", version: "0.3.0" }],
+        }));
+      }
+      if (url.endsWith("/api/workflow-images")) return Promise.resolve(envelope("registry down", false));
+      return Promise.resolve(envelope({ agents: [], groups: [], count: 0 }));
+    }));
+
+    renderPage("/servers/local/stores/old", "local");
+
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Workflow images" }));
+    expect(await screen.findByText("Comparison unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build development" })).toBeEnabled();
+  });
+});
