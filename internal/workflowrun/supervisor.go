@@ -63,6 +63,7 @@ type Jobs interface {
 // Supervisor is the daemon worker that executes pending workflow script runs.
 type Supervisor struct {
 	Jobs         Jobs
+	Sources      SourceJobs // optional; nil runs no workflow sources
 	Images       *workflowimage.Store
 	BaseDir      string
 	BaseEnv      func() []string // daemon baseline
@@ -100,12 +101,14 @@ type worker struct {
 	finished chan struct{}
 	wg       sync.WaitGroup
 
-	mu        sync.Mutex
-	running   map[int64]*activeRun
-	busy      map[string]bool      // tasks with a run in progress or unrecorded
-	retry     map[int64]unrecorded // completions to record again
-	quietDirs map[string][]string  // task key -> directories of its newest quiet runs, oldest first
-	recovered bool                 // RecoverScriptRuns has succeeded
+	mu          sync.Mutex
+	running     map[int64]*activeRun
+	busy        map[string]bool            // tasks with a run in progress or unrecorded
+	retry       map[int64]unrecorded       // completions to record again
+	sources     map[string]*activeRun      // running source runs by queue/source
+	sourceRetry map[int64]unrecordedSource // source completions to record again
+	quietDirs   map[string][]string        // task key -> directories of its newest quiet runs, oldest first
+	recovered   bool                       // RecoverScriptRuns has succeeded
 }
 
 // Run executes pending runs until ctx ends. It first terminates the scripts a
@@ -120,6 +123,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 		finished: make(chan struct{}, 1),
 		running:  map[int64]*activeRun{}, busy: map[string]bool{},
 		retry: map[int64]unrecorded{}, quietDirs: map[string][]string{},
+		sources: map[string]*activeRun{}, sourceRetry: map[int64]unrecordedSource{},
 	}
 	if w.log == nil {
 		w.log = slog.Default()
@@ -176,14 +180,39 @@ func (w *worker) ensureRecovered(ctx context.Context) bool {
 		}
 		return false
 	}
+	if w.s.Sources != nil {
+		if err := w.s.Sources.RecoverSourceRuns(ctx); err != nil {
+			if ctx.Err() == nil {
+				w.log.Error("recover workflow source runs", "err", err)
+			}
+			return false
+		}
+	}
 	w.recovered = true
 	return true
 }
 
-// pass is one loop iteration: record unrecorded completions, schedule due
-// watches, kill cancelled runs, and, while a slot is free, start pending runs,
-// checks first.
+// pass is one loop iteration: the script runs of tasks, then the sources of
+// queues.
 func (w *worker) pass(ctx context.Context) {
+	w.passScripts(ctx)
+	w.passSources(ctx)
+}
+
+// loadLocked returns how many runs are active and how many of them are not
+// checks.
+func (w *worker) loadLocked() (all, nonCheck int) {
+	for _, active := range w.running {
+		if active.kind != KindCheck {
+			nonCheck++
+		}
+	}
+	return len(w.running) + len(w.sources), nonCheck + len(w.sources)
+}
+
+// passScripts records unrecorded completions, schedules due watches, kills
+// cancelled runs, and, while a slot is free, starts pending runs, checks first.
+func (w *worker) passScripts(ctx context.Context) {
 	w.recordUnrecorded(ctx)
 	if _, err := w.s.Jobs.ScheduleDueWatches(ctx, w.clock()); err != nil && ctx.Err() == nil {
 		w.log.Error("schedule workflow watch runs", "err", err)
@@ -202,7 +231,8 @@ func (w *worker) pass(ctx context.Context) {
 		}
 	}
 	w.mu.Lock()
-	free := len(w.running) < w.parallel
+	all, _ := w.loadLocked()
+	free := all < w.parallel
 	w.mu.Unlock()
 	if !free {
 		return
@@ -221,15 +251,10 @@ func (w *worker) pass(ctx context.Context) {
 			return
 		}
 		w.mu.Lock()
-		full := len(w.running) >= w.parallel
+		all, watches := w.loadLocked()
+		full := all >= w.parallel
 		_, running := w.running[job.Run.ID]
 		busy := w.busy[job.Run.TaskKey]
-		watches := 0
-		for _, active := range w.running {
-			if active.kind != KindCheck {
-				watches++
-			}
-		}
 		w.mu.Unlock()
 		if full {
 			return
@@ -401,7 +426,13 @@ func (w *worker) rememberQuietLocked(job tasks.RunJob, done tasks.RunCompletion,
 	if job.Run.Kind != KindWatch || done.Verdict != VerdictQuiet || runDir == "" || cancelled {
 		return ""
 	}
-	ring := w.quietDirs[job.Run.TaskKey]
+	return w.ringLocked(job.Run.TaskKey, runDir)
+}
+
+// ringLocked adds runDir to the ring of quiet run directories under key and
+// returns the directory the ring evicted, or "".
+func (w *worker) ringLocked(key, runDir string) string {
+	ring := w.quietDirs[key]
 	if slices.Contains(ring, runDir) {
 		return ""
 	}
@@ -410,7 +441,7 @@ func (w *worker) rememberQuietLocked(job tasks.RunJob, done tasks.RunCompletion,
 	if len(ring) > keptQuietRunDirs {
 		stale, ring = ring[0], slices.Clone(ring[1:])
 	}
-	w.quietDirs[job.Run.TaskKey] = ring
+	w.quietDirs[key] = ring
 	return stale
 }
 

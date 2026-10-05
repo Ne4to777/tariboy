@@ -8,6 +8,7 @@ const (
 	DefaultWatchTimeout = 60 * time.Second
 	MaxWatchTimeout     = 30 * time.Minute
 	MinWatchEvery       = time.Second
+	MinSourceEvery      = 10 * time.Second
 )
 
 const (

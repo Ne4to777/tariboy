@@ -24,6 +24,7 @@ func validFixture(t *testing.T) *File {
 	write("statuses/plan.md", 0o644)
 	write("scripts/check.sh", 0o755)
 	write("scripts/watch.sh", 0o755)
+	write("scripts/source.sh", 0o755)
 	return &File{
 		SchemaVersion:   1,
 		Name:            "development",
@@ -33,6 +34,7 @@ func validFixture(t *testing.T) *File {
 		Env:             map[string]string{"PR_POLL_SECONDS": "60"},
 		Limits:          &Limits{UnavailableGrace: "5m"},
 		Artifacts:       []Artifact{{Name: "plan"}, {Name: "pull_request"}},
+		Sources:         []Source{{Name: "pull-requests", Script: "./scripts/source.sh", Every: "2m", Timeout: "30s"}},
 		Statuses: []Status{
 			{ID: "plan", Owner: Owner{Kind: OwnerPool, Pool: "developers"}, Instructions: "./statuses/plan.md",
 				Transitions: []Transition{{On: "planned", To: "approval", Requires: []string{"plan"},
@@ -164,6 +166,19 @@ func TestValidateCodes(t *testing.T) {
 		{"secret_name_invalid repeat", func(t *testing.T, f *File) { f.RequiresSecrets = []string{"GH_TOKEN", "GH_TOKEN"} }, "secret_name_invalid", "requires_secrets[1]"},
 		{"secret_name_invalid prefix", func(t *testing.T, f *File) { f.RequiresSecrets = []string{"TARIBOY_RESULT_FILE"} }, "secret_name_invalid", "requires_secrets[0]"},
 		{"env_name_invalid", func(t *testing.T, f *File) { f.Env = map[string]string{"bad-name": "x"} }, "env_name_invalid", "env.bad-name"},
+		{"source_name_invalid", func(t *testing.T, f *File) { f.Sources[0].Name = "Pull Requests" }, "source_name_invalid", "sources[0].name"},
+		{"source_duplicate", func(t *testing.T, f *File) { f.Sources = append(f.Sources, f.Sources[0]) }, "source_duplicate", "sources[1].name"},
+		{"path_invalid source", func(t *testing.T, f *File) { f.Sources[0].Script = "scripts/source.sh" }, "path_invalid", "sources[0].script"},
+		{"file_missing source", func(t *testing.T, f *File) { f.Sources[0].Script = "./scripts/none.sh" }, "file_missing", "sources[0].script"},
+		{"script_not_executable source", func(t *testing.T, f *File) {
+			if err := os.Chmod(filepath.Join(f.Dir, "scripts", "source.sh"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "script_not_executable", "sources[0].script"},
+		{"duration_invalid source every", func(t *testing.T, f *File) { f.Sources[0].Every = "" }, "duration_invalid", "sources[0].every"},
+		{"duration_invalid source every below minimum", func(t *testing.T, f *File) { f.Sources[0].Every = "9s" }, "duration_invalid", "sources[0].every"},
+		{"duration_invalid source timeout", func(t *testing.T, f *File) { f.Sources[0].Timeout = "0s" }, "duration_invalid", "sources[0].timeout"},
+		{"timeout_too_long source", func(t *testing.T, f *File) { f.Sources[0].Timeout = "31m" }, "timeout_too_long", "sources[0].timeout"},
 		{"env_name_invalid prefix", func(t *testing.T, f *File) { f.Env = map[string]string{"TARIBOY_X": "x"} }, "env_name_invalid", "env.TARIBOY_X"},
 	}
 	for _, tc := range cases {
@@ -257,7 +272,7 @@ func TestFiles(t *testing.T) {
 	f.Statuses[1].Instructions = "./statuses/plan.md"
 	f.Statuses[0].Transitions[0].Checks = append(f.Statuses[0].Transitions[0].Checks,
 		Check{Script: "./a/../scripts/check.sh"}, Check{Script: "/etc/passwd"})
-	want := []string{"scripts/check.sh", "scripts/watch.sh", "statuses/plan.md"}
+	want := []string{"scripts/check.sh", "scripts/source.sh", "scripts/watch.sh", "statuses/plan.md"}
 	if got := f.Files(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Files = %v, want %v", got, want)
 	}

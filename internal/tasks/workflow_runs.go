@@ -24,7 +24,8 @@ const (
 	verdictPass    = "pass"    // check: the condition holds
 	verdictReject  = "reject"  // check: the condition does not hold
 	verdictOutcome = "outcome" // watch: an outcome is ready
-	verdictQuiet   = "quiet"   // watch: nothing changed
+	verdictQuiet   = "quiet"   // watch or source: nothing changed
+	verdictItems   = "items"   // source: the items it found
 	verdictFailure = "failure" // anything else
 )
 

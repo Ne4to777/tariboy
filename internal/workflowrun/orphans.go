@@ -37,26 +37,44 @@ func (w *worker) terminateOrphans(ctx context.Context) error {
 		if run.PID == nil || *run.PID <= 0 || !tasks.IsTaskDirKey(run.TaskKey) {
 			continue
 		}
-		pid := *run.PID
-		if protectedOrphanPID(pid) {
-			w.log.Warn("a recorded workflow script pid is init, the daemon, or in the daemon's process group; the worker never signals it",
-				"run_id", run.ID, "task", run.TaskKey, "pid", pid)
-			continue
-		}
-		if procErr != nil {
-			w.log.Warn("cannot prove a recorded workflow script process is the run's script without /proc; it is not signalled",
-				"run_id", run.ID, "task", run.TaskKey, "pid", pid)
-			continue
-		}
 		resultFile := filepath.Join(base, "tasks", run.TaskKey, "runs", strconv.FormatInt(run.ID, 10), "result.json")
-		if !isRunScript(pid, resultFile) {
+		w.terminateIfOrphan(*run.PID, resultFile, procErr, "run_id", run.ID, "task", run.TaskKey)
+	}
+	if w.s.Sources == nil {
+		return nil
+	}
+	sources, err := w.s.Sources.RunningSourceRuns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range sources {
+		if run.PID == nil || *run.PID <= 0 || !tasks.IsTaskDirKey(run.Queue) || !tasks.IsTaskDirKey(run.Source) {
 			continue
 		}
-		w.log.Warn("terminate a workflow script left running by a previous daemon",
-			"run_id", run.ID, "task", run.TaskKey, "pid", pid)
-		terminateOrphan(pid, resultFile)
+		resultFile := filepath.Join(tasks.SourceRunDir(base, run.Queue, run.Source, run.ID), "result.json")
+		w.terminateIfOrphan(*run.PID, resultFile, procErr, "source_run_id", run.ID, "queue", run.Queue, "source", run.Source)
 	}
 	return nil
+}
+
+// terminateIfOrphan terminates the process pid when it is provably the script
+// whose result file is resultFile. procErr is why /proc cannot be read, if it
+// cannot; attrs name the run in the log.
+func (w *worker) terminateIfOrphan(pid int, resultFile string, procErr error, attrs ...any) {
+	attrs = append(attrs, "pid", pid)
+	if protectedOrphanPID(pid) {
+		w.log.Warn("a recorded workflow script pid is init, the daemon, or in the daemon's process group; the worker never signals it", attrs...)
+		return
+	}
+	if procErr != nil {
+		w.log.Warn("cannot prove a recorded workflow script process is the run's script without /proc; it is not signalled", attrs...)
+		return
+	}
+	if !isRunScript(pid, resultFile) {
+		return
+	}
+	w.log.Warn("terminate a workflow script left running by a previous daemon", attrs...)
+	terminateOrphan(pid, resultFile)
 }
 
 // protectedOrphanPID reports whether pid must never be signalled as an

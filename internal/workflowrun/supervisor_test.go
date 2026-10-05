@@ -38,6 +38,10 @@ statuses:
           - script: ./scripts/pass.sh
   - id: finished
     terminal: true
+sources:
+  - name: pull-requests
+    script: ./scripts/items.sh
+    every: 10s
 `
 
 // Stub scripts published in the test image. MARK_DIR comes from the baseline
@@ -48,6 +52,9 @@ var supervisorScripts = map[string]string{
 	"scripts/sleep.sh":    "sleep 0.4\nexit 0\n",
 	"scripts/stubborn.sh": "trap '' TERM\ntouch \"$MARK_DIR/stubborn-started\"\nsleep 30\n",
 	"scripts/quiet.sh":    "exit 111\n",
+	"scripts/items.sh": "pwd > \"$TARIBOY_SOURCE_DIR/pwd.txt\"\nenv > \"$TARIBOY_SOURCE_DIR/env.txt\"\n" +
+		`printf '{"items":[{"key":"k-%s","title":"t %s","description":"%s"}]}' ` +
+		`"$TARIBOY_SOURCE_NAME" "$LONG_SECRET" "$TARIBOY_TASK_QUEUE" > "$TARIBOY_RESULT_FILE"` + "\nexit 0\n",
 	"scripts/leak.sh": `printf '{"message":"token %s and %s","artifacts":{"note":"v-%s-%s"}}' ` +
 		`"$LONG_SECRET" "$SHORT_SECRET" "$LONG_SECRET" "$SHORT_SECRET" > "$TARIBOY_RESULT_FILE"` + "\nexit 0\n",
 }

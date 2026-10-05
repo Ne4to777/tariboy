@@ -833,7 +833,7 @@ func Run(ctx context.Context, o Options) error {
 	// stay running for the next start.
 	workflowRunWake, stopWorkflowRunWake := taskHub.Subscribe()
 	workflowRunner := &workflowrun.Supervisor{
-		Jobs: taskService, Images: workflowImages.Store, BaseDir: p.Base,
+		Jobs: taskService, Sources: taskService, Images: workflowImages.Store, BaseDir: p.Base,
 		BaseEnv: os.Environ, AgentRuntime: manager.ScriptRuntime,
 		Clock: time.Now, Wake: workflowRunWake, Log: log,
 	}

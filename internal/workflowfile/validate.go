@@ -56,6 +56,7 @@ func Validate(f *File) []ValidationError {
 	v.secretsAndEnv(f)
 	v.limits("limits", f.Limits)
 	artifacts := v.artifacts(f)
+	v.sources(f)
 	v.statuses(f, artifacts)
 	v.files(f)
 	sort.SliceStable(v.errs, func(i, j int) bool {
@@ -141,6 +142,23 @@ func (v *validator) artifacts(f *File) map[string]bool {
 		known[a.Name] = true
 	}
 	return known
+}
+
+func (v *validator) sources(f *File) {
+	seen := map[string]bool{}
+	for i, src := range f.Sources {
+		p := fmt.Sprintf("sources[%d]", i)
+		if !identifierPattern.MatchString(src.Name) {
+			v.add("source_name_invalid", p+".name", "source name %q must match %s", src.Name, identifierPattern)
+		} else if seen[src.Name] {
+			v.add("source_duplicate", p+".name", "source %q is declared twice", src.Name)
+		}
+		seen[src.Name] = true
+		if d, err := time.ParseDuration(src.Every); err != nil || d < MinSourceEvery {
+			v.add("duration_invalid", p+".every", "every %q must be a duration of at least %s", src.Every, MinSourceEvery)
+		}
+		v.timeout(p+".timeout", src.Timeout, MaxWatchTimeout)
+	}
 }
 
 func (v *validator) statuses(f *File, artifacts map[string]bool) {
@@ -277,15 +295,20 @@ func (v *validator) watch(p string, w *Watch) {
 	if d, err := time.ParseDuration(w.Every); err != nil || d < MinWatchEvery {
 		v.add("duration_invalid", p+".every", "every %q must be a duration of at least %s", w.Every, MinWatchEvery)
 	}
-	if w.Timeout == "" {
+	v.timeout(p+".timeout", w.Timeout, MaxWatchTimeout)
+}
+
+// timeout validates an optional script timeout at p against limit.
+func (v *validator) timeout(p, value string, limit time.Duration) {
+	if value == "" {
 		return
 	}
-	d, err := time.ParseDuration(w.Timeout)
+	d, err := time.ParseDuration(value)
 	switch {
 	case err != nil || d <= 0:
-		v.add("duration_invalid", p+".timeout", "timeout %q must be a positive duration", w.Timeout)
-	case d > MaxWatchTimeout:
-		v.add("timeout_too_long", p+".timeout", "timeout %q exceeds %s", w.Timeout, MaxWatchTimeout)
+		v.add("duration_invalid", p, "timeout %q must be a positive duration", value)
+	case d > limit:
+		v.add("timeout_too_long", p, "timeout %q exceeds %s", value, limit)
 	}
 }
 
@@ -293,16 +316,7 @@ func (v *validator) check(p string, c *Check) {
 	if c.RunAs != "" && c.RunAs != RunAsQueue && c.RunAs != RunAsAgent {
 		v.add("run_as_invalid", p+".run_as", "run_as %q must be %s or %s", c.RunAs, RunAsQueue, RunAsAgent)
 	}
-	if c.Timeout == "" {
-		return
-	}
-	d, err := time.ParseDuration(c.Timeout)
-	switch {
-	case err != nil || d <= 0:
-		v.add("duration_invalid", p+".timeout", "timeout %q must be a positive duration", c.Timeout)
-	case d > MaxCheckTimeout:
-		v.add("timeout_too_long", p+".timeout", "timeout %q exceeds %s", c.Timeout, MaxCheckTimeout)
-	}
+	v.timeout(p+".timeout", c.Timeout, MaxCheckTimeout)
 }
 
 // reachability reports statuses no path from the initial status reaches, and
@@ -340,6 +354,9 @@ func (v *validator) reachability(f *File, ids map[string]int, initial int) {
 // refs lists every field that names a file, in manifest order.
 func (f *File) refs() []fileRef {
 	var out []fileRef
+	for i, src := range f.Sources {
+		out = append(out, fileRef{fmt.Sprintf("sources[%d].script", i), src.Script, true})
+	}
 	for i, s := range f.Statuses {
 		p := fmt.Sprintf("statuses[%d]", i)
 		if s.Instructions != "" {

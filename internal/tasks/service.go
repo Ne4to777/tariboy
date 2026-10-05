@@ -191,16 +191,13 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	if err := validateActor(actor); err != nil {
 		return Task{}, err
 	}
-	in.Title = strings.TrimSpace(in.Title)
-	if in.Title == "" {
+	if strings.TrimSpace(in.Title) == "" {
 		return Task{}, domainError(http.StatusBadRequest, "missing_title", "task title is required")
 	}
-	priority, err := NormalizePriority(in.Priority)
-	if err != nil {
+	if _, err := NormalizePriority(in.Priority); err != nil {
 		return Task{}, err
 	}
-	pullRequest, err := NormalizePullRequest(in.PullRequest)
-	if err != nil {
+	if _, err := NormalizePullRequest(in.PullRequest); err != nil {
 		return Task{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -215,7 +212,37 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 	} else if ok {
 		return replayed, nil
 	}
+	task, err := s.createTaskTx(ctx, tx, actor, in)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := writeTaskIdempotency(
+		ctx, tx, actor.Principal, "create_task", in.IdempotencyKey, task, task.CreatedAt,
+	); err != nil {
+		return Task{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Task{}, err
+	}
+	s.signal()
+	return task, nil
+}
 
+// createTaskTx creates a task inside tx; a task of a bound queue enters the
+// workflow's initial status. It neither reads nor writes idempotency.
+func (s *Service) createTaskTx(ctx context.Context, tx *sql.Tx, actor Actor, in CreateTaskInput) (Task, error) {
+	in.Title = strings.TrimSpace(in.Title)
+	if in.Title == "" {
+		return Task{}, domainError(http.StatusBadRequest, "missing_title", "task title is required")
+	}
+	priority, err := NormalizePriority(in.Priority)
+	if err != nil {
+		return Task{}, err
+	}
+	pullRequest, err := NormalizePullRequest(in.PullRequest)
+	if err != nil {
+		return Task{}, err
+	}
 	queue := strings.ToUpper(strings.TrimSpace(in.Queue))
 	customer := userPrincipal(s.customer)
 	group := strings.TrimSpace(in.Group)
@@ -366,15 +393,6 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, in CreateTaskInpu
 			}
 		}
 	}
-	if err := writeTaskIdempotency(
-		ctx, tx, actor.Principal, "create_task", in.IdempotencyKey, task, now,
-	); err != nil {
-		return Task{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Task{}, err
-	}
-	s.signal()
 	return task, nil
 }
 

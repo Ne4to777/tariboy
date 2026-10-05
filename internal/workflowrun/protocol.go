@@ -15,12 +15,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/alekzonder/tariboy/internal/script"
+	"github.com/alekzonder/tariboy/internal/tasks"
 )
 
 // Kinds of script a run executes.
 const (
-	KindCheck = "check"
-	KindWatch = "watch"
+	KindCheck  = "check"
+	KindWatch  = "watch"
+	KindSource = "source"
 )
 
 // Verdicts a finished run can have.
@@ -28,7 +30,8 @@ const (
 	VerdictPass    = "pass"    // check: condition holds
 	VerdictReject  = "reject"  // check: condition does not hold
 	VerdictOutcome = "outcome" // watch: an outcome is ready
-	VerdictQuiet   = "quiet"   // watch: nothing changed
+	VerdictQuiet   = "quiet"   // watch or source: nothing changed
+	VerdictItems   = "items"   // source: the items it found
 	VerdictFailure = "failure" // anything else
 )
 
@@ -49,10 +52,11 @@ type Declared struct {
 
 // Verdict is what a finished run means.
 type Verdict struct {
-	Kind      string            // one of the Verdict* constants
-	Outcome   string            // set for VerdictOutcome
-	Message   string            // script message, or the failure reason
-	Artifacts map[string]string // set for VerdictPass and VerdictOutcome
+	Kind      string             // one of the Verdict* constants
+	Outcome   string             // set for VerdictOutcome
+	Message   string             // script message, or the failure reason
+	Artifacts map[string]string  // set for VerdictPass and VerdictOutcome
+	Items     []tasks.SourceItem // set for VerdictItems
 }
 
 // resultFile is the JSON object a script may write.
@@ -70,7 +74,7 @@ func failure(format string, args ...any) Verdict {
 // process did not exit normally; timedOut and rawResult describe the rest.
 // rawResult is nil, with a nil resultErr, when the script wrote no result file.
 func Classify(kind string, exit *int, timedOut bool, rawResult []byte, resultErr error, declared Declared) Verdict {
-	if kind != KindCheck && kind != KindWatch {
+	if kind != KindCheck && kind != KindWatch && kind != KindSource {
 		return failure("unknown script kind %q", kind)
 	}
 	if timedOut {
@@ -80,6 +84,9 @@ func Classify(kind string, exit *int, timedOut bool, rawResult []byte, resultErr
 		return failure("the script did not exit normally")
 	}
 	code := *exit
+	if kind == KindSource {
+		return classifySource(code, rawResult, resultErr, declared)
+	}
 
 	// A quiet watch run publishes nothing, so its result file is not read.
 	if kind == KindWatch && code == script.QuietExit {

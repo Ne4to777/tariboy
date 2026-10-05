@@ -27,8 +27,8 @@ type Spec struct {
 	Cwd        string
 	Env        []string // complete environment, protocol entries included
 	Timeout    time.Duration
-	RunDir     string // <base>/tasks/<KEY>/runs/<run-id>
-	TaskDir    string // <base>/tasks/<KEY>/state
+	RunDir     string // <base>/tasks/<KEY>/runs/<run-id>, or the run directory of a source
+	TaskDir    string // <base>/tasks/<KEY>/state, or the state directory of a source
 	Snapshot   []byte // written to RunDir/task.json
 	Declared   Declared
 	OnStart    func(pid int) // called once the process has a PID
@@ -85,9 +85,12 @@ func Execute(ctx context.Context, spec Spec) Result {
 		return fail("cannot write the run log %s: %v", logPath, err)
 	}
 
-	taskFile := filepath.Join(spec.RunDir, "task.json")
-	if err := writeOwnerFile(taskFile, spec.Snapshot); err != nil {
-		return fail("cannot write %s: %v", taskFile, err)
+	// A source run has no task, so it has no snapshot.
+	if spec.Kind != KindSource {
+		taskFile := filepath.Join(spec.RunDir, "task.json")
+		if err := writeOwnerFile(taskFile, spec.Snapshot); err != nil {
+			return fail("cannot write %s: %v", taskFile, err)
+		}
 	}
 	resultPath := filepath.Join(spec.RunDir, "result.json")
 	if err := os.Remove(resultPath); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -86,10 +86,6 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 	if maxBytes < 0 {
 		return "", false, invalidMaxBytes()
 	}
-	if maxBytes == 0 {
-		maxBytes = defaultRunLogBytes
-	}
-	maxBytes = min(maxBytes, maxRunLogBytes)
 	task, _, err := workflowReadTaskTx(ctx, s.db, actor, key)
 	if err != nil {
 		return "", false, err
@@ -107,13 +103,28 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 	if run.LogPath == "" {
 		return "", false, runLogUnavailable(id)
 	}
-	path, err := s.verifiedRunLogPath(task.Key, run.ID, run.LogPath)
+	if !IsTaskDirKey(task.Key) {
+		return "", false, runLogInvalid(id)
+	}
+	rel := filepath.Join("tasks", task.Key, "runs", strconv.FormatInt(id, 10), "run.log")
+	path, err := s.verifiedLogPath(rel, run.ID, run.LogPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", false, runLogUnavailable(id)
 	}
 	if err != nil {
 		return "", false, err
 	}
+	return s.redactedLogTail(ctx, task.Queue, path, id, maxBytes)
+}
+
+// redactedLogTail reads the last maxBytes bytes of the log at path, cut to a
+// valid UTF-8 boundary, with every secret of queue replaced by "[redacted]". A
+// maxBytes of zero or less means 64 KiB; the largest is 1 MiB.
+func (s *Service) redactedLogTail(ctx context.Context, queue, path string, id int64, maxBytes int) (string, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = defaultRunLogBytes
+	}
+	maxBytes = min(maxBytes, maxRunLogBytes)
 	raw, size, err := readLogTail(path, maxBytes+MaxQueueSecretBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", false, runLogUnavailable(id)
@@ -121,7 +132,7 @@ func (s *Service) ScriptRunLog(ctx context.Context, actor Actor, key string, id 
 	if err != nil {
 		return "", false, runLogInvalid(id)
 	}
-	secrets, err := s.queueSecrets(ctx, task.Queue)
+	secrets, err := s.queueSecrets(ctx, queue)
 	if err != nil {
 		return "", false, err
 	}
@@ -181,18 +192,17 @@ func (s *Service) requireRunLogAccess(ctx context.Context, actor Actor, task Tas
 	return nil
 }
 
-// verifiedRunLogPath returns the real path of the log of run id of task key,
-// provided logPath names exactly that file under the base directory and no
-// component of it is a symlink.
-func (s *Service) verifiedRunLogPath(key string, id int64, logPath string) (string, error) {
-	if s.runBaseDir == "" || !IsTaskDirKey(key) {
+// verifiedLogPath returns the real path of the log of run id, provided logPath
+// names exactly rel under the base directory and no component of it is a
+// symlink.
+func (s *Service) verifiedLogPath(rel string, id int64, logPath string) (string, error) {
+	if s.runBaseDir == "" {
 		return "", runLogInvalid(id)
 	}
 	base, err := filepath.Abs(s.runBaseDir)
 	if err != nil {
 		return "", runLogInvalid(id)
 	}
-	rel := filepath.Join("tasks", key, "runs", strconv.FormatInt(id, 10), "run.log")
 	if filepath.Clean(logPath) != filepath.Join(base, rel) {
 		return "", runLogInvalid(id)
 	}
