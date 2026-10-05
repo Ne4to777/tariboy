@@ -137,6 +137,7 @@ statuses:
 | `requires_secrets` | no | Names of secrets the scripts need; each matches `^[A-Za-z_][A-Za-z0-9_]*$`, must not start with `TARIBOY_`, and is listed once. |
 | `env` | no | Non-secret environment defaults for scripts. A name matches `^[A-Za-z_][A-Za-z0-9_]*$` and must not start with `TARIBOY_`. |
 | `limits` | no | Workflow-wide defaults; see [Limits](#limits). |
+| `sources` | no | Queue-level scripts that create tasks; see [Sources](#sources). |
 
 Status IDs, outcome names (`on`), artifact names, and pool names match
 `^[a-z][a-z0-9_-]{0,63}$`.
@@ -166,9 +167,36 @@ a transition run in declared order when the holder requests it.
 How scripts are run, their exit codes, result file, environment, and run modes
 are described under [Script protocol](/docs/task-workflows#script-protocol).
 
+### Sources
+
+A source is a script the daemon runs on a schedule for every queue bound to the
+workflow, outside any task. Each item it reports with a key the source has not
+reported before becomes a task in the queue, in `initial_status`; the task then
+moves through the statuses like any other. A reviewer that waits for pull
+requests, an alert, an issue, or an email are examples.
+
+```yaml
+sources:
+  - name: pull-requests
+    script: ./scripts/incoming-prs.sh
+    every: 2m
+    timeout: 60s
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Matches `^[a-z][a-z0-9_-]{0,63}$`; unique among the sources. It keys the items already seen, so keep it across versions. |
+| `script` | yes | Source-relative executable; follows the [path rule](#paths). |
+| `every` | yes | Duration of at least `10s` between the end of one run and the start of the next. |
+| `timeout` | no | Positive duration, default `60s`, maximum `30m`. |
+
+The result file, the environment, and the commands that show a source's runs
+are described under [Sources](/docs/task-workflows#sources).
+
 ### Paths
 
-A path in `instructions`, `watch.script`, or `checks[].script`:
+A path in `instructions`, `watch.script`, `checks[].script`, or
+`sources[].script`:
 
 - starts with `./`, is not absolute, and stays inside the source directory;
 - is not inside the top-level `.git` directory, which a build does not store;
@@ -204,7 +232,7 @@ then code.
 | `secret_name_invalid` | A `requires_secrets` name is malformed, starts with `TARIBOY_`, or is repeated. |
 | `env_name_invalid` | An `env` name is malformed or starts with `TARIBOY_`. |
 | `limit_invalid` | A count limit is zero or negative. |
-| `duration_invalid` | `unavailable_grace`, `watch.timeout`, or a check `timeout` is not a valid duration of the required sign, or `watch.every` is not a duration of at least `1s`. |
+| `duration_invalid` | `unavailable_grace`, `watch.timeout`, a check `timeout`, or a source `timeout` is not a valid duration of the required sign, `watch.every` is not a duration of at least `1s`, or a source `every` is not a duration of at least `10s`. |
 | `artifact_name_invalid` | An artifact name does not match the identifier rule. |
 | `artifact_duplicate` | An artifact is declared twice. |
 | `artifact_unknown` | A `requires` entry names an undeclared artifact. |
@@ -229,7 +257,9 @@ then code.
 | `requires_not_allowed` | `requires` appears on a transition out of a `customer` or `script` status. |
 | `checks_not_allowed` | `checks` appear on a transition out of a `customer` or `script` status. |
 | `run_as_invalid` | A check's `run_as` is neither `queue` nor `agent`. |
-| `timeout_too_long` | A check `timeout` or `watch.timeout` exceeds `30m`. |
+| `timeout_too_long` | A check `timeout`, `watch.timeout`, or source `timeout` exceeds `30m`. |
+| `source_name_invalid` | A source name does not match the identifier rule. |
+| `source_duplicate` | A source name is used twice. |
 | `path_invalid` | A path breaks the [path rule](#paths). |
 | `file_missing` | A named file does not exist or cannot be read. |
 | `file_not_regular` | A named path, or a component of it, is a symlink or not a regular file. |

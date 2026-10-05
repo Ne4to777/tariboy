@@ -114,7 +114,7 @@ instructions; the status instructions are trusted image content, like an image
 prompt. Queue secret values appear in no prompt. See
 [Task workflows](/docs/task-workflows#the-goal-block).
 
-The daemon runs the check and watch scripts of a queue's
+The daemon runs the check, watch, and source scripts of a queue's
 [workflow image](/docs/task-workflows#script-protocol) as the daemon account,
 the same OS user as the agents. A workflow gate protects against a skipped
 step, not against an agent that deliberately works around the process: an
@@ -135,6 +135,12 @@ you trust that far.
 - The files of a task under `<base-dir>/tasks/<KEY>/` are owner-only:
   directories `0700`, files `0600`. The run log on disk is not redacted. The
   nightly database cleanup removes the directory of every task it deletes.
+- A [source](/docs/task-workflows#sources) script runs like a `run_as: queue`
+  script, with the queue secrets, in the owner-only directory
+  `<base-dir>/task-queues/<QUEUE>/sources/<name>/state/`. The tasks it creates
+  are authored by the customer, and their titles, descriptions, and artifact
+  values are untrusted data in the Goal block like any other task's. A source
+  log is readable only by the customer.
 
 Queue secrets are stored per queue in `tariboyd.db` in plaintext, like agent
 secrets. They are set only by the operator (`ttasks queue secret set`, value
@@ -144,7 +150,8 @@ workflow versions still pinned by unfinished tasks are not checked, and a
 script of such a task that misses its secret fails. No read route, event, task
 snapshot, artifact, or result file carries a value, and Compose never handles
 one. Queue secret values of at least 6 bytes are replaced with `[redacted]` in
-a script's message and returned artifact values before they are stored, and in
+a script's message and returned artifact values, and in the titles and
+descriptions a source reports, before they are stored, and in
 run log text served by the log route; every match is found before any is
 replaced, so overlapping or adjacent values leave no part of either. When the
 read window does not start at the beginning of the file, the daemon reads 64 KiB
@@ -158,7 +165,8 @@ readable only by the customer and a holder of the task, and the log of a
 `run_as: agent` check only by the customer and the holder it ran as, because it
 may hold that agent's own secrets, which are not redacted; an agent check
 recorded while no agent held the task is the customer's alone. Neither the
-database nor `<base-dir>/tasks/` is in the support-bundle allowlist.
+database nor `<base-dir>/tasks/` nor `<base-dir>/task-queues/` is in the
+support-bundle allowlist.
 
 ## Pricing catalog boundary
 
