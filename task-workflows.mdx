@@ -20,7 +20,8 @@ in [Workflow images](/docs/workflow-images).
 :::note
 Desktop shows workflow tasks, lets the customer choose outcomes and pause
 decisions, and binds images, pools, and secrets in queue settings; see
-[Desktop](#desktop). `ttasks` and the REST API stay the way to script the same
+[Desktop](#desktop). It also builds, inspects, removes, and copies workflow
+images; see [Workflow images](/docs/workflow-images#desktop). `ttasks` and the REST API stay the way to script the same
 operations.
 :::
 
@@ -1345,9 +1346,11 @@ these sections:
   pool or script status the outcomes are listed for reference, because the
   agent or the watch script decides.
 - **Artifacts.** Every artifact the image declares: the current value,
-  collapsed when long, with **Edit** and **History**, which loads the earlier
-  values on demand; a declared artifact with no value shows its description and
-  **Set**. Editing is disabled once the task is closed.
+  rendered as Markdown with a **Markdown** / **Text** switch for plain text,
+  collapsed to six lines or 600 characters when long and shown in full once
+  expanded, with **Edit** and **History**, which loads the earlier values on
+  demand in the same mode; a declared artifact with no value shows its
+  description and **Set**. Editing is disabled once the task is closed.
 - **Runs.** The latest 20 script runs with kind, script, state, verdict, exit
   code, and times, and a **Log** toggle that loads the log on demand and says
   when it is truncated; while a run is pending or running, an open log has
@@ -1355,15 +1358,16 @@ these sections:
   [Runs and logs](#runs-and-logs); a refusal is shown in place of the log.
 - **Visits.** Every stay in a status, with who entered it, when it was left and
   by which outcome, and the message.
-- **Move and cancel.** The panel's actions menu has **Move to status…** (every
-  declared status but the current one, terminal statuses grouped last, and a
-  required reason) and **Cancel task**, which is hidden once the task is closed.
+- **Move and cancel.** The panel header has two labeled buttons: **Move to
+  status…** (every declared status but the current one, terminal statuses
+  grouped last, and a required reason) and **Cancel task**, which is hidden once
+  the task is closed. A move to a terminal status closes the task.
   Both ask for confirmation, because they skip outcomes, checks, and required
   artifacts and stop the current scripts. They are shown only to a principal
   that may edit the task.
 
-Messages, artifact values, and logs are text; Desktop never interprets them as
-Markdown or HTML. After an action in the sheet the task list reloads as well,
+Messages and logs are text; Desktop never interprets them as Markdown or HTML.
+Artifact values render as Markdown without raw HTML, or as text when switched. After an action in the sheet the task list reloads as well,
 so its row agrees with the sheet.
 
 ### Queue settings
@@ -1371,7 +1375,9 @@ so its row agrees with the sheet.
 `Manage queues…` has a **Workflow** section on each queue card:
 
 - **Binding.** The bound image's name, version, and the first 12 characters of
-  its digest, or **No workflow**. Choose an image as `name:tag` and press
+  its digest, or **No workflow**. The name links to the image's page in
+  **Workflow images**, by its version tag when one names the bound content and
+  by digest otherwise. Choose an image as `name:tag` and press
   **Bind**; **Clear** asks for confirmation and unbinds. A binding changed
   elsewhere (`revision_conflict`) is reloaded with a notice so you can retry.
 - **Pools.** The queue's agent pools editor sits in the same section. A bind

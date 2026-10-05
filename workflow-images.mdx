@@ -317,6 +317,8 @@ tariboy workflow version update major|minor|patch [--path DIR]
 | `workflow ls` | `GET /api/workflow-images` | `workflows` (one row per tag with `name`, `tag`, `version`, `digest`, `built_at`) and `count`. |
 | `workflow inspect NAME [TAG]` | `GET /api/workflow-images/{name}/{tag}` | The stored manifest. `TAG` is a tag or a full digest and defaults to `latest`. |
 | `workflow rm NAME TAG` | `DELETE /api/workflow-images/{name}/{tag}` | `name`, `tag`, `removed`, and `content_removed`. Removing the last tag that names a digest also deletes its content and database row. |
+| (Desktop) | `GET /api/workflow-images/{name}/{tag}/export` | A portable archive of the image; see [Copying to another server](#copying-to-another-server). |
+| (Desktop) | `POST /api/workflow-image-imports` | Imports such an archive; the same result as `workflow build`. |
 
 Removing the last tag that names a digest is refused with `workflow_in_use`
 (HTTP 409) while a queue is bound to that digest or any task, open or closed,
@@ -342,6 +344,65 @@ Errors:
 | `not_found` | No workflow image has that name and tag or digest. |
 | `bad_source` | Both a Store selector and `--path` were given. |
 | `missing_path` | Neither a Store selector nor `--path` was given. |
+| `bad_archive` | An import is not a readable `workflow-image` portable archive. |
+| `archive_too_large` | An import has no `Content-Length` or is larger than 64 MiB. |
+| `workflow_digest_mismatch` | An imported archive does not hold the content its digest names. |
+
+## Copying to another server
+
+An image moves between daemons as content, not as tags.
+`GET /api/workflow-images/{name}/{tag}/export` takes a tag or a full digest
+and returns `tariboy-workflow-image.tar.gz`: a portable archive of kind
+`workflow-image` holding every stored file (not `manifest.json`), with the
+name, version, digest, and the paths of the executable files in its metadata,
+because the archive format does not keep permission bits.
+
+`POST /api/workflow-image-imports` takes that archive as the request body,
+with a `Content-Length` of at most 64 MiB. The daemon stages it under
+`<base-dir>/workflow-image-imports/`, which the archive limits and path checks
+of the portable format guard, restores the executable bits, and publishes it
+like `workflow build`: the same validation, the version tag and `latest` point
+at it, and `latest` moves if it named other content. Before anything is
+written it computes the digest of the staged files and refuses the import with
+`workflow_digest_mismatch` when it differs from the one the archive names. The
+staged copy is always removed. The result is the `workflow build` result; an
+archive whose digest the daemon already holds reports `created: false`. A
+version already published there with other content is refused with
+`workflow_version_published`. `built_at` on the receiving daemon is the import
+time, and queue bindings do not move.
+
+## Desktop
+
+Each server's workspace has a **Workflow images** section beside **Images**
+(`/servers/:hostId/workflows`). Every request goes to that server.
+
+- **Build from directory** takes a `Workflowfile.yaml`, or the directory
+  holding it, on that server. **Validate** shows the name, version, pools, and
+  files, or every validation error as `code · path: message`. **Build**
+  reports `built NAME:VERSION`, or `NAME:VERSION already built` when nothing
+  changed, and lists the errors of a refused build; a version already
+  published with other content suggests bumping it.
+- The list groups tags by name, with `latest` first and then the other tags
+  newest version first, and shows the version, the first 12 characters of the
+  digest (the full digest on hover), the build time, and **Bound to**: the
+  queues bound to that digest. A queue whose binding cannot be read adds
+  `unknown`, with the queue named on hover; the rest of the page still works.
+- **Upload to servers** copies the image to other ready servers through the
+  export and import routes: the archive is downloaded once and imported on
+  each selected server in turn. Each server reports **Completed**, **Already
+  present**, or **Failed** with the daemon's message, and a failure does not
+  stop the others. Cancelling skips the servers not yet started.
+- A tag's page (`/servers/:hostId/workflows/:name/:tag`, where the tag may also
+  be a full digest) shows the status graph as a table (owner, instruction
+  path, outcomes with their required artifacts and checks with `run_as` and
+  timeout, watch), the effective [limits](#limits) of the workflow and of each
+  non-terminal status with where each value comes from, the declared
+  artifacts, required secrets, `env`, and the stored files. Instruction files
+  are shown by path only. **Remove tag** asks for confirmation; a
+  `workflow_in_use` refusal is shown in place with the bound queues. A page
+  opened by digest has no **Remove tag**.
+
+Building from a Store selector stays in the CLI and Compose.
 
 ## Official workflow images
 

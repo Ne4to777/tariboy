@@ -1830,7 +1830,7 @@ the cross-host order, including the implicit local host, in
 `terminals:server-order:v1`. Failed daemon writes restore the previous order
 and report the failure. Server headings are selectable and open an explicit
 `/servers/:hostId/tasks` route. The persistent right-pane server row keeps
-**Tasks**, **Images**, **Stores**, and **Settings** scoped to that host even while an agent
+**Tasks**, **Images**, **Workflow images**, **Stores**, and **Settings** scoped to that host even while an agent
 is selected. The Groups workspace owns team creation and editing: arbitrary custom
 members, per-member runtime fields, rename/lead and membership controls,
 compose clipboard transfer, and portable archive
@@ -1963,7 +1963,14 @@ new Store view. Removal uses an in-app confirmation and preserves local sources
 and built images; pending operations disable duplicate actions. See
 [Images → Stores](/docs/images#stores-on-a-server) for paths and prerequisites.
 
-The persistent server context places **Tasks** beside **Images**, **Stores**, and **Settings**.
+The **Workflow images** workspace (`/servers/:hostId/workflows`) builds a
+workflow image from a directory on the route-selected daemon, lists its tags
+with the queues bound to each digest, shows one image's manifest, removes a tag
+after an in-app confirmation, and copies an image to other ready servers with
+the export and import archive routes; every request carries the explicit host
+target. See [Workflow images → Desktop](/docs/workflow-images#desktop).
+
+The persistent server context places **Tasks** beside **Images**, **Workflow images**, **Stores**, and **Settings**.
 Settings discovers declarative pages from enabled plugins on that explicit
 server and lists them under **Integrations**. One generic React renderer owns
 the supported form controls and forwards actions through the daemon's existing
@@ -2025,6 +2032,10 @@ the task and its history arrive; refreshing the task already open keeps the
 loaded panel in place. History rows read as time, kind, a
 one-line `key value · key value` payload summary and actor; the panel never
 prints a raw JSON payload.
+The sheet is a modal `Dialog` at `z-[60]`, so every floating primitive that can
+open from inside it — dropdown menu, select, context menu, tooltip, and the
+alert dialog that confirms an action — stacks at `z-[70]`; at the old `z-50`
+they opened under the sheet's overlay and took no click.
 The detail sheet's own keyboard- and pointer-accessible separator is the only
 one the workspace has. Arrow keys move it, Shift increases the step, Home and
 double-click restore its default, and the clamped width persists in the
@@ -2055,11 +2066,13 @@ a response older than the newest) and composes
 until the request settles or `wait_seconds` passes), `WorkflowArtifacts`
 (`setTaskArtifact`, `getTaskArtifactHistory`; every entry of the view's
 `declared_artifacts`), `WorkflowRuns` (`getTaskScriptRunLog`), the visit list,
-and the actions menu with `moveTaskWorkflow` (targets from the view's
-`statuses`) and `cancelWorkflowTask`. Destructive actions confirm through
+and the header's labeled **Move to status…** and **Cancel task** buttons with
+`moveTaskWorkflow` (targets from the view's `statuses`) and
+`cancelWorkflowTask`. Destructive actions confirm through
 the controlled alert dialog of `useWorkflowConfirm`; `workflowShared.ts` holds
-`errorText` and `useMounted`. Messages, values, and logs
-render as React text. Every call passes the `ApiTarget` of the surrounding
+`errorText` and `useMounted`. Messages and logs render as React text;
+artifact values render through `MarkdownContent`, or as React text when an
+artifact is switched to **Text**. Every call passes the `ApiTarget` of the surrounding
 component. After a drawer action `TasksWorkspace` reloads the tree as well as
 the detail, so the row agrees with the drawer before the socket reports the
 change. In queue settings, `QueueWorkflowSettings` (`getQueueWorkflow`,
@@ -2288,7 +2301,7 @@ REST API, and the UI does not infer phases from title prefixes or assignee. Oper
 [Task workflows](/docs/task-workflows).
 
 The navigation hierarchy is **Server → Agent**.
-A selected server owns Tasks, Images, Stores, and Settings, and its
+A selected server owns Tasks, Images, Workflow images, Stores, and Settings, and its
 context row remains visible above the selected agent's Chat, Tasks, Console,
 Autopilot, Activity, Configuration, and Advanced tabs. Server-owned routes include
 the explicit host id and fail closed rather than silently falling back to local.
@@ -6025,13 +6038,13 @@ image.
 # Ten-minute quickstart
 Source: https://alekzonder.github.io/tariboy/quickstart
 
-This path is for the `0.72.0` alpha on an Apple Silicon Mac.
+This path is for the `0.73.0` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.72.0_aarch64.dmg`;
+- a verified `Tariboy_0.73.0_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -7419,7 +7432,7 @@ runtime lifecycle.
 
 ## Alpha signing and Gatekeeper
 
-`0.72.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.73.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &
@@ -7516,7 +7529,7 @@ Source: https://alekzonder.github.io/tariboy/support
    selected harness on the remote host.
 5. For a daemon older than `0.10.1`, finish active work before updating it.
 
-The app and bundled daemons must report `0.72.0`. Resolve a local mismatch with
+The app and bundled daemons must report `0.73.0`. Resolve a local mismatch with
 the menu-bar **Install/Update CLI** action and a remote mismatch with the host
 Update action; do not copy or repoint individual binaries.
 
@@ -7682,7 +7695,8 @@ in [Workflow images](/docs/workflow-images).
 :::note
 Desktop shows workflow tasks, lets the customer choose outcomes and pause
 decisions, and binds images, pools, and secrets in queue settings; see
-[Desktop](#desktop). `ttasks` and the REST API stay the way to script the same
+[Desktop](#desktop). It also builds, inspects, removes, and copies workflow
+images; see [Workflow images](/docs/workflow-images#desktop). `ttasks` and the REST API stay the way to script the same
 operations.
 :::
 
@@ -9007,9 +9021,11 @@ these sections:
   pool or script status the outcomes are listed for reference, because the
   agent or the watch script decides.
 - **Artifacts.** Every artifact the image declares: the current value,
-  collapsed when long, with **Edit** and **History**, which loads the earlier
-  values on demand; a declared artifact with no value shows its description and
-  **Set**. Editing is disabled once the task is closed.
+  rendered as Markdown with a **Markdown** / **Text** switch for plain text,
+  collapsed to six lines or 600 characters when long and shown in full once
+  expanded, with **Edit** and **History**, which loads the earlier values on
+  demand in the same mode; a declared artifact with no value shows its
+  description and **Set**. Editing is disabled once the task is closed.
 - **Runs.** The latest 20 script runs with kind, script, state, verdict, exit
   code, and times, and a **Log** toggle that loads the log on demand and says
   when it is truncated; while a run is pending or running, an open log has
@@ -9017,15 +9033,16 @@ these sections:
   [Runs and logs](#runs-and-logs); a refusal is shown in place of the log.
 - **Visits.** Every stay in a status, with who entered it, when it was left and
   by which outcome, and the message.
-- **Move and cancel.** The panel's actions menu has **Move to status…** (every
-  declared status but the current one, terminal statuses grouped last, and a
-  required reason) and **Cancel task**, which is hidden once the task is closed.
+- **Move and cancel.** The panel header has two labeled buttons: **Move to
+  status…** (every declared status but the current one, terminal statuses
+  grouped last, and a required reason) and **Cancel task**, which is hidden once
+  the task is closed. A move to a terminal status closes the task.
   Both ask for confirmation, because they skip outcomes, checks, and required
   artifacts and stop the current scripts. They are shown only to a principal
   that may edit the task.
 
-Messages, artifact values, and logs are text; Desktop never interprets them as
-Markdown or HTML. After an action in the sheet the task list reloads as well,
+Messages and logs are text; Desktop never interprets them as Markdown or HTML.
+Artifact values render as Markdown without raw HTML, or as text when switched. After an action in the sheet the task list reloads as well,
 so its row agrees with the sheet.
 
 ### Queue settings
@@ -9033,7 +9050,9 @@ so its row agrees with the sheet.
 `Manage queues…` has a **Workflow** section on each queue card:
 
 - **Binding.** The bound image's name, version, and the first 12 characters of
-  its digest, or **No workflow**. Choose an image as `name:tag` and press
+  its digest, or **No workflow**. The name links to the image's page in
+  **Workflow images**, by its version tag when one names the bound content and
+  by digest otherwise. Choose an image as `name:tag` and press
   **Bind**; **Clear** asks for confirmation and unbinds. A binding changed
   elsewhere (`revision_conflict`) is reloaded with a notice so you can retry.
 - **Pools.** The queue's agent pools editor sits in the same section. A bind
@@ -9759,6 +9778,8 @@ tariboy workflow version update major|minor|patch [--path DIR]
 | `workflow ls` | `GET /api/workflow-images` | `workflows` (one row per tag with `name`, `tag`, `version`, `digest`, `built_at`) and `count`. |
 | `workflow inspect NAME [TAG]` | `GET /api/workflow-images/{name}/{tag}` | The stored manifest. `TAG` is a tag or a full digest and defaults to `latest`. |
 | `workflow rm NAME TAG` | `DELETE /api/workflow-images/{name}/{tag}` | `name`, `tag`, `removed`, and `content_removed`. Removing the last tag that names a digest also deletes its content and database row. |
+| (Desktop) | `GET /api/workflow-images/{name}/{tag}/export` | A portable archive of the image; see [Copying to another server](#copying-to-another-server). |
+| (Desktop) | `POST /api/workflow-image-imports` | Imports such an archive; the same result as `workflow build`. |
 
 Removing the last tag that names a digest is refused with `workflow_in_use`
 (HTTP 409) while a queue is bound to that digest or any task, open or closed,
@@ -9784,6 +9805,65 @@ Errors:
 | `not_found` | No workflow image has that name and tag or digest. |
 | `bad_source` | Both a Store selector and `--path` were given. |
 | `missing_path` | Neither a Store selector nor `--path` was given. |
+| `bad_archive` | An import is not a readable `workflow-image` portable archive. |
+| `archive_too_large` | An import has no `Content-Length` or is larger than 64 MiB. |
+| `workflow_digest_mismatch` | An imported archive does not hold the content its digest names. |
+
+## Copying to another server
+
+An image moves between daemons as content, not as tags.
+`GET /api/workflow-images/{name}/{tag}/export` takes a tag or a full digest
+and returns `tariboy-workflow-image.tar.gz`: a portable archive of kind
+`workflow-image` holding every stored file (not `manifest.json`), with the
+name, version, digest, and the paths of the executable files in its metadata,
+because the archive format does not keep permission bits.
+
+`POST /api/workflow-image-imports` takes that archive as the request body,
+with a `Content-Length` of at most 64 MiB. The daemon stages it under
+`<base-dir>/workflow-image-imports/`, which the archive limits and path checks
+of the portable format guard, restores the executable bits, and publishes it
+like `workflow build`: the same validation, the version tag and `latest` point
+at it, and `latest` moves if it named other content. Before anything is
+written it computes the digest of the staged files and refuses the import with
+`workflow_digest_mismatch` when it differs from the one the archive names. The
+staged copy is always removed. The result is the `workflow build` result; an
+archive whose digest the daemon already holds reports `created: false`. A
+version already published there with other content is refused with
+`workflow_version_published`. `built_at` on the receiving daemon is the import
+time, and queue bindings do not move.
+
+## Desktop
+
+Each server's workspace has a **Workflow images** section beside **Images**
+(`/servers/:hostId/workflows`). Every request goes to that server.
+
+- **Build from directory** takes a `Workflowfile.yaml`, or the directory
+  holding it, on that server. **Validate** shows the name, version, pools, and
+  files, or every validation error as `code · path: message`. **Build**
+  reports `built NAME:VERSION`, or `NAME:VERSION already built` when nothing
+  changed, and lists the errors of a refused build; a version already
+  published with other content suggests bumping it.
+- The list groups tags by name, with `latest` first and then the other tags
+  newest version first, and shows the version, the first 12 characters of the
+  digest (the full digest on hover), the build time, and **Bound to**: the
+  queues bound to that digest. A queue whose binding cannot be read adds
+  `unknown`, with the queue named on hover; the rest of the page still works.
+- **Upload to servers** copies the image to other ready servers through the
+  export and import routes: the archive is downloaded once and imported on
+  each selected server in turn. Each server reports **Completed**, **Already
+  present**, or **Failed** with the daemon's message, and a failure does not
+  stop the others. Cancelling skips the servers not yet started.
+- A tag's page (`/servers/:hostId/workflows/:name/:tag`, where the tag may also
+  be a full digest) shows the status graph as a table (owner, instruction
+  path, outcomes with their required artifacts and checks with `run_as` and
+  timeout, watch), the effective [limits](#limits) of the workflow and of each
+  non-terminal status with where each value comes from, the declared
+  artifacts, required secrets, `env`, and the stored files. Instruction files
+  are shown by path only. **Remove tag** asks for confirmation; a
+  `workflow_in_use` refusal is shown in place with the bound queues. A page
+  opened by digest has no **Remove tag**.
+
+Building from a Store selector stays in the CLI and Compose.
 
 ## Official workflow images
 

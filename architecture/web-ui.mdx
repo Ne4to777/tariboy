@@ -129,7 +129,7 @@ the cross-host order, including the implicit local host, in
 `terminals:server-order:v1`. Failed daemon writes restore the previous order
 and report the failure. Server headings are selectable and open an explicit
 `/servers/:hostId/tasks` route. The persistent right-pane server row keeps
-**Tasks**, **Images**, **Stores**, and **Settings** scoped to that host even while an agent
+**Tasks**, **Images**, **Workflow images**, **Stores**, and **Settings** scoped to that host even while an agent
 is selected. The Groups workspace owns team creation and editing: arbitrary custom
 members, per-member runtime fields, rename/lead and membership controls,
 compose clipboard transfer, and portable archive
@@ -262,7 +262,14 @@ new Store view. Removal uses an in-app confirmation and preserves local sources
 and built images; pending operations disable duplicate actions. See
 [Images → Stores](/docs/images#stores-on-a-server) for paths and prerequisites.
 
-The persistent server context places **Tasks** beside **Images**, **Stores**, and **Settings**.
+The **Workflow images** workspace (`/servers/:hostId/workflows`) builds a
+workflow image from a directory on the route-selected daemon, lists its tags
+with the queues bound to each digest, shows one image's manifest, removes a tag
+after an in-app confirmation, and copies an image to other ready servers with
+the export and import archive routes; every request carries the explicit host
+target. See [Workflow images → Desktop](/docs/workflow-images#desktop).
+
+The persistent server context places **Tasks** beside **Images**, **Workflow images**, **Stores**, and **Settings**.
 Settings discovers declarative pages from enabled plugins on that explicit
 server and lists them under **Integrations**. One generic React renderer owns
 the supported form controls and forwards actions through the daemon's existing
@@ -324,6 +331,10 @@ the task and its history arrive; refreshing the task already open keeps the
 loaded panel in place. History rows read as time, kind, a
 one-line `key value · key value` payload summary and actor; the panel never
 prints a raw JSON payload.
+The sheet is a modal `Dialog` at `z-[60]`, so every floating primitive that can
+open from inside it — dropdown menu, select, context menu, tooltip, and the
+alert dialog that confirms an action — stacks at `z-[70]`; at the old `z-50`
+they opened under the sheet's overlay and took no click.
 The detail sheet's own keyboard- and pointer-accessible separator is the only
 one the workspace has. Arrow keys move it, Shift increases the step, Home and
 double-click restore its default, and the clamped width persists in the
@@ -354,11 +365,13 @@ a response older than the newest) and composes
 until the request settles or `wait_seconds` passes), `WorkflowArtifacts`
 (`setTaskArtifact`, `getTaskArtifactHistory`; every entry of the view's
 `declared_artifacts`), `WorkflowRuns` (`getTaskScriptRunLog`), the visit list,
-and the actions menu with `moveTaskWorkflow` (targets from the view's
-`statuses`) and `cancelWorkflowTask`. Destructive actions confirm through
+and the header's labeled **Move to status…** and **Cancel task** buttons with
+`moveTaskWorkflow` (targets from the view's `statuses`) and
+`cancelWorkflowTask`. Destructive actions confirm through
 the controlled alert dialog of `useWorkflowConfirm`; `workflowShared.ts` holds
-`errorText` and `useMounted`. Messages, values, and logs
-render as React text. Every call passes the `ApiTarget` of the surrounding
+`errorText` and `useMounted`. Messages and logs render as React text;
+artifact values render through `MarkdownContent`, or as React text when an
+artifact is switched to **Text**. Every call passes the `ApiTarget` of the surrounding
 component. After a drawer action `TasksWorkspace` reloads the tree as well as
 the detail, so the row agrees with the drawer before the socket reports the
 change. In queue settings, `QueueWorkflowSettings` (`getQueueWorkflow`,
@@ -587,7 +600,7 @@ REST API, and the UI does not infer phases from title prefixes or assignee. Oper
 [Task workflows](/docs/task-workflows).
 
 The navigation hierarchy is **Server → Agent**.
-A selected server owns Tasks, Images, Stores, and Settings, and its
+A selected server owns Tasks, Images, Workflow images, Stores, and Settings, and its
 context row remains visible above the selected agent's Chat, Tasks, Console,
 Autopilot, Activity, Configuration, and Advanced tabs. Server-owned routes include
 the explicit host id and fail closed rather than silently falling back to local.
