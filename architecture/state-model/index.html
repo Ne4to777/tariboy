@@ -271,6 +271,19 @@ task. Migration <code>0062</code> adds an index on <code>task_transition_request
 <code>task_status_visits.resumed_at</code> (default empty): a resume decision writes the
 time on the open visit, and an iteration that started before it does not count
 as idle. See <a href="/tariboy/docs/task-workflows#pauses">Task workflows</a>.</p>
+<p>Migration <code>0063</code> adds <code>task_queue_source_runs</code>, the durable record of every run
+of a workflow source (queue, source, script, image digest, state, verdict, exit
+code, message, number of tasks created, process id, times, and log path), with a
+unique partial index that allows one <code>running</code> run per queue and source, and
+<code>task_queue_source_items</code>, every item key a source turned into a task, keyed by
+queue, source, and key. A source run creates its tasks, their artifacts, and
+their keys in the transaction that records it, so a crash never repeats a task;
+keys are never deleted, so a removed task is not created again. A quiet run
+leaves no event and only the newest 20 quiet runs of a source are kept; a failed
+run appends the queue event <code>queue.source_failed</code>. At startup the worker
+terminates a proven orphan of a source run as for a task run, then records
+every <code>running</code> source run as <code>interrupted</code>. See
+<a href="/tariboy/docs/task-workflows#sources">Task workflows</a>.</p>
 <h2 id="image-assignment-state"><a class="blume-heading-anchor" href="#image-assignment-state">Image assignment state</a></h2>
 <p>User Store registrations belong to each daemon’s SQLite database and persist
 only their unique name and source. Git clones live under

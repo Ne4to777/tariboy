@@ -95,7 +95,7 @@ of backticks in the value, and each value is cut at a fixed length), never as
 instructions; the status instructions are trusted image content, like an image
 prompt. Queue secret values appear in no prompt. See
 <a href="/tariboy/docs/task-workflows#the-goal-block">Task workflows</a>.</p>
-<p>The daemon runs the check and watch scripts of a queue’s
+<p>The daemon runs the check, watch, and source scripts of a queue’s
 <a href="/tariboy/docs/task-workflows#script-protocol">workflow image</a> as the daemon account,
 the same OS user as the agents. A workflow gate protects against a skipped
 step, not against an agent that deliberately works around the process: an
@@ -116,6 +116,12 @@ holder’s working directory.</li>
 <li>The files of a task under <code>&lt;base-dir&gt;/tasks/&lt;KEY&gt;/</code> are owner-only:
 directories <code>0700</code>, files <code>0600</code>. The run log on disk is not redacted. The
 nightly database cleanup removes the directory of every task it deletes.</li>
+<li>A <a href="/tariboy/docs/task-workflows#sources">source</a> script runs like a <code>run_as: queue</code>
+script, with the queue secrets, in the owner-only directory
+<code>&lt;base-dir&gt;/task-queues/&lt;QUEUE&gt;/sources/&lt;name&gt;/state/</code>. The tasks it creates
+are authored by the customer, and their titles, descriptions, and artifact
+values are untrusted data in the Goal block like any other task’s. A source
+log is readable only by the customer.</li>
 </ul>
 <p>Queue secrets are stored per queue in <code>tariboyd.db</code> in plaintext, like agent
 secrets. They are set only by the operator (<code>ttasks queue secret set</code>, value
@@ -125,7 +131,8 @@ workflow versions still pinned by unfinished tasks are not checked, and a
 script of such a task that misses its secret fails. No read route, event, task
 snapshot, artifact, or result file carries a value, and Compose never handles
 one. Queue secret values of at least 6 bytes are replaced with <code>[redacted]</code> in
-a script’s message and returned artifact values before they are stored, and in
+a script’s message and returned artifact values, and in the titles and
+descriptions a source reports, before they are stored, and in
 run log text served by the log route; every match is found before any is
 replaced, so overlapping or adjacent values leave no part of either. When the
 read window does not start at the beginning of the file, the daemon reads 64 KiB
@@ -139,7 +146,8 @@ readable only by the customer and a holder of the task, and the log of a
 <code>run_as: agent</code> check only by the customer and the holder it ran as, because it
 may hold that agent’s own secrets, which are not redacted; an agent check
 recorded while no agent held the task is the customer’s alone. Neither the
-database nor <code>&lt;base-dir&gt;/tasks/</code> is in the support-bundle allowlist.</p>
+database nor <code>&lt;base-dir&gt;/tasks/</code> nor <code>&lt;base-dir&gt;/task-queues/</code> is in the
+support-bundle allowlist.</p>
 <h2 id="pricing-catalog-boundary"><a class="blume-heading-anchor" href="#pricing-catalog-boundary">Pricing catalog boundary</a></h2>
 <p>The daemon downloads model prices only from LiteLLM’s fixed production HTTPS
 URL; proxy input, model names, and operator configuration cannot redirect that
@@ -160,7 +168,7 @@ any other support-bundle exclusion. See <a href="/tariboy/docs/architecture/ai-p
 audit</a> for its
 runtime lifecycle.</p>
 <h2 id="alpha-signing-and-gatekeeper"><a class="blume-heading-anchor" href="#alpha-signing-and-gatekeeper">Alpha signing and Gatekeeper</a></h2>
-<p><code>0.74.0</code> is ad-hoc signed, not Developer ID signed or notarized. Verify
+<p><code>0.75.0</code> is ad-hoc signed, not Developer ID signed or notarized. Verify
 <code>SHA256SUMS</code> before opening it. If Gatekeeper blocks it, Control-click only the
 named <code>/Applications/Tariboy.app</code>, choose <strong>Open</strong>, and confirm.
 If Control-click Open is unavailable, use <strong>System Settings → Privacy &amp;

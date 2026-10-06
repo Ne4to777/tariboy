@@ -702,6 +702,16 @@ socket; operator mode calls the REST routes as the customer.</p>
 <td>operator only</td>
 <td><code>DELETE /api/task-queues/{queue}/secrets/{key}</code></td>
 </tr>
+<tr>
+<td><code>ttasks queue source ls QUEUE</code></td>
+<td>operator only</td>
+<td><code>GET /api/task-queues/{queue}/sources</code></td>
+</tr>
+<tr>
+<td><code>ttasks queue source log QUEUE RUN [--max-bytes N]</code> (redacted tail, 64 KiB by default)</td>
+<td>operator only</td>
+<td><code>GET /api/task-queues/{queue}/source-runs/{id}/log</code></td>
+</tr>
 </tbody>
 </table></div>
 <p>On a workflow task <code>ttasks done</code>, <code>ttasks update --status</code>, and

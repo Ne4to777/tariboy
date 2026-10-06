@@ -319,6 +319,20 @@ created_at)`, which the idle-iteration count reads, and
 time on the open visit, and an iteration that started before it does not count
 as idle. See [Task workflows](/docs/task-workflows#pauses).
 
+Migration `0063` adds `task_queue_source_runs`, the durable record of every run
+of a workflow source (queue, source, script, image digest, state, verdict, exit
+code, message, number of tasks created, process id, times, and log path), with a
+unique partial index that allows one `running` run per queue and source, and
+`task_queue_source_items`, every item key a source turned into a task, keyed by
+queue, source, and key. A source run creates its tasks, their artifacts, and
+their keys in the transaction that records it, so a crash never repeats a task;
+keys are never deleted, so a removed task is not created again. A quiet run
+leaves no event and only the newest 20 quiet runs of a source are kept; a failed
+run appends the queue event `queue.source_failed`. At startup the worker
+terminates a proven orphan of a source run as for a task run, then records
+every `running` source run as `interrupted`. See
+[Task workflows](/docs/task-workflows#sources).
+
 ## Image assignment state
 
 User Store registrations belong to each daemon's SQLite database and persist

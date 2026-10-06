@@ -243,6 +243,8 @@ socket; operator mode calls the REST routes as the customer.
 | `ttasks queue secret set QUEUE KEY [--value V]` (stdin when absent, one trailing newline stripped; up to 64 KiB) | operator only | `PUT /api/task-queues/{queue}/secrets/{key}` |
 | `ttasks queue secret ls QUEUE` (keys only, never values) | operator only | `GET /api/task-queues/{queue}/secrets` |
 | `ttasks queue secret rm QUEUE KEY` | operator only | `DELETE /api/task-queues/{queue}/secrets/{key}` |
+| `ttasks queue source ls QUEUE` | operator only | `GET /api/task-queues/{queue}/sources` |
+| `ttasks queue source log QUEUE RUN [--max-bytes N]` (redacted tail, 64 KiB by default) | operator only | `GET /api/task-queues/{queue}/source-runs/{id}/log` |
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the

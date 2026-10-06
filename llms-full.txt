@@ -1589,6 +1589,20 @@ created_at)`, which the idle-iteration count reads, and
 time on the open visit, and an iteration that started before it does not count
 as idle. See [Task workflows](/docs/task-workflows#pauses).
 
+Migration `0063` adds `task_queue_source_runs`, the durable record of every run
+of a workflow source (queue, source, script, image digest, state, verdict, exit
+code, message, number of tasks created, process id, times, and log path), with a
+unique partial index that allows one `running` run per queue and source, and
+`task_queue_source_items`, every item key a source turned into a task, keyed by
+queue, source, and key. A source run creates its tasks, their artifacts, and
+their keys in the transaction that records it, so a crash never repeats a task;
+keys are never deleted, so a removed task is not created again. A quiet run
+leaves no event and only the newest 20 quiet runs of a source are kept; a failed
+run appends the queue event `queue.source_failed`. At startup the worker
+terminates a proven orphan of a source run as for a task run, then records
+every `running` source run as `interrupted`. See
+[Task workflows](/docs/task-workflows#sources).
+
 ## Image assignment state
 
 User Store registrations belong to each daemon's SQLite database and persist
@@ -6077,13 +6091,13 @@ image.
 # Ten-minute quickstart
 Source: https://alekzonder.github.io/tariboy/quickstart
 
-This path is for the `0.74.0` alpha on an Apple Silicon Mac.
+This path is for the `0.75.0` alpha on an Apple Silicon Mac.
 Allow ten minutes after the DMG is available.
 
 ## Before you begin
 
 - macOS 12 or newer on Apple Silicon;
-- a verified `Tariboy_0.74.0_aarch64.dmg`;
+- a verified `Tariboy_0.75.0_aarch64.dmg`;
 - for remote use, an SSH config alias resolving to Linux x86_64;
 - a writable `~/.local`, `flock`, and `python3` on that remote host;
 - at least one supported harness installed where the agent will run.
@@ -7032,6 +7046,8 @@ socket; operator mode calls the REST routes as the customer.
 | `ttasks queue secret set QUEUE KEY [--value V]` (stdin when absent, one trailing newline stripped; up to 64 KiB) | operator only | `PUT /api/task-queues/{queue}/secrets/{key}` |
 | `ttasks queue secret ls QUEUE` (keys only, never values) | operator only | `GET /api/task-queues/{queue}/secrets` |
 | `ttasks queue secret rm QUEUE KEY` | operator only | `DELETE /api/task-queues/{queue}/secrets/{key}` |
+| `ttasks queue source ls QUEUE` | operator only | `GET /api/task-queues/{queue}/sources` |
+| `ttasks queue source log QUEUE RUN [--max-bytes N]` (redacted tail, 64 KiB by default) | operator only | `GET /api/task-queues/{queue}/source-runs/{id}/log` |
 
 On a workflow task `ttasks done`, `ttasks update --status`, and
 `ttasks ready --claim` are refused with `workflow_managed`; the error lists the
@@ -7402,7 +7418,7 @@ instructions; the status instructions are trusted image content, like an image
 prompt. Queue secret values appear in no prompt. See
 [Task workflows](/docs/task-workflows#the-goal-block).
 
-The daemon runs the check and watch scripts of a queue's
+The daemon runs the check, watch, and source scripts of a queue's
 [workflow image](/docs/task-workflows#script-protocol) as the daemon account,
 the same OS user as the agents. A workflow gate protects against a skipped
 step, not against an agent that deliberately works around the process: an
@@ -7423,6 +7439,12 @@ you trust that far.
 - The files of a task under `<base-dir>/tasks/<KEY>/` are owner-only:
   directories `0700`, files `0600`. The run log on disk is not redacted. The
   nightly database cleanup removes the directory of every task it deletes.
+- A [source](/docs/task-workflows#sources) script runs like a `run_as: queue`
+  script, with the queue secrets, in the owner-only directory
+  `<base-dir>/task-queues/<QUEUE>/sources/<name>/state/`. The tasks it creates
+  are authored by the customer, and their titles, descriptions, and artifact
+  values are untrusted data in the Goal block like any other task's. A source
+  log is readable only by the customer.
 
 Queue secrets are stored per queue in `tariboyd.db` in plaintext, like agent
 secrets. They are set only by the operator (`ttasks queue secret set`, value
@@ -7432,7 +7454,8 @@ workflow versions still pinned by unfinished tasks are not checked, and a
 script of such a task that misses its secret fails. No read route, event, task
 snapshot, artifact, or result file carries a value, and Compose never handles
 one. Queue secret values of at least 6 bytes are replaced with `[redacted]` in
-a script's message and returned artifact values before they are stored, and in
+a script's message and returned artifact values, and in the titles and
+descriptions a source reports, before they are stored, and in
 run log text served by the log route; every match is found before any is
 replaced, so overlapping or adjacent values leave no part of either. When the
 read window does not start at the beginning of the file, the daemon reads 64 KiB
@@ -7446,7 +7469,8 @@ readable only by the customer and a holder of the task, and the log of a
 `run_as: agent` check only by the customer and the holder it ran as, because it
 may hold that agent's own secrets, which are not redacted; an agent check
 recorded while no agent held the task is the customer's alone. Neither the
-database nor `<base-dir>/tasks/` is in the support-bundle allowlist.
+database nor `<base-dir>/tasks/` nor `<base-dir>/task-queues/` is in the
+support-bundle allowlist.
 
 ## Pricing catalog boundary
 
@@ -7473,7 +7497,7 @@ runtime lifecycle.
 
 ## Alpha signing and Gatekeeper
 
-`0.74.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
+`0.75.0` is ad-hoc signed, not Developer ID signed or notarized. Verify
 `SHA256SUMS` before opening it. If Gatekeeper blocks it, Control-click only the
 named `/Applications/Tariboy.app`, choose **Open**, and confirm.
 If Control-click Open is unavailable, use **System Settings → Privacy &
@@ -7570,7 +7594,7 @@ Source: https://alekzonder.github.io/tariboy/support
    selected harness on the remote host.
 5. For a daemon older than `0.10.1`, finish active work before updating it.
 
-The app and bundled daemons must report `0.74.0`. Resolve a local mismatch with
+The app and bundled daemons must report `0.75.0`. Resolve a local mismatch with
 the menu-bar **Install/Update CLI** action and a remote mismatch with the host
 Update action; do not copy or repoint individual binaries.
 
@@ -8434,6 +8458,119 @@ ttasks workflow log DEV-ab12 7 --max-bytes 4096
 `workflow log` prints the last 64 KiB by default, at most 1 MiB; when the log is
 longer, a first line on stderr says so.
 
+## Sources
+
+A source creates tasks when nothing else does: a reviewer that waits for new
+pull requests, an alert, an issue, an email. It is a script the image declares
+under [`sources`](/docs/workflow-images#sources), run by the daemon on a
+schedule for every queue bound to the image, outside any task. Each item it
+reports carries a key. For every key the source has not reported before, the
+daemon creates a task in the queue, in `initial_status`, as the customer; the
+workflow takes it from there, and a pool status is dispatched as usual.
+
+```yaml
+sources:
+  - name: pull-requests
+    script: ./scripts/incoming-prs.sh
+    every: 2m
+```
+
+```sh
+#!/bin/sh
+# Pull requests that request a review from the token's account.
+gh search prs --review-requested=@me --state=open --json repository,number,title,url \
+  --jq '{items: [.[] | {key: "\(.repository.nameWithOwner)#\(.number)", title: "Review \(.title)",
+         description: .url, artifacts: {pull_request: .url}}]}' > "$TARIBOY_RESULT_FILE" || exit 1
+[ "$(jq '.items | length' "$TARIBOY_RESULT_FILE")" -gt 0 ] || exit "$TARIBOY_QUIET_EXIT"
+```
+
+The script does not have to remember what it reported: reporting the same key
+on every run creates one task. What counts as new is the key's choice. The key
+above creates one task per pull request; a key such as `org/repo#42@<head sha>`
+creates a new task when a new commit arrives.
+
+### Source result
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | The result file lists the items found; a missing or empty file, or an empty list, creates nothing. |
+| `111` (`TARIBOY_QUIET_EXIT`) | Nothing new. The result file is not read. |
+| any other, a timeout, or a signal | A failure. |
+
+```json
+{"items": [
+  {"key": "org/repo#42", "title": "Review org/repo#42: Fix export",
+   "description": "https://github.com/org/repo/pull/42", "priority": "P1",
+   "artifacts": {"pull_request": "https://github.com/org/repo/pull/42"}}
+]}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `key` | Required; at most 200 bytes of `A-Z a-z 0-9 . _ : @ / # -`; unique in the result. |
+| `title` | Required; one line of at most 1 KiB. |
+| `description` | Optional Markdown of at most 16 KiB. The daemon appends a line naming the source and the key. |
+| `priority` | Optional `P0` to `P3`; `P2` by default. |
+| `artifacts` | Optional; names the image declares, each a non-empty UTF-8 value of at most 64 KiB. Stored on the new task, authored by `script:<path>`. |
+
+The file is at most 1 MiB, one JSON object with only `items`, and at most 50
+items; an unknown field is an error. A result is taken whole or not at all: one
+invalid item fails the run and creates no task, and its keys stay new for the
+next run. Queue secret values are redacted from titles, descriptions, artifact
+values, and the message, as for other scripts; a key that holds a secret value
+fails the run, because a key is stored as it is.
+
+### Source environment
+
+A source run gets the image's `env`, the queue secrets, and the daemon's
+environment as a `queue` [run mode](#run-modes) does, without the daemon and
+agent sockets. It has no task, so it gets no task key, status, or snapshot.
+
+| Variable | Value |
+| --- | --- |
+| `TARIBOY_TASK_QUEUE` | The queue prefix. |
+| `TARIBOY_SOURCE_NAME` | The source name. |
+| `TARIBOY_SOURCE_DIR` | `<base-dir>/task-queues/<QUEUE>/sources/<name>/state/`, owner-only, the working directory; it persists across runs. |
+| `TARIBOY_RESULT_FILE` | `runs/<run-id>/result.json` next to the state directory. |
+| `TARIBOY_WORKFLOW_NAME`, `TARIBOY_WORKFLOW_VERSION`, `TARIBOY_WORKFLOW_DIR` | The bound image. |
+| `TARIBOY_QUIET_EXIT` | `111`. |
+
+### Schedule and keys
+
+- A source runs while its queue is bound to an image that declares it: first
+  at once after the binding, then `every` after each run ends. Runs of one
+  source of a queue never overlap. Sources share the worker's four slots with
+  watch scripts and always leave one for a check.
+- `queue workflow clear`, or a rebind to an image without the source, stops it:
+  a running run is killed and recorded as `cancelled`, and it creates no task.
+- The daemon records each key it turned into a task per queue and source name,
+  in the transaction that creates the task. A daemon that stops after that
+  commit repeats nothing; a run interrupted by a restart is recorded as
+  `interrupted` and the source runs again after `every`.
+- Keys are kept after their task is closed or deleted, so an item is never
+  turned into a second task, and a rebind to a new version of the image keeps
+  them as long as the source keeps its name. A task is never closed because its
+  item disappeared: the workflow decides, for example by an outcome of the
+  status the task starts in.
+- A failed run appends the queue event `queue.source_failed` with the message
+  and the log path, and the source runs again after `every`. There is no
+  automatic pause; `queue source ls` counts the failures in a row.
+
+```bash
+ttasks queue source ls DEV
+ttasks queue source log DEV 12
+ttasks queue source log DEV 12 --max-bytes 4096
+```
+
+`queue source ls` shows each source of the bound image: script, `every`, when it
+runs next, the failures in a row, and the last run with its verdict (`items`,
+`quiet`, or `failure`), message, and the number of tasks it created. Only the
+newest 20 quiet runs of a source are kept, with their files. `queue source log`
+prints the redacted log tail like `workflow log`. Both are operator-only.
+
+Sources poll; for events pushed by a plugin, use a
+[queue trigger](#queue-triggers).
+
 ## Operator move and cancel
 
 The operator (acting as the customer) can override a workflow. Both commands
@@ -8784,6 +8921,8 @@ and what it may do next. Agents and the operator can read it.
 | `ttasks queue secret set QUEUE KEY [--value V]` | operator | Set a secret; stdin when `--value` is absent. |
 | `ttasks queue secret ls QUEUE` | operator | List secret keys. |
 | `ttasks queue secret rm QUEUE KEY` | operator | Remove a secret. |
+| `ttasks queue source ls QUEUE` | operator | List the sources of the bound image and their last runs. |
+| `ttasks queue source log QUEUE RUN [--max-bytes N]` | operator | Read a source run log. |
 | `ttasks workflow get KEY` | agent, operator | The task view. |
 | `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` | holder, operator | Set an artifact; stdin when no value. |
 | `ttasks artifacts ls KEY` | agent, operator | Current artifacts. |
@@ -8811,6 +8950,8 @@ generated OpenAPI document is the authority for request and response schemas.
 | `PUT` | `/api/task-queues/{queue}/secrets/{key}` | set a secret (`value`, body at most 512 KiB); returns `queue`, `key`, and the stored `updated_at` | operator |
 | `GET` | `/api/task-queues/{queue}/secrets` | list `secrets` (`key`, `updated_at`) | operator |
 | `DELETE` | `/api/task-queues/{queue}/secrets/{key}` | remove a secret | operator |
+| `GET` | `/api/task-queues/{queue}/sources` | list `sources` with `next_run_at`, `failures`, and `last_run` | operator |
+| `GET` | `/api/task-queues/{queue}/source-runs/{id}/log` | the redacted log tail of a source run (`max_bytes`); returns `run_id`, `text`, `truncated` | operator |
 | `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`); returns the request | agent, operator |
 | `GET` | `/api/tasks/{key}/workflow/requests/{id}` | one transition request | agent, operator |
 | `PUT` | `/api/tasks/{key}/artifacts/{name}` | set an artifact (`value`) | agent, operator |
@@ -8843,6 +8984,8 @@ See [State model](/docs/architecture/state-model) for the tables.
 | `task_status_visits` | One row per stay in a status, with its outcome and message, the `rejected_requests`, `script_failures`, and `idle_iterations` counters, `next_watch_at`, when a script status's watch runs next (migration `0057`), and `resumed_at`, when a pause of the visit was last resumed (migration `0062`). |
 | `task_transition_requests` | Each request, with its state and `result_message`; at most one is `pending` per task. |
 | `task_artifacts` | Every artifact value with its author and time. |
+| `task_queue_source_runs` | Every source run: queue, source, script, image digest, state, verdict, exit code, message, number of tasks created, process id, times, and log path (migration `0063`). At most one run of a source of a queue is `running`. |
+| `task_queue_source_items` | Every key a source turned into a task, with the task key; kept after the task is gone (migration `0063`). |
 | `task_script_runs` | Every run: kind, script, mode, state, verdict, exit code, message, process id, times, log path, and for a `run_as: agent` check the `holder` (migrations `0057`, `0058`; indexes in `0059`). At most one run of a task is `pending` or `running`. |
 
 Files of a task live under `<base-dir>/tasks/<KEY>/`; directories are `0700`
@@ -8860,12 +9003,20 @@ and files `0600`:
 Nightly retention deletes the rows of closed task trees, run records included.
 It does not yet remove `<base-dir>/tasks/<KEY>/`.
 
+Files of a source live under `<base-dir>/task-queues/<QUEUE>/sources/<name>/`:
+`state/` and `runs/<run-id>/` with `result.json` and `run.log`, owner-only. Only
+the newest 20 quiet runs of a source keep their run directories, counted by the
+running worker; other run directories stay.
+
 Events recorded on a workflow task: `workflow.transition_requested`,
 `workflow.transitioned`, `workflow.transition_rejected` (with the script's
 message), `workflow.transition_failed` (with the reason and log path),
 `workflow.script_run` (every run that ended, with its state, verdict, and exit
 code), `workflow.script_failed` (a failed watch run), `workflow.moved`,
 `workflow.cancelled`, `workflow.paused`, `workflow.resumed`, and `artifact.set`.
+A task created by a source also records `workflow.source_item` with the source,
+the key, and the run id. A failed source run records the queue event
+`queue.source_failed`.
 
 ## Error codes
 
@@ -8894,7 +9045,7 @@ code), `workflow.script_failed` (a failed watch run), `workflow.moved`,
 | `artifact_too_large` | 413 | The value exceeds 64 KiB. |
 | `transition_pending` | 409 | Another transition request is still pending. |
 | `script_running` | 409 | A cancelled script run of the task is still stopping; retry the advance shortly. |
-| `run_not_found` | 404 | The task has no run with that id. |
+| `run_not_found` | 404 | The task, or for a source run the queue, has no run with that id. |
 | `not_found` | 404 | Unknown task, request, image, or queue secret, or a run that has no readable log yet. |
 | `run_log_invalid` | 409 | The run's stored log path is not `<base-dir>/tasks/<KEY>/runs/<id>/run.log`, a component is a symlink, or the file is not a regular file. |
 | `invalid_request` | 400 | `max_bytes` is not a non-negative whole number. |
@@ -8923,11 +9074,15 @@ pending request.
 | A task is `wait_customer` with `waiting_on: pause` | The daemon paused it; `ttasks workflow get KEY` shows `paused:` and the comment names the reason. Fix the cause, then `ttasks workflow resume KEY --decision continue` or `--decision release`. |
 | A script status never moves | Read `ttasks workflow runs KEY`. A run of `quiet` verdicts means the condition has not happened; `failure` verdicts mean a broken script: read its log. The operator can always `ttasks workflow move` the task. |
 | `workflow log` returns `forbidden` | The caller is neither the customer nor a holder of the task, or the run is a `run_as: agent` check of another holder. |
+| A source creates no task | Read `ttasks queue source ls QUEUE`. No `last_run` and no `next_run_at` in the past means the worker has not reached it yet; `quiet` means the script found nothing; `failure` means read the run with `ttasks queue source log QUEUE RUN`. An item whose key was reported before never creates a second task. |
 | A secret value shows in a log | It was rotated or removed after the run, or it was printed encoded. Rotate the secret and fix the script. |
 
 ## Official workflows
 
-The official Store (`official`) holds two workflow sources. Build one with
+The official Store (`official`) holds two workflow sources. A `pr-review`
+workflow, which turns pull requests that request a review into review tasks
+through a [source](#sources), is planned for the Store once a release with
+sources is out. Build one with
 `tariboy workflow build official/NAME`, then bind a queue as shown in
 [Workflow images](/docs/workflow-images#official-workflow-images).
 
@@ -9639,6 +9794,7 @@ statuses:
 | `requires_secrets` | no | Names of secrets the scripts need; each matches `^[A-Za-z_][A-Za-z0-9_]*$`, must not start with `TARIBOY_`, and is listed once. |
 | `env` | no | Non-secret environment defaults for scripts. A name matches `^[A-Za-z_][A-Za-z0-9_]*$` and must not start with `TARIBOY_`. |
 | `limits` | no | Workflow-wide defaults; see [Limits](#limits). |
+| `sources` | no | Queue-level scripts that create tasks; see [Sources](#sources). |
 
 Status IDs, outcome names (`on`), artifact names, and pool names match
 `^[a-z][a-z0-9_-]{0,63}$`.
@@ -9668,9 +9824,36 @@ a transition run in declared order when the holder requests it.
 How scripts are run, their exit codes, result file, environment, and run modes
 are described under [Script protocol](/docs/task-workflows#script-protocol).
 
+### Sources
+
+A source is a script the daemon runs on a schedule for every queue bound to the
+workflow, outside any task. Each item it reports with a key the source has not
+reported before becomes a task in the queue, in `initial_status`; the task then
+moves through the statuses like any other. A reviewer that waits for pull
+requests, an alert, an issue, or an email are examples.
+
+```yaml
+sources:
+  - name: pull-requests
+    script: ./scripts/incoming-prs.sh
+    every: 2m
+    timeout: 60s
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Matches `^[a-z][a-z0-9_-]{0,63}$`; unique among the sources. It keys the items already seen, so keep it across versions. |
+| `script` | yes | Source-relative executable; follows the [path rule](#paths). |
+| `every` | yes | Duration of at least `10s` between the end of one run and the start of the next. |
+| `timeout` | no | Positive duration, default `60s`, maximum `30m`. |
+
+The result file, the environment, and the commands that show a source's runs
+are described under [Sources](/docs/task-workflows#sources).
+
 ### Paths
 
-A path in `instructions`, `watch.script`, or `checks[].script`:
+A path in `instructions`, `watch.script`, `checks[].script`, or
+`sources[].script`:
 
 - starts with `./`, is not absolute, and stays inside the source directory;
 - is not inside the top-level `.git` directory, which a build does not store;
@@ -9706,7 +9889,7 @@ then code.
 | `secret_name_invalid` | A `requires_secrets` name is malformed, starts with `TARIBOY_`, or is repeated. |
 | `env_name_invalid` | An `env` name is malformed or starts with `TARIBOY_`. |
 | `limit_invalid` | A count limit is zero or negative. |
-| `duration_invalid` | `unavailable_grace`, `watch.timeout`, or a check `timeout` is not a valid duration of the required sign, or `watch.every` is not a duration of at least `1s`. |
+| `duration_invalid` | `unavailable_grace`, `watch.timeout`, a check `timeout`, or a source `timeout` is not a valid duration of the required sign, `watch.every` is not a duration of at least `1s`, or a source `every` is not a duration of at least `10s`. |
 | `artifact_name_invalid` | An artifact name does not match the identifier rule. |
 | `artifact_duplicate` | An artifact is declared twice. |
 | `artifact_unknown` | A `requires` entry names an undeclared artifact. |
@@ -9731,7 +9914,9 @@ then code.
 | `requires_not_allowed` | `requires` appears on a transition out of a `customer` or `script` status. |
 | `checks_not_allowed` | `checks` appear on a transition out of a `customer` or `script` status. |
 | `run_as_invalid` | A check's `run_as` is neither `queue` nor `agent`. |
-| `timeout_too_long` | A check `timeout` or `watch.timeout` exceeds `30m`. |
+| `timeout_too_long` | A check `timeout`, `watch.timeout`, or source `timeout` exceeds `30m`. |
+| `source_name_invalid` | A source name does not match the identifier rule. |
+| `source_duplicate` | A source name is used twice. |
 | `path_invalid` | A path breaks the [path rule](#paths). |
 | `file_missing` | A named file does not exist or cannot be read. |
 | `file_not_regular` | A named path, or a component of it, is a symlink or not a regular file. |
