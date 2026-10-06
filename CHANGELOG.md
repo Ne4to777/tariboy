@@ -1,3 +1,24 @@
+## [0.75.0] - 2026-10-06
+
+### Added
+
+- Workflow images can declare `sources`: scripts the daemon runs every
+  `every` for each queue bound to the image, outside any task. Each item a
+  source reports carries a key, and every key not reported before becomes a
+  task in the queue's `initial_status`, created as the customer with the
+  reported title (one line, up to 1 KiB), description, priority and
+  artifacts. Keys are remembered per queue and source, so an item never
+  becomes a second task. Source runs get the queue secrets, are redacted like
+  other scripts, and a failed run records the queue event
+  `queue.source_failed`.
+- `ttasks queue source ls QUEUE` lists the sources of the bound image with
+  their next run, failures in a row and last run;
+  `ttasks queue source log QUEUE RUN` prints a redacted run log tail. Both are
+  operator-only and backed by `GET /api/task-queues/{queue}/sources` and
+  `GET /api/task-queues/{queue}/source-runs/{id}/log`.
+
+[0.75.0]: https://github.com/alekzonder/tariboy/compare/v0.74.0...v0.75.0
+
 ## [0.74.0] - 2026-10-05
 
 ### Added
