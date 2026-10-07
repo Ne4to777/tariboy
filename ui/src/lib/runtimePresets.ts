@@ -20,6 +20,20 @@ export const MODEL_PRESETS_BY_HARNESS: Readonly<
   ],
   codex: ["gpt-5"],
   opencode: [],
+  cursor: [
+    "auto",
+    "gpt-5.3-codex-high",
+    "gpt-5.2",
+    "composer-2.5",
+    "claude-opus-5-thinking-high",
+    "gpt-5.6-sol-high",
+    "claude-fable-5-thinking-high",
+    "cursor-grok-4.5-high",
+    "gemini-3.7-flash-high",
+    "claude-sonnet-5-thinking-high",
+    "gpt-5.6-luna-high",
+    "grok-4.7-high",
+  ],
   stub: [],
 };
 
@@ -50,7 +64,8 @@ function loadLearnedPresets(): LearnedRuntimePresets {
     const raw = storage()?.getItem(RUNTIME_PRESETS_STORAGE_KEY);
     if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
 
     const learned: LearnedRuntimePresets = {};
     for (const [harness, value] of Object.entries(parsed)) {
@@ -58,7 +73,8 @@ function loadLearnedPresets(): LearnedRuntimePresets {
       const entry = value as Record<string, unknown>;
       const models = stringValues(entry.models);
       const efforts = stringValues(entry.efforts);
-      if (models.length || efforts.length) learned[harness] = { models, efforts };
+      if (models.length || efforts.length)
+        learned[harness] = { models, efforts };
     }
     return learned;
   } catch {
@@ -104,7 +120,8 @@ export function rememberRuntimePreset(
   rawValue: string,
 ): void {
   const value = rawValue.trim();
-  if (!harness || !value || builtInPresets(harness, field).includes(value)) return;
+  if (!harness || !value || builtInPresets(harness, field).includes(value))
+    return;
 
   const learned = loadLearnedPresets();
   const current = learned[harness]?.[field] ?? [];

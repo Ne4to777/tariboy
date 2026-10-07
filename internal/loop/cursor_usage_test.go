@@ -2,6 +2,7 @@ package loop
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,5 +64,41 @@ func TestTailerReportsCursorResultUsage(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		tl.Stop()
 		t.Fatal("timed out waiting for cursor usage")
+	}
+}
+
+func TestTailerReportsCursorUsageAfterLongStdoutLine(t *testing.T) {
+	dir := t.TempDir()
+	got := make(chan CursorResultUsage, 1)
+	var model string
+	tl := startTailer(nil, "it-1", dir, 5*time.Millisecond, false, func(line string) {
+		m, usage, ok := observeCursorStreamLine(line)
+		if !ok {
+			return
+		}
+		if m != "" {
+			model = m
+			return
+		}
+		if usage != nil {
+			usage.Model = model
+			got <- *usage
+		}
+	})
+	longAssistant := `{"type":"assistant","message":{"content":"` + strings.Repeat("x", 5000) + `"}}`
+	longResult := `{"type":"result","subtype":"success","duration_ms":4708,"result":"` + strings.Repeat("y", 5000) + `","usage":{"inputTokens":4841,"outputTokens":31,"cacheReadTokens":5888,"cacheWriteTokens":0}}`
+	stdout := filepath.Join(dir, "harness.stdout.log")
+	appendLine(t, stdout, `{"type":"system","subtype":"init","model":"Grok 4.7 256K High"}`)
+	appendLine(t, stdout, longAssistant)
+	appendLine(t, stdout, longResult)
+	select {
+	case usage := <-got:
+		tl.Stop()
+		if usage.Model != "Grok 4.7 256K High" || usage.InputTokens != 4841 || usage.OutputTokens != 31 || usage.CacheReadTokens != 5888 || usage.DurationMs != 4708 {
+			t.Fatalf("usage = %+v", usage)
+		}
+	case <-time.After(2 * time.Second):
+		tl.Stop()
+		t.Fatal("timed out waiting for cursor usage past a long stdout line")
 	}
 }

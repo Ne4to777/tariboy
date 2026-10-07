@@ -2,11 +2,14 @@ package loop
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Recorder is the slice of *audit.Log the tailer needs. Defined here (no audit
@@ -120,23 +123,22 @@ func (t *Tailer) emit() {
 		r := bufio.NewReader(f)
 		var consumed int64
 		for {
-			line, err := r.ReadString('\n')
-			if len(line) > 0 && (err == nil || line[len(line)-1] == '\n') {
-				// Only a newline-terminated line is a complete record; a trailing
-				// partial line is left for the next tick.
-				consumed += int64(len(line))
-				text := trimNewline(line)
-				if tf.stream == "stdout" && t.onStdout != nil {
-					t.onStdout(text)
+			line, nbytes, complete, err := readTailLine(r)
+			if complete {
+				consumed += int64(nbytes)
+				if line != "" {
+					text := trimNewline(line)
+					if tf.stream == "stdout" && t.onStdout != nil {
+						t.onStdout(text)
+					}
+					if t.rec != nil {
+						data := map[string]any{"line": truncateAuditLine(text)}
+						if tf.stream != "" {
+							data["stream"] = tf.stream
+						}
+						t.rec.Record(tf.typ, tf.source, t.iterID, data)
+					}
 				}
-				if t.rec == nil {
-					continue
-				}
-				data := map[string]any{"line": text}
-				if tf.stream != "" {
-					data["stream"] = tf.stream
-				}
-				t.rec.Record(tf.typ, tf.source, t.iterID, data)
 			}
 			if err != nil {
 				break
@@ -145,6 +147,52 @@ func (t *Tailer) emit() {
 		t.offsets[tf.name] = off + consumed
 		f.Close()
 	}
+}
+
+const (
+	maxTailLineBytes  = 32 << 20
+	maxAuditLineBytes = 8 << 10
+)
+
+func readTailLine(r *bufio.Reader) (line string, nbytes int, complete bool, err error) {
+	var b strings.Builder
+	overflow := false
+	for {
+		frag, readErr := r.ReadString('\n')
+		nbytes += len(frag)
+		if !overflow {
+			if b.Len()+len(frag) <= maxTailLineBytes {
+				b.WriteString(frag)
+			} else {
+				overflow = true
+				b.Reset()
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if overflow {
+			ended := readErr == nil || strings.HasSuffix(frag, "\n")
+			return "", nbytes, ended, readErr
+		}
+		text := b.String()
+		ended := strings.HasSuffix(text, "\n")
+		if !ended {
+			return text, nbytes, false, readErr
+		}
+		return text, nbytes, true, nil
+	}
+}
+
+func truncateAuditLine(s string) string {
+	if len(s) <= maxAuditLineBytes {
+		return s
+	}
+	s = s[:maxAuditLineBytes]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func trimNewline(s string) string {
