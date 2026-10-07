@@ -284,6 +284,19 @@ func escapeCodexCatalogMetadata(value string) string {
 	return out.String()
 }
 
+func cursorSkillBridge(request SkillBridgeRequest) (SkillBridge, error) {
+	if len(request.Skills) == 0 {
+		return SkillBridge{}, nil
+	}
+	if err := validateSkillBridgeRequest(request, "cursor"); err != nil {
+		return SkillBridge{}, err
+	}
+	return SkillBridge{
+		Plan:   agentdir.BridgePlan{SkillDestination: "skills"},
+		Launch: SkillLaunchConfig{PromptPrefix: codexSkillCatalog(request)},
+	}, nil
+}
+
 func openCodeSkillBridge(request SkillBridgeRequest) (SkillBridge, error) {
 	if len(request.Skills) == 0 {
 		return SkillBridge{}, nil

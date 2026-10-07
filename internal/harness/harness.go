@@ -318,7 +318,7 @@ func (cursor) Command(cwd, promptPath string, cfg Config) ([]string, []string, e
 }
 
 func (cursor) SkillBridge(request SkillBridgeRequest) (SkillBridge, error) {
-	return SkillBridge{}, nil
+	return cursorSkillBridge(request)
 }
 
 type stub struct{ path string }

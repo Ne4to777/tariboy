@@ -199,8 +199,26 @@ func TestOpenCodeSkillBridgeUsesAbsoluteConfigOverlay(t *testing.T) {
 	}
 }
 
+func TestCursorSkillBridgeUsesSharedSkillDestination(t *testing.T) {
+	request := skillBridgeRequest("cursor")
+	bridge, err := cursor{}.SkillBridge(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bridge.Plan.SkillDestination != "skills" || len(bridge.Plan.Files) != 0 {
+		t.Fatalf("Cursor bridge plan = %#v", bridge.Plan)
+	}
+	if len(bridge.Launch.Args) != 0 || len(bridge.Launch.Env) != 0 || len(bridge.Support.Args) != 0 {
+		t.Fatalf("Cursor launch/support = %#v / %#v", bridge.Launch, bridge.Support)
+	}
+	skillFile := filepath.Join(request.BridgeDir, "skills", "code-review", "SKILL.md")
+	if !strings.Contains(bridge.Launch.PromptPrefix, skillFile) {
+		t.Fatalf("Cursor catalog = %q, want path %s", bridge.Launch.PromptPrefix, skillFile)
+	}
+}
+
 func TestSkillBridgeIsAdditiveAndEmptyImagesAreNoop(t *testing.T) {
-	for _, adapter := range []Adapter{claude{}, codex{}, opencode{}} {
+	for _, adapter := range []Adapter{claude{}, codex{}, opencode{}, cursor{}} {
 		request := skillBridgeRequest(adapter.Type())
 		request.Skills = nil
 		bridge, err := adapter.SkillBridge(request)
