@@ -92,6 +92,8 @@ func Get(typ string) (Adapter, error) {
 		return codex{}, nil
 	case "opencode":
 		return opencode{}, nil
+	case "cursor":
+		return cursor{}, nil
 	case "stub":
 		path := os.Getenv("TARIBOY_STUB_HARNESS")
 		if path == "" {
@@ -99,7 +101,7 @@ func Get(typ string) (Adapter, error) {
 		}
 		return stub{path: path}, nil
 	default:
-		return nil, fmt.Errorf("unknown harness %q (want claude|codex|opencode|stub)", typ)
+		return nil, fmt.Errorf("unknown harness %q (want claude|codex|opencode|cursor|stub)", typ)
 	}
 }
 
@@ -280,6 +282,43 @@ func (opencode) Command(cwd, promptPath string, cfg Config) ([]string, []string,
 
 func (opencode) SkillBridge(request SkillBridgeRequest) (SkillBridge, error) {
 	return openCodeSkillBridge(request)
+}
+
+type cursor struct{}
+
+func (cursor) Type() string       { return "cursor" }
+func (cursor) Executable() string { return "agent" }
+
+func (cursor) Command(cwd, promptPath string, cfg Config) ([]string, []string, error) {
+	shellCommand := `cmd=$1; shift; exec "$cmd" "$@"`
+	if !cfg.Bare {
+		if err := errPromptTooLargeForArgv("cursor", promptPath); err != nil {
+			return nil, nil, err
+		}
+		shellCommand = `prompt=$(cat "$2") || exit; cmd=$1; shift 2; exec "$cmd" "$@" "$prompt"`
+	}
+	argv := []string{
+		"/bin/sh", "-c", shellCommand,
+		"tariboy-harness", "agent",
+	}
+	if !cfg.Bare {
+		argv = append(argv, promptPath)
+	}
+	if !cfg.Interactive {
+		argv = append(argv, "-p", "--output-format", "stream-json")
+	}
+	argv = append(argv, "--force")
+	if !cfg.Interactive {
+		argv = append(argv, "--trust")
+	}
+	if cfg.Model != "" {
+		argv = append(argv, "--model", cfg.Model)
+	}
+	return argv, nil, nil
+}
+
+func (cursor) SkillBridge(request SkillBridgeRequest) (SkillBridge, error) {
+	return SkillBridge{}, nil
 }
 
 type stub struct{ path string }

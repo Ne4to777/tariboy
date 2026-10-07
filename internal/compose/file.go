@@ -304,10 +304,10 @@ func (h HarnessSpec) Validate() error {
 		return fmt.Errorf("harness.type is required")
 	}
 	switch h.Type {
-	case "claude", "codex", "opencode":
+	case "claude", "codex", "opencode", "cursor":
 		return nil
 	default:
-		return fmt.Errorf("harness.type %q is not supported (want claude|codex|opencode)", h.Type)
+		return fmt.Errorf("harness.type %q is not supported (want claude|codex|opencode|cursor)", h.Type)
 	}
 }
 

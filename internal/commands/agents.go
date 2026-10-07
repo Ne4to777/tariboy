@@ -296,7 +296,7 @@ func agentRun() registry.Command {
 			{Name: "image", Type: registry.String, Required: true, Help: "image ref name:tag"},
 			{Name: "name", Flag: "name", Type: registry.String, Help: "agent name (default: generated)"},
 			{Name: "cwd", Flag: "cwd", Type: registry.String, Help: "working directory"},
-			{Name: "harness", Flag: "harness", Short: "a", Type: registry.String, Help: "harness: claude|codex|opencode|stub"},
+			{Name: "harness", Flag: "harness", Short: "a", Type: registry.String, Help: "harness: claude|codex|opencode|cursor|stub"},
 			{Name: "model", Flag: "model", Short: "m", Type: registry.String, Help: "model"},
 			{Name: "effort", Flag: "effort", Short: "e", Type: registry.String, Help: "effort"},
 			{Name: "interactive", Flag: "interactive", Short: "i", Type: registry.Bool, Help: "interactive (tmux) mode"},

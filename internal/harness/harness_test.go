@@ -266,6 +266,7 @@ func TestAdapterExecutable(t *testing.T) {
 		"claude":   "claude",
 		"codex":    "codex",
 		"opencode": "opencode",
+		"cursor":   "agent",
 		"stub":     stubPath,
 	}
 	for typ, want := range cases {
@@ -289,6 +290,8 @@ func TestHarnessWrappersPreserveEffectivePath(t *testing.T) {
 		{name: "claude", a: claude{}},
 		{name: "claude bare", a: claude{}, cfg: Config{Bare: true}},
 		{name: "codex", a: codex{}},
+		{name: "cursor", a: cursor{}},
+		{name: "cursor bare", a: cursor{}, cfg: Config{Bare: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,6 +409,62 @@ func writeExecutable(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCursorAdapter(t *testing.T) {
+	a, err := Get("cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Type() != "cursor" || a.Executable() != "agent" {
+		t.Fatalf("cursor adapter = %s %s", a.Type(), a.Executable())
+	}
+	prompt := writePrompt(t, "DO THE WORK")
+	argv, env, err := a.Command("/w", prompt, Config{Model: "gpt-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env != nil {
+		t.Fatalf("env = %v", env)
+	}
+	want := []string{
+		"/bin/sh", "-c", `prompt=$(cat "$2") || exit; cmd=$1; shift 2; exec "$cmd" "$@" "$prompt"`,
+		"tariboy-harness", "agent", prompt,
+		"-p", "--output-format", "stream-json", "--force", "--trust",
+		"--model", "gpt-5",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %v, want %v", argv, want)
+	}
+	if strings.Contains(strings.Join(argv, " "), "DO THE WORK") {
+		t.Fatalf("prompt body must be passed via file, not argv: %v", argv)
+	}
+
+	iargv, _, err := a.Command("/w", prompt, Config{Interactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInteractive := []string{
+		"/bin/sh", "-c", `prompt=$(cat "$2") || exit; cmd=$1; shift 2; exec "$cmd" "$@" "$prompt"`,
+		"tariboy-harness", "agent", prompt,
+		"--force",
+	}
+	if !reflect.DeepEqual(iargv, wantInteractive) {
+		t.Fatalf("interactive argv = %v, want %v", iargv, wantInteractive)
+	}
+
+	bargv, _, err := a.Command("/w", prompt, Config{Bare: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBare := []string{
+		"/bin/sh", "-c", `cmd=$1; shift; exec "$cmd" "$@"`,
+		"tariboy-harness", "agent",
+		"-p", "--output-format", "stream-json", "--force", "--trust",
+	}
+	if !reflect.DeepEqual(bargv, wantBare) {
+		t.Fatalf("bare argv = %v, want %v", bargv, wantBare)
 	}
 }
 

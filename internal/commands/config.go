@@ -354,6 +354,7 @@ var validHarnessTypes = map[string]bool{
 	"claude":   true,
 	"codex":    true,
 	"opencode": true,
+	"cursor":   true,
 	"stub":     true,
 }
 
@@ -367,7 +368,7 @@ func agentHarness() registry.Command {
 		Summary: "Get or set the agent harness type (omit value to read); restart the agent to apply",
 		Args: []registry.Arg{
 			{Name: "name", Type: registry.String, Required: true, Help: "agent name"},
-			{Name: "value", Type: registry.String, Help: "new harness type claude|codex|opencode|stub (omit to read)"},
+			{Name: "value", Type: registry.String, Help: "new harness type claude|codex|opencode|cursor|stub (omit to read)"},
 		},
 		HTTP: &registry.HTTPRoute{Method: "POST", Path: "/api/agents/{name}/harness"},
 		Handler: func(c *registry.Ctx, p registry.Params) (any, error) {
@@ -377,7 +378,7 @@ func agentHarness() registry.Command {
 			}
 			if v := str(p, "value"); v != "" {
 				if !validHarnessTypes[v] {
-					return nil, api.UserError{Code: "bad_value", Msg: "value must be one of claude|codex|opencode|stub"}
+					return nil, api.UserError{Code: "bad_value", Msg: "value must be one of claude|codex|opencode|cursor|stub"}
 				}
 				a.HarnessType = v
 				if err := agentStore(c).Update(a); err != nil {

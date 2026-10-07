@@ -100,6 +100,23 @@ func TestOversizedPromptReachesHarnessStdin(t *testing.T) {
 // terminal"), so its prompt has to stay in argv and stays bound by
 // MAX_ARG_STRLEN. Report that as a diagnosable error rather than letting
 // execve fail with an opaque exit 126.
+func TestCursorRejectsOversizedPrompt(t *testing.T) {
+	promptPath, _ := oversizedPrompt(t)
+	for _, cfg := range []Config{{}, {Interactive: true}} {
+		_, _, err := cursor{}.Command("/w", promptPath, cfg)
+		if err == nil {
+			t.Fatal("oversized prompt must be rejected when it has to travel in argv")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "cursor") {
+			t.Fatalf("error %q does not mention cursor", err)
+		}
+	}
+	_, _, err := cursor{}.Command("/w", writePrompt(t, "DO THE WORK"), Config{})
+	if err != nil {
+		t.Fatalf("prompt within the limit must be accepted: %v", err)
+	}
+}
+
 func TestCodexInteractiveRejectsOversizedPrompt(t *testing.T) {
 	promptPath, _ := oversizedPrompt(t)
 	_, _, err := codex{}.Command("/w", promptPath, Config{Interactive: true})

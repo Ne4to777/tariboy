@@ -744,7 +744,7 @@ it("a failed harness save keeps the existing error behavior and does not restart
   expect(calls.some((c) => c.path === "/api/agents/alpha/restart")).toBe(false);
 });
 
-it("harness dropdown offers exactly claude/codex/opencode (no test-only stub)", async () => {
+it("harness dropdown offers exactly claude/codex/opencode/cursor (no test-only stub)", async () => {
   const calls: Call[] = [];
   stubFetch(calls);
   renderPage();
@@ -753,7 +753,7 @@ it("harness dropdown offers exactly claude/codex/opencode (no test-only stub)", 
   const opts = Array.from((select as HTMLSelectElement).options).map(
     (o) => o.value,
   );
-  expect(opts).toEqual(["claude", "codex", "opencode"]);
+  expect(opts).toEqual(["claude", "codex", "opencode", "cursor"]);
 });
 
 it("harness dropdown still renders an agent's current out-of-list harness (stub)", async () => {
@@ -766,7 +766,7 @@ it("harness dropdown still renders an agent's current out-of-list harness (stub)
   const opts = Array.from((select as HTMLSelectElement).options).map(
     (o) => o.value,
   );
-  expect(opts).toEqual(["claude", "codex", "opencode", "stub"]);
+  expect(opts).toEqual(["claude", "codex", "opencode", "cursor", "stub"]);
 });
 
 it("toggling interactive saves the boolean without restarting and explains when it takes effect", async () => {

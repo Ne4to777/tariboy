@@ -6,7 +6,7 @@ import type { ImageRow } from "@/lib/api";
 // the group wizard V4). Kept here so both reuse one image picker and one env
 // serializer instead of duplicating the logic per page.
 
-export const HARNESSES = ["claude", "codex", "opencode", "stub"];
+export const HARNESSES = ["claude", "codex", "opencode", "cursor", "stub"];
 
 export interface EnvRow { key: string; value: string }
 

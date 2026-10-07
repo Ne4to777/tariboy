@@ -382,7 +382,7 @@ func requiredSupport(probe SkillSupportProbe) string {
 
 func LegacySkillsSubdir(harness string) string {
 	switch harness {
-	case "claude", "codex", "opencode", "stub":
+	case "claude", "codex", "opencode", "cursor", "stub":
 		return ".claude/skills"
 	default:
 		return ""

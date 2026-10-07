@@ -29,13 +29,13 @@ import { RetentionPanel } from "@/components/RetentionPanel";
 import { ShellScriptEditor } from "@/components/ShellScriptEditor";
 
 // Operator-selectable harnesses. This is intentionally a SUBSET of the backend
-// allowlist (internal/harness.Get() = claude | codex | opencode | stub): 'stub'
+// allowlist (internal/harness.Get() = claude | codex | opencode | cursor | stub): 'stub'
 // is a test-only harness that the compose validator rejects, so it is omitted
 // here to keep operators from picking a value that can't be applied. The
 // /harness endpoint stays permissive (still accepts 'stub' for unit tests);
 // this list only governs what the dropdown offers as a new choice. An agent
 // already on 'stub' still shows it as its current value — see harnessOptions.
-const HARNESS_OPTIONS = ["claude", "codex", "opencode"] as const;
+const HARNESS_OPTIONS = ["claude", "codex", "opencode", "cursor"] as const;
 
 // Field aligns a label above its control (input/select + button) so every row
 // in the Settings page shares the same vertical rhythm. The control row keeps
