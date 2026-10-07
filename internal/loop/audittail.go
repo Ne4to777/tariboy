@@ -62,21 +62,27 @@ type Tailer struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+	onStdout func(string)
 }
 
 // StartTailer launches a Tailer goroutine and returns it. logsDir is the
 // iteration's logs directory (agentdir Layout.LogsDir). When interactive, only
 // shim.log is teed (the harness output is a tmux TUI capture, not audit-worthy).
 func StartTailer(rec Recorder, iterationID, logsDir string, poll time.Duration, interactive bool) *Tailer {
+	return startTailer(rec, iterationID, logsDir, poll, interactive, nil)
+}
+
+func startTailer(rec Recorder, iterationID, logsDir string, poll time.Duration, interactive bool, onStdout func(string)) *Tailer {
 	if poll <= 0 {
 		poll = 200 * time.Millisecond
 	}
 	t := &Tailer{
 		rec: rec, iterID: iterationID, logsDir: logsDir, poll: poll,
-		files:   tailFilesFor(interactive),
-		offsets: map[string]int64{},
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		files:    tailFilesFor(interactive),
+		offsets:  map[string]int64{},
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+		onStdout: onStdout,
 	}
 	go t.run()
 	return t
@@ -119,7 +125,14 @@ func (t *Tailer) emit() {
 				// Only a newline-terminated line is a complete record; a trailing
 				// partial line is left for the next tick.
 				consumed += int64(len(line))
-				data := map[string]any{"line": trimNewline(line)}
+				text := trimNewline(line)
+				if tf.stream == "stdout" && t.onStdout != nil {
+					t.onStdout(text)
+				}
+				if t.rec == nil {
+					continue
+				}
+				data := map[string]any{"line": text}
 				if tf.stream != "" {
 					data["stream"] = tf.stream
 				}

@@ -589,7 +589,30 @@ func Run(ctx context.Context, o Options) error {
 		AgentsDir: p.AgentsDir(), RuntimeDir: p.RuntimeDir(), ShimBin: shimBin,
 		ImgStore: imgStore, Store: as, Log: log, Clock: time.Now, Bus: channelBus,
 		Schedules: schedStore, Scripts: scriptStore, ScriptResults: scriptPublisher, Emit: hub.Emit, Proxy: proxy,
-		Groups:             groupProv,
+		Groups: groupProv,
+		RecordCursorUsage: func(agentName, iteration, imageName, imageTag, imageDigest string, usage loop.CursorResultUsage) {
+			groupID, groupName, _ := aiStore.CurrentGroup(agentName)
+			row := aiproxy.AIRequest{
+				ID: aiproxy.NewRequestID(nil), TS: time.Now().UTC().Format(time.RFC3339Nano),
+				Agent: agentName, Iteration: iteration,
+				ImageName: imageName, ImageTag: imageTag, ImageDigest: imageDigest,
+				Provider: "cursor", Model: usage.Model,
+				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+				CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens,
+				LatencyMs: usage.DurationMs, Status: "ok",
+				GroupID: groupID, GroupName: groupName,
+			}
+			ingester.Enqueue(row)
+			hub.Emit(events.Event{Agent: agentName, Type: "proxy",
+				Time: time.Now().UTC().Format(time.RFC3339), Data: map[string]any{
+					"request_id": row.ID, "iteration_id": row.Iteration,
+					"model": row.Model, "provider": row.Provider,
+					"input_tokens": row.InputTokens, "output_tokens": row.OutputTokens,
+					"cache_write_tokens": row.CacheWriteTokens, "cache_read_tokens": row.CacheReadTokens,
+					"cost_usd": row.CostUSD, "latency_ms": row.LatencyMs, "status": row.Status,
+				}})
+			metrics.RecordProxyRequest(context.Background(), row.Status, float64(row.LatencyMs), row.InputTokens, row.OutputTokens, row.CostUSD)
+		},
 		Tasks:              taskService,
 		ExternalPlugins:    plugins.ResolveEnabledInstalledMetadata(p.PluginsDir(), pluginStore),
 		Spawner:            o.Spawner,

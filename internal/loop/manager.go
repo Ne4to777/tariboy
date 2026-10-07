@@ -80,6 +80,9 @@ type ManagerConfig struct {
 	// its audit.Registry so recordEvent, the engine lifecycle sink, and the
 	// runner's log tailer all share one *audit.Log per agent. Nil disables audit.
 	AuditFor func(agent string) Recorder
+	// RecordCursorUsage persists token counts from a non-interactive cursor
+	// stream-json result. Nil leaves those counts unrecorded.
+	RecordCursorUsage func(agent, iteration, imageName, imageTag, imageDigest string, usage CursorResultUsage)
 	// HasTmuxSession / KillTmuxSession are seams for orphan-session reaping on
 	// start (interactive agents). Injectable so tests avoid a real tmux; nil uses
 	// the real tmux commands.
@@ -393,7 +396,8 @@ func (m *Manager) runnerFor(ag agent.Agent) IterationRunner {
 		AgentsDir: m.cfg.AgentsDir, RuntimeDir: m.cfg.RuntimeDir, ShimBin: m.cfg.ShimBin,
 		ImgStore: m.cfg.ImgStore, Store: m.cfg.Store, Spawner: m.cfg.Spawner, Clock: m.cfg.Clock,
 		DoneGrace: m.cfg.DoneGrace, Logger: m.cfg.Log, Bus: m.cfg.Bus, Proxy: m.cfg.Proxy, AuditFor: m.cfg.AuditFor,
-		CurrentGoal: m.cfg.CurrentGoal, WorkflowGoals: m.cfg.WorkflowGoals, Tasks: m.cfg.Tasks,
+		RecordCursorUsage: m.cfg.RecordCursorUsage,
+		CurrentGoal:       m.cfg.CurrentGoal, WorkflowGoals: m.cfg.WorkflowGoals, Tasks: m.cfg.Tasks,
 		GoalRead: m.noteIterationGoal,
 	})
 }

@@ -398,6 +398,9 @@ type RunnerConfig struct {
 	// instance per agent, also used by the daemon and engine so the seq counter
 	// stays consistent). Nil disables audit tailing.
 	AuditFor func(agent string) Recorder
+	// RecordCursorUsage persists token counts from a non-interactive cursor
+	// stream-json result line. Nil leaves those counts unrecorded.
+	RecordCursorUsage func(agent, iteration, imageName, imageTag, imageDigest string, usage CursorResultUsage)
 }
 
 const defaultDoneGrace = 2 * time.Second
@@ -630,12 +633,34 @@ func (r *ShimRunner) Run(ctx context.Context, ag agent.Agent, trigger, iteration
 		}
 	}
 	r.cfg.Logger.Info("harness spawned", "agent", ag.Name, "iteration", iterationID)
+	var cursorModel string
+	var onStdout func(string)
+	if ag.HarnessType == "cursor" && !ag.Interactive && r.cfg.RecordCursorUsage != nil {
+		onStdout = func(line string) {
+			model, usage, ok := observeCursorStreamLine(line)
+			if !ok {
+				return
+			}
+			if model != "" && usage == nil {
+				cursorModel = model
+				return
+			}
+			if usage == nil {
+				return
+			}
+			usage.Model = cursorModel
+			imageName, imageTag := imageNameTag(ag.ImageRef)
+			r.cfg.RecordCursorUsage(ag.Name, iterationID, imageName, imageTag, ag.ImageDigest, *usage)
+		}
+	}
 	if rec != nil {
 		rec.Record("harness_spawned", "system", iterationID, nil)
+	}
+	if rec != nil || onStdout != nil {
 		// Tee logs into the audit log for the lifetime of the harness; the final
 		// drain on Stop captures trailing output. Interactive agents tee only
 		// shim.log (their harness output is a tmux TUI capture, not audit-worthy).
-		tailer := StartTailer(rec, iterationID, l.LogsDir(iterationID), r.cfg.PollInterval, ag.Interactive)
+		tailer := startTailer(rec, iterationID, l.LogsDir(iterationID), r.cfg.PollInterval, ag.Interactive, onStdout)
 		defer tailer.Stop()
 	}
 
