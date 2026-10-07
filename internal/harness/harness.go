@@ -68,7 +68,8 @@ type Config struct {
 	SessionID   string
 	// ProxyURL is the tokenized Tariboy proxy URL for this iteration. Codex
 	// needs an explicit model provider override: its ChatGPT login provider does
-	// not use OPENAI_BASE_URL for inference traffic.
+	// not use OPENAI_BASE_URL for inference traffic. Cursor passes it as
+	// --endpoint; agent does not use ANTHROPIC_BASE_URL or OPENAI_BASE_URL.
 	ProxyURL string
 	// Bare launches the harness with no initial prompt and no tariboy
 	// tooling flags (instructions-free session; image manifest bare=true).
@@ -310,6 +311,9 @@ func (cursor) Command(cwd, promptPath string, cfg Config) ([]string, []string, e
 	argv = append(argv, "--force")
 	if !cfg.Interactive {
 		argv = append(argv, "--trust")
+	}
+	if cfg.ProxyURL != "" {
+		argv = append(argv, "--endpoint", cfg.ProxyURL)
 	}
 	if cfg.Model != "" {
 		argv = append(argv, "--model", cfg.Model)

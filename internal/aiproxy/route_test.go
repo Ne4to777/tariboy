@@ -19,6 +19,9 @@ func TestRouterDefaultsAndRules(t *testing.T) {
 	if u := r.Resolve("chatgpt", "gpt-5.6-terra"); u.BaseURL != "https://chatgpt.com/backend-api/codex" || u.KeyEnv != "" {
 		t.Fatalf("chatgpt default = %+v", u)
 	}
+	if u := r.ResolveDefault("cursor"); u.BaseURL != "https://api2.cursor.sh" || u.KeyEnv != "" {
+		t.Fatalf("cursor default = %+v", u)
+	}
 	// A model-glob rule overrides.
 	r.SetRules([]Rule{{ModelGlob: "internal-*", Upstream: Upstream{BaseURL: "http://gw", KeyEnv: "GW_KEY"}}})
 	if u := r.Resolve("anthropic", "internal-fast"); u.BaseURL != "http://gw" {

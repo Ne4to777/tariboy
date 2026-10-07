@@ -466,6 +466,25 @@ func TestCursorAdapter(t *testing.T) {
 	if !reflect.DeepEqual(bargv, wantBare) {
 		t.Fatalf("bare argv = %v, want %v", bargv, wantBare)
 	}
+
+	proxyURL := "http://127.0.0.1:5555/_tariboy/sk-tariboy-token"
+	pargv, penv, err := a.Command("/w", prompt, Config{Model: "gpt-5", ProxyURL: proxyURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if penv != nil {
+		t.Fatalf("env = %v", penv)
+	}
+	wantProxy := []string{
+		"/bin/sh", "-c", `prompt=$(cat "$2") || exit; cmd=$1; shift 2; exec "$cmd" "$@" "$prompt"`,
+		"tariboy-harness", "agent", prompt,
+		"-p", "--output-format", "stream-json", "--force", "--trust",
+		"--endpoint", proxyURL,
+		"--model", "gpt-5",
+	}
+	if !reflect.DeepEqual(pargv, wantProxy) {
+		t.Fatalf("proxy argv = %v, want %v", pargv, wantProxy)
+	}
 }
 
 func TestGetUnknown(t *testing.T) {

@@ -29,6 +29,7 @@ func NewRouter() *Router {
 		"anthropic": {BaseURL: "https://api.anthropic.com", KeyEnv: "ANTHROPIC_API_KEY"},
 		"chatgpt":   {BaseURL: "https://chatgpt.com/backend-api/codex"},
 		"openai":    {BaseURL: "https://api.openai.com", KeyEnv: "OPENAI_API_KEY"},
+		"cursor":    {BaseURL: "https://api2.cursor.sh"},
 	}}
 }
 
@@ -135,6 +136,11 @@ func LoadRouter(s *store.Store, getenv func(string) string) (*Router, error) {
 			d := r.ResolveDefault("openai")
 			d.BaseURL = v
 			r.SetDefault("openai", d)
+		}
+		if v := getenv("TARIBOY_UPSTREAM_CURSOR_BASE_URL"); v != "" {
+			d := r.ResolveDefault("cursor")
+			d.BaseURL = v
+			r.SetDefault("cursor", d)
 		}
 	}
 	return r, nil

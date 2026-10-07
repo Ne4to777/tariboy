@@ -108,9 +108,10 @@ func TestProviderDetection(t *testing.T) {
 	p.forward = func(ex *Exchange) error { provider = ex.Provider; ex.W.WriteHeader(200); return nil }
 	tok, _ := p.Mint(Attribution{Agent: "a", Iteration: "a-1"})
 	for path, want := range map[string]string{
-		"/v1/messages":         "anthropic",
-		"/v1/chat/completions": "openai",
-		"/v1/responses":        "openai",
+		"/v1/messages":               "anthropic",
+		"/v1/chat/completions":       "openai",
+		"/v1/responses":              "openai",
+		"/agent.v1.AgentService/Run": "cursor",
 	} {
 		provider = ""
 		rr := httptest.NewRecorder()

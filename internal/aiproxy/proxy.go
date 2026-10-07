@@ -16,13 +16,16 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // Exchange carries one request through the middleware chain.
 type Exchange struct {
 	R              *http.Request
 	W              http.ResponseWriter
-	Provider       string // anthropic | openai
+	Provider       string // anthropic | openai | cursor
 	Path           string
 	EscapedPath    string
 	EscapedPathOK  bool
@@ -267,17 +270,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.resolvePathToken(ex)
 	p.recordActivity(ex)
 	ex.Provider = providerFor(r.URL.Path)
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
-	_ = r.Body.Close()
-	if err != nil {
-		ex.Status = "upstream_error"
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"failed to read request body"}}`))
-		ex.LatencyMs = int(p.cfg.Clock().Sub(ex.Start).Milliseconds())
-		return
+	if ex.Provider != "cursor" {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+		_ = r.Body.Close()
+		if err != nil {
+			ex.Status = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"failed to read request body"}}`))
+			ex.LatencyMs = int(p.cfg.Clock().Sub(ex.Start).Milliseconds())
+			return
+		}
+		ex.ReqBody = body
 	}
-	ex.ReqBody = body
 	_ = p.chain(ex)
 	ex.LatencyMs = int(p.cfg.Clock().Sub(ex.Start).Milliseconds())
 }
@@ -358,9 +363,25 @@ func providerFor(path string) string {
 		pathAtOrBelow(path, "/v1/responses"),
 		pathAtOrBelow(path, "/v1/chat/completions"):
 		return "openai"
+	case isCursorRoute(path):
+		return "cursor"
 	default:
 		return "anthropic"
 	}
+}
+
+func isCursorRoute(path string) bool {
+	if !isSafeRoutePath(path) {
+		return false
+	}
+	if pathAtOrBelow(path, "/auth") {
+		return true
+	}
+	service, method, ok := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	if !ok || method == "" || strings.Contains(method, "/") {
+		return false
+	}
+	return strings.HasPrefix(service, "agent.v1.") || strings.HasPrefix(service, "aiserver.v1.")
 }
 
 func isCodexRoute(path string) bool {
@@ -532,7 +553,7 @@ func (p *Proxy) ListenAt(addr string) (string, error) {
 		return "", err
 	}
 	p.ln = ln
-	p.server = &http.Server{Handler: p}
+	p.server = &http.Server{Handler: h2c.NewHandler(p, &http2.Server{})}
 	return ln.Addr().String(), nil
 }
 
@@ -589,7 +610,11 @@ func (p *Proxy) doForward(ex *Exchange) error {
 	}
 	target.RawQuery = ex.R.URL.RawQuery
 
-	outReq, err := http.NewRequestWithContext(ex.R.Context(), ex.R.Method, target.String(), bytes.NewReader(ex.ReqBody))
+	reqBody := io.Reader(bytes.NewReader(ex.ReqBody))
+	if ex.Provider == "cursor" {
+		reqBody = ex.R.Body
+	}
+	outReq, err := http.NewRequestWithContext(ex.R.Context(), ex.R.Method, target.String(), reqBody)
 	if err != nil {
 		ex.Status = "upstream_error"
 		ex.W.WriteHeader(http.StatusBadGateway)
@@ -597,6 +622,9 @@ func (p *Proxy) doForward(ex *Exchange) error {
 	}
 	copyHeaders(outReq.Header, ex.R.Header)
 	outReq.Host = target.Host
+	if ex.Provider == "cursor" && ex.R.ContentLength > 0 {
+		outReq.ContentLength = ex.R.ContentLength
+	}
 	// Drop the client's Accept-Encoding so Go's transport negotiates gzip and
 	// decompresses it; usage parsing and transcripts need the plain body.
 	outReq.Header.Del("Accept-Encoding")
@@ -631,7 +659,12 @@ func (p *Proxy) doForward(ex *Exchange) error {
 	copyHeaders(ex.W.Header(), resp.Header)
 	ex.W.WriteHeader(resp.StatusCode)
 
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+	if ex.Provider == "cursor" {
+		ex.Streamed = true
+		if err := copyFlush(ex.W, resp.Body); err != nil {
+			ex.Status = "upstream_error"
+		}
+	} else if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		ex.Streamed = true
 		p.streamThrough(ex, resp.Body)
 	} else {
@@ -668,6 +701,9 @@ func (p *Proxy) upstreamFor(ex *Exchange) Upstream {
 	provider := ex.Provider
 	if provider == "openai" && isChatGPTRequest(ex.R.Header) {
 		return p.cfg.Router.ResolveDefault("chatgpt")
+	}
+	if provider == "cursor" {
+		return p.cfg.Router.ResolveDefault("cursor")
 	}
 	return p.cfg.Router.Resolve(provider, modelFromBody(ex.ReqBody))
 }
@@ -759,7 +795,32 @@ func (p *Proxy) streamThrough(ex *Exchange, body io.Reader) {
 	p.setUsageCost(ex)
 }
 
+func copyFlush(dst http.ResponseWriter, src io.Reader) error {
+	buf := make([]byte, 32<<10)
+	flusher, _ := dst.(http.Flusher)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
 func (p *Proxy) parseUsage(ex *Exchange, body []byte) {
+	if ex.Provider == "cursor" {
+		return
+	}
 	var (
 		u     Usage
 		model string

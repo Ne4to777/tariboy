@@ -1282,3 +1282,110 @@ func TestAnthropicCompressedResponseRecordsUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicOpenAIAndCursorHitSeparateHandlers(t *testing.T) {
+	type call struct {
+		path   string
+		body   string
+		auth   string
+		apiKey string
+	}
+	hits := map[string][]call{}
+	responses := map[string]string{
+		"anthropic": `{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":40}}`,
+		"openai":    `{"model":"gpt-4o","usage":{"prompt_tokens":60,"completion_tokens":30}}`,
+		"cursor":    `{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":40}}`,
+	}
+	servers := map[string]*httptest.Server{}
+	for _, name := range []string{"anthropic", "openai", "cursor"} {
+		name := name
+		servers[name] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read %s body: %v", name, err)
+			}
+			hits[name] = append(hits[name], call{
+				path: r.URL.Path, body: string(b),
+				auth: r.Header.Get("Authorization"), apiKey: r.Header.Get("x-api-key"),
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, responses[name])
+		}))
+		defer servers[name].Close()
+	}
+
+	agentsDir := t.TempDir()
+	mkIter(t, agentsDir, "meter", "meter-1")
+	router := NewRouter()
+	router.SetDefault("anthropic", Upstream{BaseURL: servers["anthropic"].URL, KeyEnv: "ANTHROPIC_API_KEY"})
+	router.SetDefault("openai", Upstream{BaseURL: servers["openai"].URL, KeyEnv: "OPENAI_API_KEY"})
+	router.SetDefault("cursor", Upstream{BaseURL: servers["cursor"].URL})
+	var rows []AIRequest
+	p := New(Config{
+		Tokens: NewTokenRegistry(nil), Pricing: &Pricing{table: DefaultPricing()}, Store: newStore(t),
+		Router: router, AgentsDir: agentsDir, Ingest: func(row AIRequest) { rows = append(rows, row) },
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	tok, err := p.Mint(Attribution{Agent: "meter", Iteration: "meter-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requests := []struct {
+		path   string
+		body   string
+		header string
+		value  string
+	}{
+		{path: "/v1/messages", body: `{"model":"claude-opus-4-8","max_tokens":1}`, header: "x-api-key", value: "anthropic-key"},
+		{path: "/v1/chat/completions", body: `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, header: "Authorization", value: "Bearer openai-key"},
+		{path: "/agent.v1.AgentService/Run", body: "cursor-connect-body", header: "Authorization", value: "Bearer cursor-client-key"},
+	}
+	for _, reqSpec := range requests {
+		req := httptest.NewRequest("POST", "/_tariboy/"+tok+reqSpec.path, strings.NewReader(reqSpec.body))
+		req.Header.Set(reqSpec.header, reqSpec.value)
+		if reqSpec.path == "/agent.v1.AgentService/Run" {
+			req.Header.Set("Content-Type", "application/connect+proto")
+		}
+		rr := httptest.NewRecorder()
+		p.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body %s", reqSpec.path, rr.Code, rr.Body.String())
+		}
+	}
+
+	if len(hits["anthropic"]) != 1 || hits["anthropic"][0].path != "/v1/messages" || hits["anthropic"][0].body != requests[0].body {
+		t.Fatalf("anthropic hits = %+v", hits["anthropic"])
+	}
+	if hits["anthropic"][0].apiKey != "anthropic-key" {
+		t.Fatalf("anthropic key = %q", hits["anthropic"][0].apiKey)
+	}
+	if len(hits["openai"]) != 1 || hits["openai"][0].path != "/v1/chat/completions" || hits["openai"][0].body != requests[1].body {
+		t.Fatalf("openai hits = %+v", hits["openai"])
+	}
+	if hits["openai"][0].auth != "Bearer openai-key" {
+		t.Fatalf("openai auth = %q", hits["openai"][0].auth)
+	}
+	if len(hits["cursor"]) != 1 || hits["cursor"][0].path != "/agent.v1.AgentService/Run" || hits["cursor"][0].body != requests[2].body {
+		t.Fatalf("cursor hits = %+v", hits["cursor"])
+	}
+	if hits["cursor"][0].auth != "Bearer cursor-client-key" {
+		t.Fatalf("cursor auth = %q", hits["cursor"][0].auth)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("recorded rows = %d", len(rows))
+	}
+	byProvider := map[string]AIRequest{}
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+	if row := byProvider["anthropic"]; row.InputTokens != 100 || row.OutputTokens != 40 || row.Model != "claude-opus-4-8" {
+		t.Fatalf("anthropic usage = %+v", row)
+	}
+	if row := byProvider["openai"]; row.InputTokens != 60 || row.OutputTokens != 30 || row.Model != "gpt-4o" {
+		t.Fatalf("openai usage = %+v", row)
+	}
+	if row := byProvider["cursor"]; row.InputTokens != 0 || row.OutputTokens != 0 || row.CacheReadTokens != 0 || row.CacheWriteTokens != 0 || row.Model != "" || row.Status != "ok" {
+		t.Fatalf("cursor usage = %+v", row)
+	}
+}
