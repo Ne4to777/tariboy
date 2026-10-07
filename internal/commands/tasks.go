@@ -311,7 +311,7 @@ func TaskOperatorCommands() []registry.Command {
 				items, err := control.ListQueueSecrets(ctx, actor, stringParam(p, "queue"))
 				return map[string]any{"secrets": items, "count": len(items)}, err
 			}),
-		taskRoute("tasks.queue.source.ls", "GET", "/api/task-queues/{queue}/sources", "List the workflow sources of a queue and their last runs",
+		taskRoute("tasks.queue.source.ls", "GET", "/api/task-queues/{queue}/sources", "List the workflow sources of a queue and their recent runs",
 			func(ctx context.Context, control registry.TaskControl, actor tasks.Actor, p registry.Params) (any, error) {
 				items, err := control.ListQueueSources(ctx, actor, stringParam(p, "queue"))
 				return map[string]any{"sources": items, "count": len(items)}, err

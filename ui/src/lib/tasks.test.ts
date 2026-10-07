@@ -20,6 +20,8 @@ import {
   isActiveCategory,
   isWorkflowTask,
   listQueueSecrets,
+  listQueueSources,
+  getQueueSourceRunLog,
   listTaskScriptRuns,
   listWorkflowImages,
   getWorkflowImage,
@@ -158,6 +160,17 @@ describe("workflow task client", () => {
     expect(lastCall()).toEqual([remote, "PUT", "/api/task-queues/DEV/secrets/A%20B", { value: "s3cret" }])
     await removeQueueSecret("DEV", "A B", remote)
     expect(lastCall()).toEqual([remote, "DELETE", "/api/task-queues/DEV/secrets/A%20B", undefined])
+  })
+
+  it("lists queue sources and reads a source run's log", async () => {
+    apiOn.mockResolvedValue({ sources: [{ name: "prs", runs: [{ id: 4 }] }], count: 1 })
+    expect(await listQueueSources("DEV", remote)).toEqual([{ name: "prs", runs: [{ id: 4 }] }])
+    expect(lastCall()).toEqual([remote, "GET", "/api/task-queues/DEV/sources", undefined])
+    apiOn.mockResolvedValue({ run_id: 4, text: "line", truncated: false })
+    expect(await getQueueSourceRunLog("DEV", 4, undefined, remote)).toEqual({ text: "line", truncated: false })
+    expect(lastCall()).toEqual([remote, "GET", "/api/task-queues/DEV/source-runs/4/log", undefined])
+    await getQueueSourceRunLog("DEV", 4, 4096, remote)
+    expect(lastCall()).toEqual([remote, "GET", "/api/task-queues/DEV/source-runs/4/log?max_bytes=4096", undefined])
   })
 
   it("lists workflow images", async () => {

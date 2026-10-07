@@ -17,7 +17,7 @@ import (
 type SourceJobs interface {
 	QueueSourceJobs(ctx context.Context, now time.Time) ([]tasks.SourceJob, error)
 	StartSourceRun(ctx context.Context, job tasks.SourceJob, startedAt string) (int64, error)
-	SetSourceRunPID(ctx context.Context, id int64, pid int) error
+	SetSourceRunPID(ctx context.Context, id int64, pid int, logPath string) error
 	CompleteSourceRun(ctx context.Context, id int64, done tasks.SourceCompletion) error
 	RunningSourceRuns(ctx context.Context) ([]tasks.SourceRun, error)
 	RecoverSourceRuns(ctx context.Context) error
@@ -120,8 +120,11 @@ func (w *worker) startSource(ctx context.Context, job tasks.SourceJob) {
 			}, "", false)
 			return
 		}
+		// The log path is recorded with the PID, so the log of a running
+		// source can be read; Execute writes the log at this path.
+		logPath, _ := filepath.Abs(filepath.Join(spec.RunDir, "run.log"))
 		spec.OnStart = func(pid int) {
-			if err := w.s.Sources.SetSourceRunPID(ctx, id, pid); err != nil && ctx.Err() == nil {
+			if err := w.s.Sources.SetSourceRunPID(ctx, id, pid, logPath); err != nil && ctx.Err() == nil {
 				w.log.Error("record workflow source pid", "run_id", id, "source", key, "err", err)
 			}
 		}

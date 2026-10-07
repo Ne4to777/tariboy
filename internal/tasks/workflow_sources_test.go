@@ -249,7 +249,7 @@ func TestRecoverSourceRunsInterruptsRunningRuns(t *testing.T) {
 	svc, _ := sourceFixture(t)
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	id := startSource(t, svc, sourceJobs(t, svc, now)[0], now)
-	if err := svc.SetSourceRunPID(context.Background(), id, 4242); err != nil {
+	if err := svc.SetSourceRunPID(context.Background(), id, 4242, ""); err != nil {
 		t.Fatal(err)
 	}
 	running, err := svc.RunningSourceRuns(context.Background())
@@ -324,6 +324,9 @@ func TestListQueueSourcesAndLog(t *testing.T) {
 		src.LastRun == nil || src.LastRun.Message != "boom 1" || src.NextRunAt != now.Add(time.Hour+2*time.Minute).Format(time.RFC3339Nano) {
 		t.Fatalf("source = %+v (last %+v)", src, src.LastRun)
 	}
+	if len(src.Runs) != 2 || src.Runs[0].ID != src.LastRun.ID || src.Runs[1].Message != "boom 0" || src.Runs[0].ID <= src.Runs[1].ID {
+		t.Fatalf("runs = %+v", src.Runs)
+	}
 	if _, _, err := svc.QueueSourceRunLog(context.Background(), AgentActor("dev-1"), "DEV", src.LastRun.ID, 0); ErrorCode(err) != "forbidden" {
 		t.Fatalf("agent log error = %v", err)
 	}
@@ -336,5 +339,33 @@ func TestListQueueSourcesAndLog(t *testing.T) {
 	}
 	if _, _, err := svc.QueueSourceRunLog(context.Background(), actor, "DEV", 999, 0); ErrorCode(err) != "run_not_found" {
 		t.Fatalf("missing run error = %v", err)
+	}
+}
+
+func TestQueueSourceRunLogReadsARunningRun(t *testing.T) {
+	svc, actor := sourceFixture(t)
+	base := t.TempDir()
+	svc.SetRunBaseDir(base)
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	id := startSource(t, svc, sourceJobs(t, svc, now)[0], now)
+	logPath := SourceRunDir(base, "DEV", "pull-requests", id) + "/run.log"
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("still polling\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetSourceRunPID(context.Background(), id, 4242, logPath); err != nil {
+		t.Fatal(err)
+	}
+	text, _, err := svc.QueueSourceRunLog(context.Background(), actor, "DEV", id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "still polling") {
+		t.Fatalf("log = %q", text)
+	}
+	if state, _, _, _ := sourceRunRow(t, svc, id); state != "running" {
+		t.Fatalf("state = %s", state)
 	}
 }

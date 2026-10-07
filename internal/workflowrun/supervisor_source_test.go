@@ -19,6 +19,7 @@ type fakeSources struct {
 	jobs      []tasks.SourceJob
 	nextID    int64
 	pids      map[int64]int
+	logs      map[int64]string
 	done      map[int64]tasks.SourceCompletion
 	completed chan int64
 	started   chan int64
@@ -27,7 +28,7 @@ type fakeSources struct {
 }
 
 func newFakeSources(jobs ...tasks.SourceJob) *fakeSources {
-	return &fakeSources{jobs: jobs, pids: map[int64]int{}, done: map[int64]tasks.SourceCompletion{},
+	return &fakeSources{jobs: jobs, pids: map[int64]int{}, logs: map[int64]string{}, done: map[int64]tasks.SourceCompletion{},
 		completed: make(chan int64, 16), started: make(chan int64, 16)}
 }
 
@@ -56,9 +57,10 @@ func (f *fakeSources) StartSourceRun(_ context.Context, job tasks.SourceJob, _ s
 	return f.nextID, nil
 }
 
-func (f *fakeSources) SetSourceRunPID(_ context.Context, id int64, pid int) error {
+func (f *fakeSources) SetSourceRunPID(_ context.Context, id int64, pid int, logPath string) error {
 	f.mu.Lock()
 	f.pids[id] = pid
+	f.logs[id] = logPath
 	f.mu.Unlock()
 	f.started <- id
 	return nil
@@ -128,6 +130,12 @@ func TestSupervisorRunsASourceAndReportsItsItems(t *testing.T) {
 	dir := filepath.Join(h.base, "task-queues", "DEV", "sources", "pull-requests")
 	if done.LogPath != filepath.Join(dir, "runs", "1", "run.log") {
 		t.Fatalf("log path = %q", done.LogPath)
+	}
+	sources.mu.Lock()
+	startLog := sources.logs[1]
+	sources.mu.Unlock()
+	if startLog != done.LogPath {
+		t.Fatalf("log path at start = %q, want %q", startLog, done.LogPath)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "runs", "1", "task.json")); !os.IsNotExist(err) {
 		t.Fatalf("a source run has a task snapshot: %v", err)

@@ -7,7 +7,7 @@ import { remoteTarget } from "./workflowFixtures"
 
 const api = vi.hoisted(() => ({
   getQueueWorkflow: vi.fn(), setQueueWorkflow: vi.fn(), clearQueueWorkflow: vi.fn(),
-  listWorkflowImages: vi.fn(), listQueueSecrets: vi.fn(), setQueueSecret: vi.fn(), removeQueueSecret: vi.fn(),
+  listWorkflowImages: vi.fn(), listQueueSecrets: vi.fn(), setQueueSecret: vi.fn(), removeQueueSecret: vi.fn(), listQueueSources: vi.fn(),
 }))
 vi.mock("@/lib/tasks", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/tasks")>(), ...api }))
 
@@ -31,6 +31,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   api.listWorkflowImages.mockResolvedValue(images)
   api.listQueueSecrets.mockResolvedValue([])
+  api.listQueueSources.mockResolvedValue([])
 })
 
 it("renders No workflow when unbound and lists images sorted with latest first", async () => {
@@ -50,6 +51,19 @@ it("renders a binding with a short digest and the full digest in a title", async
   const short = await screen.findByText(digest.slice(0, 12))
   expect(short).toHaveAttribute("title", digest)
   expect(screen.getByTestId("binding")).toHaveTextContent("release 1.2.0")
+})
+
+it("shows the sources only for a bound queue", async () => {
+  api.getQueueWorkflow.mockResolvedValue(null)
+  const { unmount } = renderIt()
+  await screen.findByText("No workflow")
+  expect(screen.queryByRole("region", { name: "Sources REL" })).not.toBeInTheDocument()
+  expect(api.listQueueSources).not.toHaveBeenCalled()
+  unmount()
+  api.getQueueWorkflow.mockResolvedValue(binding)
+  renderIt()
+  expect(await screen.findByRole("region", { name: "Sources REL" })).toBeInTheDocument()
+  expect(api.listQueueSources).toHaveBeenCalledWith("REL", remoteTarget)
 })
 
 it("binds NAME:TAG with revision 0 when unbound", async () => {

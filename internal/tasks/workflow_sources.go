@@ -92,6 +92,9 @@ type QueueSource struct {
 	// Failures counts the failed and interrupted runs since the last good one.
 	Failures int        `json:"failures"`
 	LastRun  *SourceRun `json:"last_run,omitempty"`
+	// Runs are the newest runs of the source, newest first; their ids read
+	// the logs.
+	Runs []SourceRun `json:"runs"`
 }
 
 // SourceRunDir is the directory of one source run, which holds its log and
@@ -272,9 +275,12 @@ func (s *Service) StartSourceRun(ctx context.Context, job SourceJob, startedAt s
 	return result.LastInsertId()
 }
 
-// SetSourceRunPID records the process of a running source run.
-func (s *Service) SetSourceRunPID(ctx context.Context, id int64, pid int) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE task_queue_source_runs SET pid = ? WHERE id = ? AND state = 'running'`, pid, id)
+// SetSourceRunPID records the process and log of a running source run, so its
+// log can be read before the run finishes; an empty logPath keeps the stored one.
+func (s *Service) SetSourceRunPID(ctx context.Context, id int64, pid int, logPath string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE task_queue_source_runs SET pid = ?, log_path = COALESCE(NULLIF(?, ''), log_path)
+		WHERE id = ? AND state = 'running'`, pid, logPath, id)
 	return err
 }
 
@@ -483,6 +489,7 @@ func (s *Service) ListQueueSources(ctx context.Context, actor Actor, queue strin
 			last = recent[0]
 			item.LastRun = &last
 		}
+		item.Runs = append([]SourceRun{}, recent...)
 		if next := nextSourceRun(b.source, last, len(recent) > 0, now); !next.IsZero() {
 			item.NextRunAt = next.UTC().Format(time.RFC3339Nano)
 		}

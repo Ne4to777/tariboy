@@ -428,6 +428,32 @@ export interface ScriptRun {
   finished_at?: string
   log_path?: string
 }
+export interface SourceRun {
+  id: number
+  queue: string
+  source: string
+  script: string
+  state: "running" | "finished" | "interrupted" | "cancelled"
+  verdict?: "items" | "quiet" | "failure"
+  exit_code?: number
+  message?: string
+  tasks_created: number
+  started_at: string
+  finished_at?: string
+  log_path?: string
+}
+/** A source of a queue's bound workflow, with its newest runs (at most 20). */
+export interface QueueSource {
+  queue: string
+  name: string
+  script: string
+  every: string
+  timeout?: string
+  next_run_at?: string
+  failures: number
+  last_run?: SourceRun
+  runs: SourceRun[]
+}
 export interface WorkflowView {
   name: string
   version: string
@@ -599,6 +625,22 @@ export const setQueueSecret = (queue: string, key: string, value: string, target
   )
 export const removeQueueSecret = async (queue: string, key: string, target?: ApiTarget): Promise<void> => {
   await call(target, "DELETE", `${queuePath(queue)}/secrets/${encodeURIComponent(key)}`)
+}
+
+export const listQueueSources = async (queue: string, target?: ApiTarget) =>
+  (await call<{ sources: QueueSource[]; count: number }>(target, "GET", `${queuePath(queue)}/sources`)).sources
+export const getQueueSourceRunLog = async (
+  queue: string,
+  id: number,
+  maxBytes?: number,
+  target?: ApiTarget,
+): Promise<{ text: string; truncated: boolean }> => {
+  const { text, truncated } = await call<{ run_id: number; text: string; truncated: boolean }>(
+    target,
+    "GET",
+    queryPath(`${queuePath(queue)}/source-runs/${id}/log`, { max_bytes: maxBytes }),
+  )
+  return { text, truncated }
 }
 
 export const listWorkflowImages = async (target?: ApiTarget) =>

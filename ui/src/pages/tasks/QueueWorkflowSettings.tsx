@@ -8,6 +8,7 @@ import {
 } from "@/lib/tasks"
 import { EMPTY, LABEL, MONO, SelectShell } from "./panelStyles"
 import QueueSecrets from "./QueueSecrets"
+import QueueSources from "./QueueSources"
 import { useWorkflowConfirm } from "./WorkflowConfirm"
 import { errorText } from "./workflowShared"
 
@@ -30,7 +31,8 @@ function bindingRef(binding: QueueWorkflow, images: WorkflowImage[]): string {
 
 /**
  * The Workflow section of a queue: the bound image, a select to bind another,
- * the pools control (the existing editor, rendered by `pools`), and secrets. A
+ * the pools control (the existing editor, rendered by `pools`), secrets, and
+ * the bound workflow's sources with their runs. A
  * bind refused for empty pools or missing secrets lists them beside the
  * control that fixes them, until that control has fixed them.
  */
@@ -150,6 +152,7 @@ export default function QueueWorkflowSettings({ queue, target, pools }: {
       )}
       {pools(poolSaved)}
       <QueueSecrets queue={queue} target={target} missing={missingSecrets?.names} missingMessage={missingSecrets?.message} />
+      {binding && <QueueSources key={binding.digest} queue={queue} target={target} />}
       {dialog}
     </section>
   )

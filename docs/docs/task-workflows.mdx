@@ -823,10 +823,15 @@ ttasks queue source log DEV 12 --max-bytes 4096
 ```
 
 `queue source ls` shows each source of the bound image: script, `every`, when it
-runs next, the failures in a row, and the last run with its verdict (`items`,
-`quiet`, or `failure`), message, and the number of tasks it created. Only the
-newest 20 quiet runs of a source are kept, with their files. `queue source log`
-prints the redacted log tail like `workflow log`. Both are operator-only.
+runs next, the failures in a row, the last run with its verdict (`items`,
+`quiet`, or `failure`), message, and the number of tasks it created, and the
+newest 20 runs, newest first, in `runs`; their ids are what `queue source log`
+takes. Only the newest 20 quiet runs of a source are kept, with their files.
+`queue source log` prints the redacted log tail like `workflow log`, also for a
+run still going: the worker records the log path when the script starts. Both
+are operator-only. In the app, the Workflow section of the queue settings shows
+the same list under **Sources**, with a **Log** button on each run and
+**Refresh** on the open log of a running run.
 
 Sources poll; for events pushed by a plugin, use a
 [queue trigger](#queue-triggers).
@@ -1181,7 +1186,7 @@ and what it may do next. Agents and the operator can read it.
 | `ttasks queue secret set QUEUE KEY [--value V]` | operator | Set a secret; stdin when `--value` is absent. |
 | `ttasks queue secret ls QUEUE` | operator | List secret keys. |
 | `ttasks queue secret rm QUEUE KEY` | operator | Remove a secret. |
-| `ttasks queue source ls QUEUE` | operator | List the sources of the bound image and their last runs. |
+| `ttasks queue source ls QUEUE` | operator | List the sources of the bound image and their newest runs. |
 | `ttasks queue source log QUEUE RUN [--max-bytes N]` | operator | Read a source run log. |
 | `ttasks workflow get KEY` | agent, operator | The task view. |
 | `ttasks artifacts set KEY NAME [VALUE \| --file PATH]` | holder, operator | Set an artifact; stdin when no value. |
@@ -1210,7 +1215,7 @@ generated OpenAPI document is the authority for request and response schemas.
 | `PUT` | `/api/task-queues/{queue}/secrets/{key}` | set a secret (`value`, body at most 512 KiB); returns `queue`, `key`, and the stored `updated_at` | operator |
 | `GET` | `/api/task-queues/{queue}/secrets` | list `secrets` (`key`, `updated_at`) | operator |
 | `DELETE` | `/api/task-queues/{queue}/secrets/{key}` | remove a secret | operator |
-| `GET` | `/api/task-queues/{queue}/sources` | list `sources` with `next_run_at`, `failures`, and `last_run` | operator |
+| `GET` | `/api/task-queues/{queue}/sources` | list `sources` with `next_run_at`, `failures`, `last_run`, and `runs` (the newest 20, newest first) | operator |
 | `GET` | `/api/task-queues/{queue}/source-runs/{id}/log` | the redacted log tail of a source run (`max_bytes`); returns `run_id`, `text`, `truncated` | operator |
 | `POST` | `/api/tasks/{key}/advance` | declare an outcome (`outcome`, `message`, `from`); returns the request | agent, operator |
 | `GET` | `/api/tasks/{key}/workflow/requests/{id}` | one transition request | agent, operator |
@@ -1334,7 +1339,7 @@ pending request.
 | A task is `wait_customer` with `waiting_on: pause` | The daemon paused it; `ttasks workflow get KEY` shows `paused:` and the comment names the reason. Fix the cause, then `ttasks workflow resume KEY --decision continue` or `--decision release`. |
 | A script status never moves | Read `ttasks workflow runs KEY`. A run of `quiet` verdicts means the condition has not happened; `failure` verdicts mean a broken script: read its log. The operator can always `ttasks workflow move` the task. |
 | `workflow log` returns `forbidden` | The caller is neither the customer nor a holder of the task, or the run is a `run_as: agent` check of another holder. |
-| A source creates no task | Read `ttasks queue source ls QUEUE`. No `last_run` and no `next_run_at` in the past means the worker has not reached it yet; `quiet` means the script found nothing; `failure` means read the run with `ttasks queue source log QUEUE RUN`. An item whose key was reported before never creates a second task. |
+| A source creates no task | Read `ttasks queue source ls QUEUE`. No `last_run` and no `next_run_at` in the past means the worker has not reached it yet; `quiet` means the script found nothing; `failure` means read the run with `ttasks queue source log QUEUE RUN`, or with **Log** under **Sources** in the queue settings. An item whose key was reported before never creates a second task. |
 | A secret value shows in a log | It was rotated or removed after the run, or it was printed encoded. Rotate the secret and fix the script. |
 
 ## Official workflows
